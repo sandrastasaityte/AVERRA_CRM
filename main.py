@@ -1,1026 +1,415 @@
 import streamlit as st
-import pandas as pd
-
 from datetime import date
 
-from database import create_database, get_session
-
-from models import (
-    Client,
-    ClientContact,
-    Employee,
-    EmployeeSkill,
-    Job,
-    Candidate,
-    Placement
-)
+from database import get_session
+from models import Payment, Invoice
 
 
-# --------------------------------------------------
-# DATABASE
-# --------------------------------------------------
+def show_payments():
 
-create_database()
+    st.title("Payments")
+    st.caption("Record and track client invoice payments.")
 
-session = get_session()
+    session = get_session()
 
+    # ============================================================
+    # LOAD INVOICES
+    # ============================================================
 
-# --------------------------------------------------
-# PAGE
-# --------------------------------------------------
+    invoices = session.query(Invoice).order_by(
+        Invoice.invoice_date.desc(),
+        Invoice.id.desc()
+    ).all()
 
-st.set_page_config(
-    page_title="Averra Staffing Solutions",
-    page_icon="💼",
-    layout="wide"
-)
+    if not invoices:
+        st.warning("Please create an invoice first.")
+        session.close()
+        return
 
+    # ============================================================
+    # RECORD PAYMENT
+    # ============================================================
 
-# --------------------------------------------------
-# HEADER
-# --------------------------------------------------
+    st.subheader("Record Payment")
 
-st.title("AVERRA STAFFING SOLUTIONS LTD")
+    with st.form("add_payment_form"):
 
-st.caption(
-    "Client • Employee • Recruitment • Placement Management System"
-)
+        invoice_options = {}
 
+        for invoice in invoices:
 
-# --------------------------------------------------
-# SIDEBAR
-# --------------------------------------------------
+            client_name = (
+                invoice.client.company_name
+                if invoice.client
+                else "Unknown Client"
+            )
 
-st.sidebar.title("Navigation")
+            balance = invoice.balance_due
 
-page = st.sidebar.radio(
-    "Go to",
-    [
-        "Dashboard",
-        "Clients",
-        "Client Contacts",
-        "Employees",
-        "Jobs",
-        "Candidates",
-        "Placements"
-    ]
-)
+            invoice_options[
+                f"{invoice.invoice_number} | "
+                f"{client_name} | "
+                f"{invoice.currency} {balance:,.2f} outstanding"
+            ] = invoice.id
 
+        selected_invoice = st.selectbox(
+            "Invoice",
+            list(invoice_options.keys())
+        )
 
-# ==================================================
-# DASHBOARD
-# ==================================================
+        selected_invoice_id = invoice_options[selected_invoice]
 
-if page == "Dashboard":
+        invoice = session.query(Invoice).filter(
+            Invoice.id == selected_invoice_id
+        ).first()
 
-    st.header("Dashboard")
+        if invoice:
 
-    clients = session.query(Client).all()
-    employees = session.query(Employee).all()
-    jobs = session.query(Job).all()
-    placements = session.query(Placement).all()
+            st.info(
+                f"Invoice total: "
+                f"**{invoice.currency} "
+                f"{invoice.total_amount or 0:,.2f}**  \n"
+                f"Already paid: "
+                f"**{invoice.currency} "
+                f"{invoice.amount_paid or 0:,.2f}**  \n"
+                f"Outstanding: "
+                f"**{invoice.currency} "
+                f"{invoice.balance_due:,.2f}**"
+            )
 
-    active_placements = [
-        p for p in placements
-        if p.status == "Active"
-    ]
+        # --------------------------------------------------------
+        # PAYMENT DETAILS
+        # --------------------------------------------------------
 
-    revenue = sum(
-        p.client_monthly_fee
-        for p in active_placements
-    )
+        payment_date = st.date_input(
+            "Payment Date",
+            value=date.today()
+        )
 
-    worker_cost = sum(
-        p.worker_monthly_cost
-        for p in active_placements
-    )
+        amount = st.number_input(
+            "Payment Amount",
+            min_value=0.01,
+            step=100.00,
+            format="%.2f"
+        )
 
-    gross_margin = revenue - worker_cost
+        col1, col2 = st.columns(2)
 
-    col1, col2, col3, col4 = st.columns(4)
+        with col1:
 
-    col1.metric(
-        "Total Clients",
-        len(clients)
-    )
+            payment_method = st.selectbox(
+                "Payment Method",
+                [
+                    "Bank Transfer",
+                    "Revolut",
+                    "Wise",
+                    "Card",
+                    "Direct Debit",
+                    "Cash",
+                    "Other"
+                ]
+            )
 
-    col2.metric(
-        "Employees",
-        len(employees)
-    )
+        with col2:
 
-    col3.metric(
-        "Open Jobs",
-        len([
-            j for j in jobs
-            if j.status == "Open"
-        ])
-    )
+            status = st.selectbox(
+                "Payment Status",
+                [
+                    "Received",
+                    "Pending",
+                    "Failed",
+                    "Reversed"
+                ]
+            )
 
-    col4.metric(
-        "Active Placements",
-        len(active_placements)
-    )
+        reference = st.text_input(
+            "Payment Reference",
+            placeholder="Example: BANK-2026-001"
+        )
+
+        notes = st.text_area(
+            "Notes",
+            placeholder="Payment notes..."
+        )
+
+        submitted = st.form_submit_button(
+            "Record Payment",
+            use_container_width=True
+        )
+
+        if submitted:
+
+            if amount <= 0:
+
+                st.error(
+                    "Payment amount must be greater than zero."
+                )
+
+            elif not invoice:
+
+                st.error(
+                    "Selected invoice could not be found."
+                )
+
+            elif status == "Received" and amount > invoice.balance_due:
+
+                st.error(
+                    "Payment cannot be greater than the "
+                    "outstanding invoice balance."
+                )
+
+            else:
+
+                payment = Payment(
+                    invoice_id=invoice.id,
+                    payment_date=payment_date,
+                    amount=amount,
+                    currency=invoice.currency,
+                    payment_method=payment_method,
+                    reference=reference.strip(),
+                    status=status,
+                    notes=notes.strip()
+                )
+
+                session.add(payment)
+
+                # ------------------------------------------------
+                # UPDATE INVOICE
+                # ------------------------------------------------
+
+                if status == "Received":
+
+                    invoice.amount_paid = (
+                        invoice.amount_paid or 0
+                    ) + amount
+
+                    if invoice.amount_paid >= invoice.total_amount:
+
+                        invoice.amount_paid = invoice.total_amount
+
+                        invoice.status = "Paid"
+
+                    elif invoice.amount_paid > 0:
+
+                        invoice.status = "Partially Paid"
+
+                session.commit()
+
+                st.success(
+                    "Payment recorded successfully."
+                )
+
+                st.rerun()
+
+    # ============================================================
+    # PAYMENT REGISTER
+    # ============================================================
 
     st.divider()
+
+    st.subheader("Payment Register")
+
+    payments = session.query(Payment).order_by(
+        Payment.payment_date.desc(),
+        Payment.id.desc()
+    ).all()
+
+    if not payments:
+
+        st.info(
+            "No payments have been recorded yet."
+        )
+
+        session.close()
+        return
+
+    # ============================================================
+    # FILTERS
+    # ============================================================
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric(
-        "Monthly Revenue",
-        f"£{revenue:,.2f}"
-    )
-
-    col2.metric(
-        "Worker Costs",
-        f"£{worker_cost:,.2f}"
-    )
-
-    col3.metric(
-        "Gross Margin",
-        f"£{gross_margin:,.2f}"
-    )
-
-    st.divider()
-
-    st.subheader("Client Pipeline")
-
-    pipeline_statuses = [
-        "Lead",
-        "Contacted",
-        "Replied",
-        "Call",
-        "Proposal",
-        "Negotiation",
-        "Contract",
-        "Won",
-        "Lost"
-    ]
-
-    pipeline_data = []
-
-    for status in pipeline_statuses:
-
-        count = len([
-            c for c in clients
-            if c.status == status
-        ])
-
-        pipeline_data.append({
-            "Status": status,
-            "Clients": count
-        })
-
-    df = pd.DataFrame(pipeline_data)
-
-    st.bar_chart(
-        df.set_index("Status")
-    )
-
-
-# ==================================================
-# CLIENTS
-# ==================================================
-
-elif page == "Clients":
-
-    st.header("Clients")
-
-    tab1, tab2 = st.tabs(
-        ["Client List", "Add Client"]
-    )
-
-    with tab1:
-
-        clients = session.query(Client).all()
+    with col1:
 
         search = st.text_input(
-            "Search clients"
+            "Search",
+            placeholder="Invoice or reference..."
         )
 
-        if search:
+    with col2:
 
-            clients = [
-                c for c in clients
-                if search.lower()
-                in c.company_name.lower()
+        status_filter = st.selectbox(
+            "Payment Status",
+            [
+                "All",
+                "Received",
+                "Pending",
+                "Failed",
+                "Reversed"
             ]
-
-        data = []
-
-        for c in clients:
-
-            data.append({
-                "ID": f"CL{c.id:04d}",
-                "Company": c.company_name,
-                "Industry": c.industry,
-                "City": c.city,
-                "Status": c.status,
-                "Lead Source": c.lead_source,
-                "Next Follow-up": c.next_follow_up
-            })
-
-        if data:
-
-            st.dataframe(
-                pd.DataFrame(data),
-                use_container_width=True,
-                hide_index=True
-            )
-
-        else:
-
-            st.info(
-                "No clients found."
-            )
-
-    with tab2:
-
-        st.subheader("Add New Client")
-
-        with st.form("client_form"):
-
-            company_name = st.text_input(
-                "Company Name *"
-            )
-
-            industry = st.text_input(
-                "Industry"
-            )
-
-            website = st.text_input(
-                "Website"
-            )
-
-            city = st.text_input(
-                "City"
-            )
-
-            address = st.text_input(
-                "Address"
-            )
-
-            postcode = st.text_input(
-                "Postcode"
-            )
-
-            status = st.selectbox(
-                "Status",
-                [
-                    "Lead",
-                    "Contacted",
-                    "Replied",
-                    "Call",
-                    "Proposal",
-                    "Negotiation",
-                    "Contract",
-                    "Won",
-                    "Lost"
-                ]
-            )
-
-            lead_source = st.selectbox(
-                "Lead Source",
-                [
-                    "LinkedIn",
-                    "Website",
-                    "Referral",
-                    "Cold Email",
-                    "Cold Call",
-                    "Job Board",
-                    "Networking",
-                    "Other"
-                ]
-            )
-
-            next_follow_up = st.date_input(
-                "Next Follow-up",
-                value=date.today()
-            )
-
-            notes = st.text_area(
-                "Notes"
-            )
-
-            submitted = st.form_submit_button(
-                "Add Client"
-            )
-
-            if submitted:
-
-                if not company_name:
-
-                    st.error(
-                        "Company name is required."
-                    )
-
-                else:
-
-                    client = Client(
-                        company_name=company_name,
-                        industry=industry,
-                        website=website,
-                        city=city,
-                        address=address,
-                        postcode=postcode,
-                        status=status,
-                        lead_source=lead_source,
-                        date_added=date.today(),
-                        next_follow_up=next_follow_up,
-                        notes=notes
-                    )
-
-                    session.add(client)
-                    session.commit()
-
-                    st.success(
-                        "Client added successfully."
-                    )
-
-                    st.rerun()
-
-
-# ==================================================
-# CLIENT CONTACTS
-# ==================================================
-
-elif page == "Client Contacts":
-
-    st.header("Client Contacts")
-
-    clients = session.query(Client).all()
-
-    if not clients:
-
-        st.warning(
-            "Add a client first."
         )
 
-    else:
+    with col3:
 
-        with st.form("contact_form"):
-
-            client = st.selectbox(
-                "Client",
-                clients,
-                format_func=lambda x:
-                    x.company_name
-            )
-
-            first_name = st.text_input(
-                "First Name"
-            )
-
-            last_name = st.text_input(
-                "Last Name"
-            )
-
-            job_title = st.text_input(
-                "Job Title"
-            )
-
-            email = st.text_input(
-                "Email"
-            )
-
-            phone = st.text_input(
-                "Phone"
-            )
-
-            linkedin = st.text_input(
-                "LinkedIn"
-            )
-
-            primary = st.selectbox(
-                "Primary Contact",
-                ["Yes", "No"]
-            )
-
-            if st.form_submit_button(
-                "Add Contact"
-            ):
-
-                contact = ClientContact(
-                    client_id=client.id,
-                    first_name=first_name,
-                    last_name=last_name,
-                    job_title=job_title,
-                    email=email,
-                    phone=phone,
-                    linkedin=linkedin,
-                    primary_contact=primary
-                )
-
-                session.add(contact)
-                session.commit()
-
-                st.success(
-                    "Contact added."
-                )
-
-                st.rerun()
-
-    st.divider()
-
-    contacts = session.query(ClientContact).all()
-
-    data = []
-
-    for c in contacts:
-
-        data.append({
-            "Client": c.client.company_name
-            if c.client else "",
-            "Name":
-                f"{c.first_name} {c.last_name}",
-            "Job Title": c.job_title,
-            "Email": c.email,
-            "Phone": c.phone,
-            "Primary": c.primary_contact
-        })
-
-    if data:
-
-        st.dataframe(
-            pd.DataFrame(data),
-            use_container_width=True,
-            hide_index=True
+        method_filter = st.selectbox(
+            "Payment Method",
+            [
+                "All",
+                "Bank Transfer",
+                "Revolut",
+                "Wise",
+                "Card",
+                "Direct Debit",
+                "Cash",
+                "Other"
+            ]
         )
 
+    # ============================================================
+    # APPLY FILTERS
+    # ============================================================
 
-# ==================================================
-# EMPLOYEES
-# ==================================================
+    filtered_payments = payments
 
-elif page == "Employees":
+    if search:
 
-    st.header("Employees / Remote Workers")
+        search_lower = search.lower()
 
-    tab1, tab2 = st.tabs(
-        ["Employee List", "Add Employee"]
-    )
+        filtered_payments = [
+            payment
+            for payment in filtered_payments
 
-    with tab1:
-
-        employees = session.query(Employee).all()
-
-        search = st.text_input(
-            "Search employees"
-        )
-
-        if search:
-
-            employees = [
-                e for e in employees
-                if search.lower()
+            if (
+                payment.invoice
+                and search_lower
                 in (
-                    f"{e.first_name} {e.last_name} {e.role}"
+                    payment.invoice.invoice_number or ""
                 ).lower()
-            ]
-
-        data = []
-
-        for e in employees:
-
-            data.append({
-                "ID": f"EMP{e.id:04d}",
-                "Name":
-                    f"{e.first_name} {e.last_name}",
-                "Country": e.country,
-                "Role": e.role,
-                "Experience":
-                    e.years_experience,
-                "English":
-                    e.english_level,
-                "Availability":
-                    e.availability,
-                "Rate":
-                    f"{e.currency} {e.expected_monthly_rate:,.2f}",
-                "Status":
-                    e.employment_status
-            })
-
-        if data:
-
-            st.dataframe(
-                pd.DataFrame(data),
-                use_container_width=True,
-                hide_index=True
             )
 
-    with tab2:
-
-        with st.form("employee_form"):
-
-            first_name = st.text_input(
-                "First Name"
+            or (
+                search_lower
+                in (payment.reference or "").lower()
             )
+        ]
 
-            last_name = st.text_input(
-                "Last Name"
-            )
+    if status_filter != "All":
 
-            city = st.text_input(
-                "City"
-            )
+        filtered_payments = [
+            payment
+            for payment in filtered_payments
+            if payment.status == status_filter
+        ]
 
-            email = st.text_input(
-                "Email"
-            )
+    if method_filter != "All":
 
-            phone = st.text_input(
-                "Phone"
-            )
+        filtered_payments = [
+            payment
+            for payment in filtered_payments
+            if payment.payment_method == method_filter
+        ]
 
-            role = st.text_input(
-                "Role"
-            )
+    # ============================================================
+    # DISPLAY
+    # ============================================================
 
-            experience = st.number_input(
-                "Years Experience",
-                min_value=0.0,
-                max_value=50.0,
-                step=0.5
-            )
+    if not filtered_payments:
 
-            english = st.selectbox(
-                "English Level",
-                [
-                    "Basic",
-                    "Intermediate",
-                    "Advanced",
-                    "Fluent"
-                ]
-            )
-
-            availability = st.selectbox(
-                "Availability",
-                [
-                    "Available Now",
-                    "Available in 1 Week",
-                    "Available in 2 Weeks",
-                    "Available in 1 Month",
-                    "Not Available"
-                ]
-            )
-
-            rate = st.number_input(
-                "Expected Monthly Rate",
-                min_value=0.0,
-                step=50.0
-            )
-
-            status = st.selectbox(
-                "Employment Status",
-                [
-                    "Sourced",
-                    "Screened",
-                    "Interview",
-                    "Approved",
-                    "Available",
-                    "Submitted",
-                    "Placed",
-                    "Active",
-                    "Finished",
-                    "Inactive"
-                ]
-            )
-
-            cv_link = st.text_input(
-                "CV Link"
-            )
-
-            notes = st.text_area(
-                "Notes"
-            )
-
-            submitted = st.form_submit_button(
-                "Add Employee"
-            )
-
-            if submitted:
-
-                employee = Employee(
-                    first_name=first_name,
-                    last_name=last_name,
-                    city=city,
-                    email=email,
-                    phone=phone,
-                    role=role,
-                    years_experience=experience,
-                    english_level=english,
-                    availability=availability,
-                    expected_monthly_rate=rate,
-                    employment_status=status,
-                    cv_link=cv_link,
-                    notes=notes
-                )
-
-                session.add(employee)
-                session.commit()
-
-                st.success(
-                    "Employee added successfully."
-                )
-
-                st.rerun()
-
-
-# ==================================================
-# JOBS
-# ==================================================
-
-elif page == "Jobs":
-
-    st.header("Job Requirements")
-
-    clients = session.query(Client).all()
-
-    if not clients:
-
-        st.warning(
-            "Add a client first."
+        st.info(
+            "No payments match your filters."
         )
 
     else:
 
-        with st.form("job_form"):
+        for payment in filtered_payments:
 
-            client = st.selectbox(
-                "Client",
-                clients,
-                format_func=lambda x:
-                    x.company_name
+            invoice_number = (
+                payment.invoice.invoice_number
+                if payment.invoice
+                else "Unknown Invoice"
             )
 
-            position = st.text_input(
-                "Position"
+            client_name = (
+                payment.invoice.client.company_name
+                if payment.invoice
+                and payment.invoice.client
+                else "Unknown Client"
             )
 
-            department = st.text_input(
-                "Department"
-            )
+            with st.container(border=True):
 
-            skills = st.text_area(
-                "Skills Required",
-                placeholder=
-                "Excel, Xero, SQL, accounting..."
-            )
-
-            experience = st.text_input(
-                "Experience Required"
-            )
-
-            budget = st.number_input(
-                "Client Monthly Budget",
-                min_value=0.0,
-                step=100.0
-            )
-
-            openings = st.number_input(
-                "Number of Openings",
-                min_value=1,
-                step=1
-            )
-
-            work_pattern = st.selectbox(
-                "Work Pattern",
-                [
-                    "Full-time Remote",
-                    "Part-time Remote",
-                    "Contract",
-                    "Other"
-                ]
-            )
-
-            priority = st.selectbox(
-                "Priority",
-                [
-                    "Low",
-                    "Medium",
-                    "High",
-                    "Urgent"
-                ]
-            )
-
-            if st.form_submit_button(
-                "Create Job"
-            ):
-
-                job = Job(
-                    client_id=client.id,
-                    position=position,
-                    department=department,
-                    skills_required=skills,
-                    experience_required=experience,
-                    client_budget=budget,
-                    openings= openings,
-                    work_pattern=work_pattern,
-                    date_opened=date.today(),
-                    status="Open",
-                    priority=priority
+                col1, col2, col3, col4 = st.columns(
+                    [2, 3, 2, 2]
                 )
 
-                session.add(job)
-                session.commit()
-
-                st.success(
-                    "Job created successfully."
-                )
-
-                st.rerun()
-
-    st.divider()
-
-    jobs = session.query(Job).all()
-
-    data = []
-
-    for j in jobs:
-
-        data.append({
-            "Job ID": f"JOB{j.id:04d}",
-            "Client": j.client.company_name
-            if j.client else "",
-            "Position": j.position,
-            "Budget":
-                f"£{j.client_budget:,.2f}",
-            "Openings": j.openings,
-            "Priority": j.priority,
-            "Status": j.status
-        })
+                # ------------------------------------------------
+                # DATE
+                # ------------------------------------------------
 
-    if data:
+                with col1:
 
-        st.dataframe(
-            pd.DataFrame(data),
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-# ==================================================
-# CANDIDATES
-# ==================================================
-
-elif page == "Candidates":
-
-    st.header("Candidates")
-
-    jobs = session.query(Job).all()
-    employees = session.query(Employee).all()
-
-    if not jobs or not employees:
-
-        st.warning(
-            "You need at least one job and one employee."
-        )
-
-    else:
-
-        with st.form("candidate_form"):
-
-            job = st.selectbox(
-                "Job",
-                jobs,
-                format_func=lambda x:
-                    f"{x.position} - "
-                    f"{x.client.company_name}"
-            )
+                    if payment.payment_date:
 
-            employee = st.selectbox(
-                "Employee",
-                employees,
-                format_func=lambda x:
-                    f"{x.first_name} "
-                    f"{x.last_name} - "
-                    f"{x.role}"
-            )
+                        st.write(
+                            f"**{payment.payment_date.strftime('%d %b %Y')}**"
+                        )
 
-            status = st.selectbox(
-                "Candidate Status",
-                [
-                    "New",
-                    "Screening",
-                    "Shortlisted",
-                    "Submitted",
-                    "Interview",
-                    "Offer",
-                    "Rejected",
-                    "Withdrawn",
-                    "Placed"
-                ]
-            )
-
-            feedback = st.text_area(
-                "Client Feedback"
-            )
-
-            if st.form_submit_button(
-                "Add Candidate"
-            ):
-
-                candidate = Candidate(
-                    job_id=job.id,
-                    employee_id=employee.id,
-                    date_submitted=date.today(),
-                    status=status,
-                    client_feedback=feedback
-                )
-
-                session.add(candidate)
-                session.commit()
-
-                st.success(
-                    "Candidate added."
-                )
-
-                st.rerun()
-
-    st.divider()
-
-    candidates = session.query(Candidate).all()
-
-    data = []
-
-    for c in candidates:
-
-        employee = session.get(
-            Employee,
-            c.employee_id
-        )
-
-        data.append({
-            "Candidate ID":
-                f"CAN{c.id:04d}",
-            "Job": c.job.position
-            if c.job else "",
-            "Employee":
-                f"{employee.first_name} "
-                f"{employee.last_name}"
-                if employee else "",
-            "Status": c.status,
-            "Submitted":
-                c.date_submitted
-        })
-
-    if data:
-
-        st.dataframe(
-            pd.DataFrame(data),
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-# ==================================================
-# PLACEMENTS
-# ==================================================
-
-elif page == "Placements":
-
-    st.header("Placements")
-
-    clients = session.query(Client).all()
-    employees = session.query(Employee).all()
-    jobs = session.query(Job).all()
-
-    if not clients or not employees or not jobs:
-
-        st.warning(
-            "You need clients, employees and jobs first."
-        )
-
-    else:
-
-        with st.form("placement_form"):
-
-            client = st.selectbox(
-                "Client",
-                clients,
-                format_func=lambda x:
-                    x.company_name
-            )
-
-            employee = st.selectbox(
-                "Employee",
-                employees,
-                format_func=lambda x:
-                    f"{x.first_name} "
-                    f"{x.last_name}"
-            )
-
-            job = st.selectbox(
-                "Job",
-                jobs,
-                format_func=lambda x:
-                    x.position
-            )
-
-            position = st.text_input(
-                "Position",
-                value=job.position
-            )
-
-            client_fee = st.number_input(
-                "Client Monthly Fee",
-                min_value=0.0,
-                step=100.0
-            )
-
-            worker_cost = st.number_input(
-                "Worker Monthly Cost",
-                min_value=0.0,
-                step=100.0
-            )
-
-            start_date = st.date_input(
-                "Start Date",
-                value=date.today()
-            )
-
-            status = st.selectbox(
-                "Placement Status",
-                [
-                    "Planned",
-                    "Active",
-                    "On Hold",
-                    "Ended",
-                    "Cancelled"
-                ]
-            )
-
-            if st.form_submit_button(
-                "Create Placement"
-            ):
-
-                placement = Placement(
-                    client_id=client.id,
-                    employee_id=employee.id,
-                    job_id=job.id,
-                    position=position,
-                    start_date=start_date,
-                    client_monthly_fee=client_fee,
-                    worker_monthly_cost=worker_cost,
-                    status=status
-                )
-
-                session.add(placement)
-
-                employee.employment_status = "Placed"
-
-                session.commit()
-
-                st.success(
-                    "Placement created successfully."
-                )
-
-                st.rerun()
-
-    st.divider()
-
-    placements = session.query(
-        Placement
-    ).all()
-
-    data = []
-
-    for p in placements:
-
-        margin = p.gross_margin
-
-        margin_percent = (
-            p.gross_margin_percentage
-        )
-
-        data.append({
-            "Placement":
-                f"PL{p.id:04d}",
-            "Client":
-                p.client.company_name
-                if p.client else "",
-            "Employee":
-                f"{p.employee.first_name} "
-                f"{p.employee.last_name}"
-                if p.employee else "",
-            "Position":
-                p.position,
-            "Client Fee":
-                f"£{p.client_monthly_fee:,.2f}",
-            "Worker Cost":
-                f"£{p.worker_monthly_cost:,.2f}",
-            "Gross Margin":
-                f"£{margin:,.2f}",
-            "Margin %":
-                f"{margin_percent:.1f}%",
-            "Status":
-                p.status
-        })
-
-    if data:
-
-        st.dataframe(
-            pd.DataFrame(data),
-            use_container_width=True,
-            hide_index=True
-        )
+                    st.caption(
+                        payment.status
+                    )
+
+                # ------------------------------------------------
+                # INVOICE / CLIENT
+                # ------------------------------------------------
+
+                with col2:
+
+                    st.write(
+                        f"**{invoice_number}**"
+                    )
+
+                    st.caption(
+                        client_name
+                    )
+
+                # ------------------------------------------------
+                # AMOUNT
+                # ------------------------------------------------
+
+                with col3:
+
+                    st.write(
+                        f"**{payment.currency} "
+                        f"{payment.amount:,.2f}**"
+                    )
+
+                    st.caption(
+                        payment.payment_method
+                    )
+
+                # ------------------------------------------------
+                # REFERENCE
+                # ------------------------------------------------
+
+                with col4:
+
+                    if payment.reference:
+
+                        st.write(
+                            f"Reference: "
+                            f"**{payment.reference}**"
+                        )
+
+                    else:
+
+                        st.caption(
+                            "No payment reference"
+                        )
+
+                if payment.notes:
+
+                    st.caption(
+                        f"Notes: {payment.notes}"
+                    )
+
+    session.close()
