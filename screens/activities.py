@@ -1,161 +1,328 @@
 import streamlit as st
-from datetime import date
-
 from database import get_session
-from models import Activity, Client
+from models import (
+    Activity,
+    Client,
+    ClientContact,
+    Employee,
+    Job,
+    Candidate,
+    Placement,
+    Contract,
+)
 
 
 def show_activities():
 
-    st.title("Activities & Follow-Ups")
-    st.caption("Manage client calls, emails, meetings, proposals and follow-ups.")
+    st.title("Activities")
+    st.caption("Manage calls, emails, meetings, follow-ups and tasks.")
 
     session = get_session()
 
     # ============================================================
-    # CHECK CLIENTS
+    # LOAD DATA
     # ============================================================
 
-    clients = session.query(Client).order_by(
-        Client.company_name
-    ).all()
+    clients = (
+        session.query(Client)
+        .order_by(Client.company_name.asc())
+        .all()
+    )
 
-    if not clients:
-        st.warning("Please add a client first.")
-        session.close()
-        return
+    contacts = (
+        session.query(ClientContact)
+        .order_by(
+            ClientContact.first_name.asc(),
+            ClientContact.last_name.asc()
+        )
+        .all()
+    )
+
+    employees = (
+        session.query(Employee)
+        .order_by(
+            Employee.first_name.asc(),
+            Employee.last_name.asc()
+        )
+        .all()
+    )
+
+    jobs = (
+        session.query(Job)
+        .order_by(Job.position.asc())
+        .all()
+    )
+
+    candidates = (
+        session.query(Candidate)
+        .order_by(Candidate.id.desc())
+        .all()
+    )
+
+    placements = (
+        session.query(Placement)
+        .order_by(Placement.id.desc())
+        .all()
+    )
+
+    contracts = (
+        session.query(Contract)
+        .order_by(Contract.id.desc())
+        .all()
+    )
 
     # ============================================================
     # ADD ACTIVITY
     # ============================================================
 
-    st.subheader("Add Activity")
+    st.header("Add Activity")
+
+    client_options = {
+        client.company_name: client.id
+        for client in clients
+    }
+
+    contact_options = {
+        f"{contact.first_name} {contact.last_name}": contact.id
+        for contact in contacts
+    }
+
+    employee_options = {
+        f"{employee.first_name} {employee.last_name}": employee.id
+        for employee in employees
+    }
+
+    job_options = {
+        f"{job.position} - "
+        f"{job.client.company_name if job.client else 'No Client'}": job.id
+        for job in jobs
+    }
+
+    candidate_options = {
+        f"Candidate #{candidate.id}": candidate.id
+        for candidate in candidates
+    }
+
+    placement_options = {
+        f"{placement.position} - "
+        f"{placement.employee.first_name} "
+        f"{placement.employee.last_name}"
+        if placement.employee
+        else f"Placement #{placement.id}": placement.id
+        for placement in placements
+    }
+
+    contract_options = {
+        f"{contract.contract_number} - "
+        f"{contract.client.company_name if contract.client else 'No Client'}": contract.id
+        for contract in contracts
+    }
 
     with st.form("add_activity_form"):
-
-        client_options = {
-            f"{client.company_name} (ID: {client.id})": client.id
-            for client in clients
-        }
-
-        selected_client = st.selectbox(
-            "Client",
-            list(client_options.keys())
-        )
-
-        activity_type = st.selectbox(
-            "Activity Type",
-            [
-                "Call",
-                "Email",
-                "Meeting",
-                "LinkedIn",
-                "Proposal",
-                "Follow-Up",
-                "Negotiation",
-                "Contract",
-                "Other"
-            ]
-        )
-
-        subject = st.text_input(
-            "Subject",
-            placeholder="Example: Follow up regarding finance outsourcing proposal"
-        )
 
         col1, col2 = st.columns(2)
 
         with col1:
+
+            activity_type = st.selectbox(
+                "Activity Type",
+                [
+                    "Call",
+                    "Email",
+                    "Meeting",
+                    "Follow-up",
+                    "Task",
+                    "Note",
+                    "Interview",
+                    "Other"
+                ]
+            )
+
+            subject = st.text_input(
+                "Subject *"
+            )
+
             activity_date = st.date_input(
-                "Activity Date",
-                value=date.today()
+                "Activity Date"
+            )
+
+            due_date = st.date_input(
+                "Due Date",
+                value=None
             )
 
         with col2:
-            due_date = st.date_input(
-                "Follow-Up / Due Date",
-                value=date.today()
-            )
 
-        col3, col4 = st.columns(2)
-
-        with col3:
             status = st.selectbox(
                 "Status",
                 [
                     "Open",
+                    "In Progress",
                     "Completed",
-                    "Waiting",
                     "Cancelled"
                 ]
             )
 
-        with col4:
             priority = st.selectbox(
                 "Priority",
                 [
                     "Low",
-                    "Medium",
+                    "Normal",
                     "High",
                     "Urgent"
                 ]
             )
 
-        assigned_to = st.text_input(
-            "Assigned To",
-            placeholder="Example: Sandra"
+            assigned_to = st.selectbox(
+                "Assigned To",
+                ["Unassigned"] + list(
+                    employee_options.keys()
+                )
+            )
+
+            client = st.selectbox(
+                "Client",
+                ["No Client"] + list(
+                    client_options.keys()
+                )
+            )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            contact = st.selectbox(
+                "Contact",
+                ["No Contact"] + list(
+                    contact_options.keys()
+                )
+            )
+
+            job = st.selectbox(
+                "Job",
+                ["No Job"] + list(
+                    job_options.keys()
+                )
+            )
+
+        with col2:
+
+            candidate = st.selectbox(
+                "Candidate",
+                ["No Candidate"] + list(
+                    candidate_options.keys()
+                )
+            )
+
+            placement = st.selectbox(
+                "Placement",
+                ["No Placement"] + list(
+                    placement_options.keys()
+                )
+            )
+
+        contract = st.selectbox(
+            "Contract",
+            ["No Contract"] + list(
+                contract_options.keys()
+            )
         )
 
         notes = st.text_area(
-            "Notes",
-            placeholder="Enter details about the activity..."
+            "Notes"
         )
 
         submitted = st.form_submit_button(
-            "Add Activity",
+            "Create Activity",
             use_container_width=True
         )
 
         if submitted:
 
             if not subject.strip():
-                st.error("Subject is required.")
+
+                st.error(
+                    "Subject is required."
+                )
 
             else:
 
                 activity = Activity(
-                    client_id=client_options[selected_client],
+                    client_id=(
+                        client_options[client]
+                        if client != "No Client"
+                        else None
+                    ),
+                    contact_id=(
+                        contact_options[contact]
+                        if contact != "No Contact"
+                        else None
+                    ),
+                    assigned_to_id=(
+                        employee_options[assigned_to]
+                        if assigned_to != "Unassigned"
+                        else None
+                    ),
+                    job_id=(
+                        job_options[job]
+                        if job != "No Job"
+                        else None
+                    ),
+                    candidate_id=(
+                        candidate_options[candidate]
+                        if candidate != "No Candidate"
+                        else None
+                    ),
+                    placement_id=(
+                        placement_options[placement]
+                        if placement != "No Placement"
+                        else None
+                    ),
+                    contract_id=(
+                        contract_options[contract]
+                        if contract != "No Contract"
+                        else None
+                    ),
                     activity_type=activity_type,
                     subject=subject.strip(),
                     activity_date=activity_date,
                     due_date=due_date,
                     status=status,
                     priority=priority,
-                    assigned_to=assigned_to.strip(),
                     notes=notes.strip()
                 )
 
                 session.add(activity)
                 session.commit()
 
-                st.success("Activity added successfully.")
+                st.success(
+                    "Activity created successfully."
+                )
+
                 st.rerun()
 
     # ============================================================
-    # ACTIVITY LIST
+    # ACTIVITY REGISTER
     # ============================================================
 
     st.divider()
 
-    st.subheader("Activity History")
+    st.header("Activity Register")
 
-    activities = session.query(Activity).order_by(
-        Activity.activity_date.desc(),
-        Activity.id.desc()
-    ).all()
+    activities = (
+        session.query(Activity)
+        .order_by(
+            Activity.activity_date.desc()
+        )
+        .all()
+    )
 
     if not activities:
-        st.info("No activities have been added yet.")
+
+        st.info(
+            "No activities have been created yet."
+        )
+
         session.close()
         return
 
@@ -167,9 +334,15 @@ def show_activities():
 
     with col1:
 
-        search = st.text_input(
-            "Search",
-            placeholder="Search subject or notes..."
+        status_filter = st.selectbox(
+            "Status",
+            [
+                "All",
+                "Open",
+                "In Progress",
+                "Completed",
+                "Cancelled"
+            ]
         )
 
     with col2:
@@ -181,45 +354,29 @@ def show_activities():
                 "Call",
                 "Email",
                 "Meeting",
-                "LinkedIn",
-                "Proposal",
-                "Follow-Up",
-                "Negotiation",
-                "Contract",
+                "Follow-up",
+                "Task",
+                "Note",
+                "Interview",
                 "Other"
             ]
         )
 
     with col3:
 
-        status_filter = st.selectbox(
-            "Status",
-            [
-                "All",
-                "Open",
-                "Completed",
-                "Waiting",
-                "Cancelled"
-            ]
+        search = st.text_input(
+            "Search",
+            placeholder="Subject, client or notes..."
         )
-
-    # ============================================================
-    # APPLY FILTERS
-    # ============================================================
 
     filtered_activities = activities
 
-    if search:
-
-        search_lower = search.lower()
+    if status_filter != "All":
 
         filtered_activities = [
             activity
             for activity in filtered_activities
-            if (
-                search_lower in (activity.subject or "").lower()
-                or search_lower in (activity.notes or "").lower()
-            )
+            if activity.status == status_filter
         ]
 
     if type_filter != "All":
@@ -230,86 +387,114 @@ def show_activities():
             if activity.activity_type == type_filter
         ]
 
-    if status_filter != "All":
+    if search:
+
+        search_text = search.lower()
 
         filtered_activities = [
             activity
             for activity in filtered_activities
-            if activity.status == status_filter
+            if (
+                search_text
+                in (activity.subject or "").lower()
+                or search_text
+                in (activity.notes or "").lower()
+                or search_text
+                in (
+                    activity.client.company_name
+                    if activity.client
+                    else ""
+                ).lower()
+            )
         ]
+
+    st.write(
+        f"Showing **{len(filtered_activities)}** activity/activities"
+    )
 
     # ============================================================
     # DISPLAY
     # ============================================================
 
-    if not filtered_activities:
+    for activity in filtered_activities:
 
-        st.info("No activities match your filters.")
+        with st.container(border=True):
 
-    else:
-
-        for activity in filtered_activities:
-
-            client_name = (
-                activity.client.company_name
-                if activity.client
-                else "Unknown Client"
+            col1, col2, col3, col4 = st.columns(
+                [3, 3, 2, 2]
             )
 
-            with st.container(border=True):
+            with col1:
 
-                col1, col2, col3, col4 = st.columns(
-                    [2, 3, 2, 2]
+                st.subheader(
+                    activity.subject
                 )
 
-                with col1:
+                st.caption(
+                    activity.activity_type or "—"
+                )
+
+                if activity.client:
 
                     st.write(
-                        f"**{activity.activity_type}**"
+                        activity.client.company_name
                     )
+
+            with col2:
+
+                st.write("**Status**")
+
+                st.write(
+                    activity.status or "—"
+                )
+
+                st.caption(
+                    f"Priority: {activity.priority or '—'}"
+                )
+
+            with col3:
+
+                st.write("**Dates**")
+
+                if activity.activity_date:
+
+                    st.write(
+                        f"Activity: {activity.activity_date}"
+                    )
+
+                if activity.due_date:
 
                     st.caption(
-                        activity.activity_date.strftime("%d %b %Y")
-                        if activity.activity_date
-                        else ""
+                        f"Due: {activity.due_date}"
                     )
 
-                with col2:
+            with col4:
 
-                    st.write(
-                        f"**{activity.subject}**"
-                    )
+                if activity.assigned_to:
 
-                    st.caption(client_name)
-
-                with col3:
-
-                    st.write(
-                        f"Status: **{activity.status}**"
+                    employee_name = " ".join(
+                        part
+                        for part in [
+                            activity.assigned_to.first_name,
+                            activity.assigned_to.last_name
+                        ]
+                        if part
                     )
 
                     st.write(
-                        f"Priority: **{activity.priority}**"
+                        employee_name
                     )
 
-                with col4:
+                else:
 
-                    if activity.due_date:
-
-                        st.write(
-                            f"Due: **{activity.due_date.strftime('%d %b %Y')}**"
-                        )
-
-                    if activity.assigned_to:
-
-                        st.caption(
-                            f"Assigned: {activity.assigned_to}"
-                        )
-
-                if activity.notes:
-
-                    st.caption(
-                        f"Notes: {activity.notes}"
+                    st.write(
+                        "Unassigned"
                     )
+
+            if activity.notes:
+
+                st.caption(
+                    f"Notes: {activity.notes}"
+                )
 
     session.close()
