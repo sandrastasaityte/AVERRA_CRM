@@ -20,32 +20,48 @@ from database import Base
 # ============================================================
 
 class Client(Base):
+
     __tablename__ = "clients"
 
     id = Column(Integer, primary_key=True)
 
-    company_name = Column(String(200), nullable=False)
+    company_name = Column(
+        String(200),
+        nullable=False
+    )
+
     industry = Column(String(100))
     website = Column(String(300))
 
-    country = Column(String(100), default="UK")
+    country = Column(
+        String(100),
+        default="UK"
+    )
+
     city = Column(String(100))
     address = Column(String(300))
     postcode = Column(String(30))
 
     company_size = Column(String(50))
 
-    status = Column(String(50), default="Lead")
+    status = Column(
+        String(50),
+        default="Lead"
+    )
+
     lead_source = Column(String(100))
 
-    date_added = Column(Date, default=date.today)
+    date_added = Column(
+        Date,
+        default=date.today
+    )
+
     next_follow_up = Column(Date)
 
     account_owner = Column(String(100))
 
     notes = Column(Text)
 
-    # Relationships
     contacts = relationship(
         "ClientContact",
         back_populates="client",
@@ -83,9 +99,13 @@ class Client(Base):
 # ============================================================
 
 class ClientContact(Base):
+
     __tablename__ = "client_contacts"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     client_id = Column(
         Integer,
@@ -93,55 +113,116 @@ class ClientContact(Base):
         nullable=False
     )
 
-    first_name = Column(String(100), nullable=False)
-    last_name = Column(String(100))
+    first_name = Column(
+        String(100),
+        nullable=False
+    )
 
-    job_title = Column(String(150))
+    last_name = Column(
+        String(100)
+    )
 
-    email = Column(String(200))
-    phone = Column(String(50))
-    linkedin = Column(String(300))
+    job_title = Column(
+        String(150)
+    )
 
-    preferred_contact = Column(String(50))
-    primary_contact = Column(String(10), default="No")
+    email = Column(
+        String(200)
+    )
 
-    status = Column(String(50), default="Active")
+    phone = Column(
+        String(50)
+    )
+
+    linkedin = Column(
+        String(300)
+    )
+
+    preferred_contact = Column(
+        String(50)
+    )
+
+    primary_contact = Column(
+        String(10),
+        default="No"
+    )
+
+    status = Column(
+        String(50),
+        default="Active"
+    )
 
     notes = Column(Text)
 
-    # Relationship
     client = relationship(
         "Client",
         back_populates="contacts"
     )
 
+    activities = relationship(
+        "Activity",
+        back_populates="contact"
+    )
+
 
 # ============================================================
-# EMPLOYEES / REMOTE WORKERS
+# EMPLOYEES
 # ============================================================
 
 class Employee(Base):
+
     __tablename__ = "employees"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
-    first_name = Column(String(100), nullable=False)
-    last_name = Column(String(100))
+    first_name = Column(
+        String(100),
+        nullable=False
+    )
 
-    country = Column(String(100), default="India")
-    city = Column(String(100))
+    last_name = Column(
+        String(100)
+    )
 
-    email = Column(String(200))
-    phone = Column(String(50))
+    country = Column(
+        String(100),
+        default="India"
+    )
 
-    role = Column(String(150))
+    city = Column(
+        String(100)
+    )
 
-    years_experience = Column(Float)
+    email = Column(
+        String(200)
+    )
 
-    english_level = Column(String(50))
-    availability = Column(String(50))
+    phone = Column(
+        String(50)
+    )
 
-    expected_monthly_rate = Column(Float)
+    role = Column(
+        String(150)
+    )
+
+    years_experience = Column(
+        Float
+    )
+
+    english_level = Column(
+        String(50)
+    )
+
+    availability = Column(
+        String(50)
+    )
+
+    expected_monthly_rate = Column(
+        Float
+    )
 
     currency = Column(
         String(10),
@@ -153,11 +234,12 @@ class Employee(Base):
         default="Sourced"
     )
 
-    cv_link = Column(String(500))
+    cv_link = Column(
+        String(500)
+    )
 
     notes = Column(Text)
 
-    # Relationships
     skills = relationship(
         "EmployeeSkill",
         back_populates="employee",
@@ -174,15 +256,24 @@ class Employee(Base):
         back_populates="employee"
     )
 
+    activities = relationship(
+        "Activity",
+        back_populates="assigned_employee"
+    )
+
 
 # ============================================================
 # EMPLOYEE SKILLS
 # ============================================================
 
 class EmployeeSkill(Base):
+
     __tablename__ = "employee_skills"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     employee_id = Column(
         Integer,
@@ -190,19 +281,29 @@ class EmployeeSkill(Base):
         nullable=False
     )
 
-    skill = Column(String(150), nullable=False)
+    skill = Column(
+        String(150),
+        nullable=False
+    )
 
-    category = Column(String(100))
+    category = Column(
+        String(100)
+    )
 
-    level = Column(String(50))
+    level = Column(
+        String(50)
+    )
 
-    years_used = Column(Float)
+    years_used = Column(
+        Float
+    )
 
-    qualification = Column(String(200))
+    qualification = Column(
+        String(200)
+    )
 
     notes = Column(Text)
 
-    # Relationship
     employee = relationship(
         "Employee",
         back_populates="skills"
@@ -214,9 +315,13 @@ class EmployeeSkill(Base):
 # ============================================================
 
 class Job(Base):
+
     __tablename__ = "jobs"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     client_id = Column(
         Integer,
@@ -224,15 +329,26 @@ class Job(Base):
         nullable=False
     )
 
-    position = Column(String(200), nullable=False)
+    position = Column(
+        String(200),
+        nullable=False
+    )
 
-    department = Column(String(150))
+    department = Column(
+        String(150)
+    )
 
-    skills_required = Column(Text)
+    skills_required = Column(
+        Text
+    )
 
-    experience_required = Column(String(150))
+    experience_required = Column(
+        String(150)
+    )
 
-    client_budget = Column(Float)
+    client_budget = Column(
+        Float
+    )
 
     currency = Column(
         String(10),
@@ -244,7 +360,9 @@ class Job(Base):
         default=1
     )
 
-    work_pattern = Column(String(100))
+    work_pattern = Column(
+        String(100)
+    )
 
     remote_country = Column(
         String(100),
@@ -256,7 +374,9 @@ class Job(Base):
         default=date.today
     )
 
-    closing_date = Column(Date)
+    closing_date = Column(
+        Date
+    )
 
     status = Column(
         String(50),
@@ -270,7 +390,6 @@ class Job(Base):
 
     notes = Column(Text)
 
-    # Relationships
     client = relationship(
         "Client",
         back_populates="jobs"
@@ -286,15 +405,24 @@ class Job(Base):
         back_populates="job"
     )
 
+    activities = relationship(
+        "Activity",
+        back_populates="job"
+    )
+
 
 # ============================================================
 # CANDIDATES
 # ============================================================
 
 class Candidate(Base):
+
     __tablename__ = "candidates"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     job_id = Column(
         Integer,
@@ -318,15 +446,22 @@ class Candidate(Base):
         default="New"
     )
 
-    interview_date = Column(Date)
+    interview_date = Column(
+        Date
+    )
 
-    client_feedback = Column(Text)
+    client_feedback = Column(
+        Text
+    )
 
-    decision_date = Column(Date)
+    decision_date = Column(
+        Date
+    )
 
-    notes = Column(Text)
+    notes = Column(
+        Text
+    )
 
-    # Relationships
     job = relationship(
         "Job",
         back_populates="candidates"
@@ -337,15 +472,24 @@ class Candidate(Base):
         back_populates="candidates"
     )
 
+    activities = relationship(
+        "Activity",
+        back_populates="candidate"
+    )
+
 
 # ============================================================
 # PLACEMENTS
 # ============================================================
 
 class Placement(Base):
+
     __tablename__ = "placements"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     client_id = Column(
         Integer,
@@ -365,14 +509,25 @@ class Placement(Base):
         nullable=True
     )
 
-    position = Column(String(200))
+    position = Column(
+        String(200)
+    )
 
-    start_date = Column(Date)
-    end_date = Column(Date)
+    start_date = Column(
+        Date
+    )
 
-    client_monthly_fee = Column(Float)
+    end_date = Column(
+        Date
+    )
 
-    worker_monthly_cost = Column(Float)
+    client_monthly_fee = Column(
+        Float
+    )
+
+    worker_monthly_cost = Column(
+        Float
+    )
 
     currency = Column(
         String(10),
@@ -389,9 +544,10 @@ class Placement(Base):
         default="Planned"
     )
 
-    notes = Column(Text)
+    notes = Column(
+        Text
+    )
 
-    # Relationships
     client = relationship(
         "Client",
         back_populates="placements"
@@ -417,8 +573,14 @@ class Placement(Base):
         back_populates="placement"
     )
 
+    activities = relationship(
+        "Activity",
+        back_populates="placement"
+    )
+
     @property
     def gross_margin(self):
+
         return (
             (self.client_monthly_fee or 0)
             - (self.worker_monthly_cost or 0)
@@ -441,13 +603,53 @@ class Placement(Base):
 # ============================================================
 
 class Activity(Base):
+
     __tablename__ = "activities"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     client_id = Column(
         Integer,
         ForeignKey("clients.id"),
+        nullable=True
+    )
+
+    contact_id = Column(
+        Integer,
+        ForeignKey("client_contacts.id"),
+        nullable=True
+    )
+
+    assigned_to_id = Column(
+        Integer,
+        ForeignKey("employees.id"),
+        nullable=True
+    )
+
+    job_id = Column(
+        Integer,
+        ForeignKey("jobs.id"),
+        nullable=True
+    )
+
+    candidate_id = Column(
+        Integer,
+        ForeignKey("candidates.id"),
+        nullable=True
+    )
+
+    placement_id = Column(
+        Integer,
+        ForeignKey("placements.id"),
+        nullable=True
+    )
+
+    contract_id = Column(
+        Integer,
+        ForeignKey("contracts.id"),
         nullable=True
     )
 
@@ -466,7 +668,9 @@ class Activity(Base):
         default=date.today
     )
 
-    due_date = Column(Date)
+    due_date = Column(
+        Date
+    )
 
     status = Column(
         String(50),
@@ -478,12 +682,42 @@ class Activity(Base):
         default="Medium"
     )
 
-    assigned_to = Column(String(100))
-
-    notes = Column(Text)
+    notes = Column(
+        Text
+    )
 
     client = relationship(
         "Client",
+        back_populates="activities"
+    )
+
+    contact = relationship(
+        "ClientContact",
+        back_populates="activities"
+    )
+
+    assigned_employee = relationship(
+        "Employee",
+        back_populates="activities"
+    )
+
+    job = relationship(
+        "Job",
+        back_populates="activities"
+    )
+
+    candidate = relationship(
+        "Candidate",
+        back_populates="activities"
+    )
+
+    placement = relationship(
+        "Placement",
+        back_populates="activities"
+    )
+
+    contract = relationship(
+        "Contract",
         back_populates="activities"
     )
 
@@ -493,9 +727,13 @@ class Activity(Base):
 # ============================================================
 
 class Contract(Base):
+
     __tablename__ = "contracts"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     client_id = Column(
         Integer,
@@ -518,11 +756,17 @@ class Contract(Base):
         String(100)
     )
 
-    start_date = Column(Date)
+    start_date = Column(
+        Date
+    )
 
-    end_date = Column(Date)
+    end_date = Column(
+        Date
+    )
 
-    contract_value = Column(Float)
+    contract_value = Column(
+        Float
+    )
 
     currency = Column(
         String(10),
@@ -534,13 +778,21 @@ class Contract(Base):
         default="Draft"
     )
 
-    signed_date = Column(Date)
+    signed_date = Column(
+        Date
+    )
 
-    renewal_date = Column(Date)
+    renewal_date = Column(
+        Date
+    )
 
-    document_link = Column(String(500))
+    document_link = Column(
+        String(500)
+    )
 
-    notes = Column(Text)
+    notes = Column(
+        Text
+    )
 
     client = relationship(
         "Client",
@@ -552,15 +804,24 @@ class Contract(Base):
         back_populates="contracts"
     )
 
+    activities = relationship(
+        "Activity",
+        back_populates="contract"
+    )
+
 
 # ============================================================
 # INVOICES
 # ============================================================
 
 class Invoice(Base):
+
     __tablename__ = "invoices"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     client_id = Column(
         Integer,
@@ -585,17 +846,33 @@ class Invoice(Base):
         default=date.today
     )
 
-    due_date = Column(Date)
+    due_date = Column(
+        Date
+    )
 
-    description = Column(Text)
+    description = Column(
+        Text
+    )
 
-    subtotal = Column(Float, default=0)
+    subtotal = Column(
+        Float,
+        default=0
+    )
 
-    tax = Column(Float, default=0)
+    tax = Column(
+        Float,
+        default=0
+    )
 
-    total_amount = Column(Float, default=0)
+    total_amount = Column(
+        Float,
+        default=0
+    )
 
-    amount_paid = Column(Float, default=0)
+    amount_paid = Column(
+        Float,
+        default=0
+    )
 
     currency = Column(
         String(10),
@@ -607,9 +884,13 @@ class Invoice(Base):
         default="Draft"
     )
 
-    document_link = Column(String(500))
+    document_link = Column(
+        String(500)
+    )
 
-    notes = Column(Text)
+    notes = Column(
+        Text
+    )
 
     client = relationship(
         "Client",
@@ -641,9 +922,13 @@ class Invoice(Base):
 # ============================================================
 
 class Payment(Base):
+
     __tablename__ = "payments"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(
+        Integer,
+        primary_key=True
+    )
 
     invoice_id = Column(
         Integer,
@@ -679,7 +964,9 @@ class Payment(Base):
         default="Received"
     )
 
-    notes = Column(Text)
+    notes = Column(
+        Text
+    )
 
     invoice = relationship(
         "Invoice",

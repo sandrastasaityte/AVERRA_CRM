@@ -2,249 +2,19 @@ import streamlit as st
 from datetime import date
 
 from database import get_session
-from models import Invoice, Client, Placement
+from models import Payment, Invoice
 
 
-def show_invoices():
+def show_payments():
 
-    st.title("Invoices")
-    st.caption("Create and manage client invoices.")
+    st.title("Payments")
+    st.caption("Record and track client invoice payments.")
 
     session = get_session()
 
     # ============================================================
-    # LOAD DATA
+    # LOAD INVOICES
     # ============================================================
-
-    clients = session.query(Client).order_by(
-        Client.company_name
-    ).all()
-
-    placements = session.query(Placement).order_by(
-        Placement.id.desc()
-    ).all()
-
-    if not clients:
-        st.warning("Please add a client first.")
-        session.close()
-        return
-
-    # ============================================================
-    # ADD INVOICE
-    # ============================================================
-
-    st.subheader("Create Invoice")
-
-    with st.form("add_invoice_form"):
-
-        client_options = {
-            f"{client.company_name} (ID: {client.id})": client.id
-            for client in clients
-        }
-
-        selected_client = st.selectbox(
-            "Client",
-            list(client_options.keys())
-        )
-
-        placement_options = {
-            "No placement": None
-        }
-
-        for placement in placements:
-
-            employee_name = "Unknown Employee"
-
-            if placement.employee:
-                employee_name = (
-                    f"{placement.employee.first_name} "
-                    f"{placement.employee.last_name or ''}"
-                ).strip()
-
-            placement_options[
-                f"Placement #{placement.id} - "
-                f"{employee_name} - "
-                f"{placement.position or 'No position'}"
-            ] = placement.id
-
-        selected_placement = st.selectbox(
-            "Related Placement",
-            list(placement_options.keys())
-        )
-
-        invoice_number = st.text_input(
-            "Invoice Number",
-            placeholder="Example: INV-2026-001"
-        )
-
-        description = st.text_area(
-            "Description",
-            placeholder="Example: Remote finance specialist services - October 2026"
-        )
-
-        # --------------------------------------------------------
-        # DATES
-        # --------------------------------------------------------
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            invoice_date = st.date_input(
-                "Invoice Date",
-                value=date.today()
-            )
-
-        with col2:
-
-            due_date = st.date_input(
-                "Due Date",
-                value=date.today()
-            )
-
-        # --------------------------------------------------------
-        # AMOUNTS
-        # --------------------------------------------------------
-
-        st.subheader("Invoice Amount")
-
-        col3, col4 = st.columns(2)
-
-        with col3:
-
-            subtotal = st.number_input(
-                "Subtotal",
-                min_value=0.0,
-                step=100.0,
-                format="%.2f"
-            )
-
-        with col4:
-
-            tax = st.number_input(
-                "Tax",
-                min_value=0.0,
-                step=10.0,
-                format="%.2f"
-            )
-
-        total_amount = subtotal + tax
-
-        st.info(
-            f"Invoice Total: **£{total_amount:,.2f}**"
-        )
-
-        # --------------------------------------------------------
-        # CURRENCY / STATUS
-        # --------------------------------------------------------
-
-        col5, col6 = st.columns(2)
-
-        with col5:
-
-            currency = st.selectbox(
-                "Currency",
-                [
-                    "GBP",
-                    "EUR",
-                    "USD",
-                    "INR"
-                ]
-            )
-
-        with col6:
-
-            status = st.selectbox(
-                "Invoice Status",
-                [
-                    "Draft",
-                    "Sent",
-                    "Partially Paid",
-                    "Paid",
-                    "Overdue",
-                    "Cancelled"
-                ]
-            )
-
-        document_link = st.text_input(
-            "Invoice Document Link",
-            placeholder="Paste invoice PDF/document link"
-        )
-
-        notes = st.text_area(
-            "Notes",
-            placeholder="Invoice notes..."
-        )
-
-        submitted = st.form_submit_button(
-            "Create Invoice",
-            use_container_width=True
-        )
-
-        if submitted:
-
-            if not invoice_number.strip():
-
-                st.error(
-                    "Invoice number is required."
-                )
-
-            elif due_date < invoice_date:
-
-                st.error(
-                    "Due date cannot be before invoice date."
-                )
-
-            else:
-
-                existing_invoice = session.query(
-                    Invoice
-                ).filter(
-                    Invoice.invoice_number
-                    == invoice_number.strip()
-                ).first()
-
-                if existing_invoice:
-
-                    st.error(
-                        "An invoice with this invoice number already exists."
-                    )
-
-                else:
-
-                    invoice = Invoice(
-                        client_id=client_options[selected_client],
-                        placement_id=placement_options[selected_placement],
-                        invoice_number=invoice_number.strip(),
-                        invoice_date=invoice_date,
-                        due_date=due_date,
-                        description=description.strip(),
-                        subtotal=subtotal,
-                        tax=tax,
-                        total_amount=total_amount,
-                        amount_paid=0,
-                        currency=currency,
-                        status=status,
-                        document_link=document_link.strip(),
-                        notes=notes.strip()
-                    )
-
-                    session.add(invoice)
-                    session.commit()
-
-                    st.success(
-                        "Invoice created successfully."
-                    )
-
-                    st.rerun()
-
-    # ============================================================
-    # INVOICE REGISTER
-    # ============================================================
-
-    st.divider()
-
-    st.subheader("Invoice Register")
 
     invoices = session.query(Invoice).order_by(
         Invoice.invoice_date.desc(),
@@ -252,9 +22,202 @@ def show_invoices():
     ).all()
 
     if not invoices:
+        st.warning("Please create an invoice first.")
+        session.close()
+        return
+
+    # ============================================================
+    # RECORD PAYMENT
+    # ============================================================
+
+    st.subheader("Record Payment")
+
+    with st.form("add_payment_form"):
+
+        invoice_options = {}
+
+        for invoice in invoices:
+
+            client_name = (
+                invoice.client.company_name
+                if invoice.client
+                else "Unknown Client"
+            )
+
+            balance = invoice.balance_due
+
+            invoice_options[
+                f"{invoice.invoice_number} | "
+                f"{client_name} | "
+                f"{invoice.currency} {balance:,.2f} outstanding"
+            ] = invoice.id
+
+        selected_invoice = st.selectbox(
+            "Invoice",
+            list(invoice_options.keys())
+        )
+
+        selected_invoice_id = invoice_options[selected_invoice]
+
+        invoice = session.query(Invoice).filter(
+            Invoice.id == selected_invoice_id
+        ).first()
+
+        if invoice:
+
+            st.info(
+                f"Invoice total: "
+                f"**{invoice.currency} "
+                f"{invoice.total_amount or 0:,.2f}**  \n"
+                f"Already paid: "
+                f"**{invoice.currency} "
+                f"{invoice.amount_paid or 0:,.2f}**  \n"
+                f"Outstanding: "
+                f"**{invoice.currency} "
+                f"{invoice.balance_due:,.2f}**"
+            )
+
+        # --------------------------------------------------------
+        # PAYMENT DETAILS
+        # --------------------------------------------------------
+
+        payment_date = st.date_input(
+            "Payment Date",
+            value=date.today()
+        )
+
+        amount = st.number_input(
+            "Payment Amount",
+            min_value=0.01,
+            step=100.00,
+            format="%.2f"
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            payment_method = st.selectbox(
+                "Payment Method",
+                [
+                    "Bank Transfer",
+                    "Revolut",
+                    "Wise",
+                    "Card",
+                    "Direct Debit",
+                    "Cash",
+                    "Other"
+                ]
+            )
+
+        with col2:
+
+            status = st.selectbox(
+                "Payment Status",
+                [
+                    "Received",
+                    "Pending",
+                    "Failed",
+                    "Reversed"
+                ]
+            )
+
+        reference = st.text_input(
+            "Payment Reference",
+            placeholder="Example: BANK-2026-001"
+        )
+
+        notes = st.text_area(
+            "Notes",
+            placeholder="Payment notes..."
+        )
+
+        submitted = st.form_submit_button(
+            "Record Payment",
+            use_container_width=True
+        )
+
+        if submitted:
+
+            if amount <= 0:
+
+                st.error(
+                    "Payment amount must be greater than zero."
+                )
+
+            elif not invoice:
+
+                st.error(
+                    "Selected invoice could not be found."
+                )
+
+            elif status == "Received" and amount > invoice.balance_due:
+
+                st.error(
+                    "Payment cannot be greater than the "
+                    "outstanding invoice balance."
+                )
+
+            else:
+
+                payment = Payment(
+                    invoice_id=invoice.id,
+                    payment_date=payment_date,
+                    amount=amount,
+                    currency=invoice.currency,
+                    payment_method=payment_method,
+                    reference=reference.strip(),
+                    status=status,
+                    notes=notes.strip()
+                )
+
+                session.add(payment)
+
+                # ------------------------------------------------
+                # UPDATE INVOICE
+                # ------------------------------------------------
+
+                if status == "Received":
+
+                    invoice.amount_paid = (
+                        invoice.amount_paid or 0
+                    ) + amount
+
+                    if invoice.amount_paid >= invoice.total_amount:
+
+                        invoice.amount_paid = invoice.total_amount
+
+                        invoice.status = "Paid"
+
+                    elif invoice.amount_paid > 0:
+
+                        invoice.status = "Partially Paid"
+
+                session.commit()
+
+                st.success(
+                    "Payment recorded successfully."
+                )
+
+                st.rerun()
+
+    # ============================================================
+    # PAYMENT REGISTER
+    # ============================================================
+
+    st.divider()
+
+    st.subheader("Payment Register")
+
+    payments = session.query(Payment).order_by(
+        Payment.payment_date.desc(),
+        Payment.id.desc()
+    ).all()
+
+    if not payments:
 
         st.info(
-            "No invoices have been created yet."
+            "No payments have been recorded yet."
         )
 
         session.close()
@@ -270,34 +233,35 @@ def show_invoices():
 
         search = st.text_input(
             "Search",
-            placeholder="Invoice number or client..."
+            placeholder="Invoice or reference..."
         )
 
     with col2:
 
         status_filter = st.selectbox(
-            "Status",
+            "Payment Status",
             [
                 "All",
-                "Draft",
-                "Sent",
-                "Partially Paid",
-                "Paid",
-                "Overdue",
-                "Cancelled"
+                "Received",
+                "Pending",
+                "Failed",
+                "Reversed"
             ]
         )
 
     with col3:
 
-        currency_filter = st.selectbox(
-            "Currency",
+        method_filter = st.selectbox(
+            "Payment Method",
             [
                 "All",
-                "GBP",
-                "EUR",
-                "USD",
-                "INR"
+                "Bank Transfer",
+                "Revolut",
+                "Wise",
+                "Card",
+                "Direct Debit",
+                "Cash",
+                "Other"
             ]
         )
 
@@ -305,66 +269,72 @@ def show_invoices():
     # APPLY FILTERS
     # ============================================================
 
-    filtered_invoices = invoices
+    filtered_payments = payments
 
     if search:
 
         search_lower = search.lower()
 
-        filtered_invoices = [
-            invoice
-            for invoice in filtered_invoices
-            if (
-                search_lower
-                in (invoice.invoice_number or "").lower()
+        filtered_payments = [
+            payment
+            for payment in filtered_payments
 
-                or (
-                    invoice.client
-                    and search_lower
-                    in (
-                        invoice.client.company_name or ""
-                    ).lower()
-                )
+            if (
+                payment.invoice
+                and search_lower
+                in (
+                    payment.invoice.invoice_number or ""
+                ).lower()
+            )
+
+            or (
+                search_lower
+                in (payment.reference or "").lower()
             )
         ]
 
     if status_filter != "All":
 
-        filtered_invoices = [
-            invoice
-            for invoice in filtered_invoices
-            if invoice.status == status_filter
+        filtered_payments = [
+            payment
+            for payment in filtered_payments
+            if payment.status == status_filter
         ]
 
-    if currency_filter != "All":
+    if method_filter != "All":
 
-        filtered_invoices = [
-            invoice
-            for invoice in filtered_invoices
-            if invoice.currency == currency_filter
+        filtered_payments = [
+            payment
+            for payment in filtered_payments
+            if payment.payment_method == method_filter
         ]
 
     # ============================================================
     # DISPLAY
     # ============================================================
 
-    if not filtered_invoices:
+    if not filtered_payments:
 
         st.info(
-            "No invoices match your filters."
+            "No payments match your filters."
         )
 
     else:
 
-        for invoice in filtered_invoices:
+        for payment in filtered_payments:
 
-            client_name = (
-                invoice.client.company_name
-                if invoice.client
-                else "Unknown Client"
+            invoice_number = (
+                payment.invoice.invoice_number
+                if payment.invoice
+                else "Unknown Invoice"
             )
 
-            balance_due = invoice.balance_due
+            client_name = (
+                payment.invoice.client.company_name
+                if payment.invoice
+                and payment.invoice.client
+                else "Unknown Client"
+            )
 
             with st.container(border=True):
 
@@ -373,38 +343,34 @@ def show_invoices():
                 )
 
                 # ------------------------------------------------
-                # INVOICE
+                # DATE
                 # ------------------------------------------------
 
                 with col1:
 
-                    st.write(
-                        f"**{invoice.invoice_number}**"
-                    )
+                    if payment.payment_date:
 
-                    if invoice.invoice_date:
-
-                        st.caption(
-                            invoice.invoice_date.strftime(
-                                "%d %b %Y"
-                            )
+                        st.write(
+                            f"**{payment.payment_date.strftime('%d %b %Y')}**"
                         )
 
+                    st.caption(
+                        payment.status
+                    )
+
                 # ------------------------------------------------
-                # CLIENT
+                # INVOICE / CLIENT
                 # ------------------------------------------------
 
                 with col2:
 
                     st.write(
-                        f"**{client_name}**"
+                        f"**{invoice_number}**"
                     )
 
-                    if invoice.description:
-
-                        st.caption(
-                            invoice.description
-                        )
+                    st.caption(
+                        client_name
+                    )
 
                 # ------------------------------------------------
                 # AMOUNT
@@ -413,58 +379,37 @@ def show_invoices():
                 with col3:
 
                     st.write(
-                        f"Total: **"
-                        f"{invoice.currency} "
-                        f"{invoice.total_amount or 0:,.2f}"
-                        f"**"
+                        f"**{payment.currency} "
+                        f"{payment.amount:,.2f}**"
                     )
 
-                    st.write(
-                        f"Paid: **"
-                        f"{invoice.currency} "
-                        f"{invoice.amount_paid or 0:,.2f}"
-                        f"**"
+                    st.caption(
+                        payment.payment_method
                     )
 
                 # ------------------------------------------------
-                # STATUS
+                # REFERENCE
                 # ------------------------------------------------
 
                 with col4:
 
-                    st.write(
-                        f"Status: **{invoice.status}**"
-                    )
+                    if payment.reference:
 
-                    st.write(
-                        f"Balance: **"
-                        f"{invoice.currency} "
-                        f"{balance_due:,.2f}"
-                        f"**"
-                    )
-
-                    if invoice.due_date:
-
-                        st.caption(
-                            f"Due: "
-                            f"{invoice.due_date.strftime('%d %b %Y')}"
+                        st.write(
+                            f"Reference: "
+                            f"**{payment.reference}**"
                         )
 
-                # ------------------------------------------------
-                # DOCUMENT
-                # ------------------------------------------------
+                    else:
 
-                if invoice.document_link:
+                        st.caption(
+                            "No payment reference"
+                        )
 
-                    st.link_button(
-                        "Open Invoice",
-                        invoice.document_link
-                    )
-
-                if invoice.notes:
+                if payment.notes:
 
                     st.caption(
-                        f"Notes: {invoice.notes}"
+                        f"Notes: {payment.notes}"
                     )
 
     session.close()
