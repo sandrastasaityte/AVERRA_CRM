@@ -1,23 +1,28 @@
 import streamlit as st
 from database import get_session
-from models import (
-    Activity,
-    Client,
-    ClientContact,
-    Employee,
-    Job,
-    Candidate,
-    Placement,
-    Contract,
-)
+from models import Activity
 
 
 def show_activities():
 
     st.title("Activities")
-    st.caption("Manage calls, emails, meetings, follow-ups and tasks.")
+    st.caption(
+        "Manage calls, emails, meetings, follow-ups and tasks."
+    )
 
     session = get_session()
+
+    # ============================================================
+    # GET RELATED MODELS FROM ACTIVITY RELATIONSHIPS
+    # ============================================================
+
+    Client = Activity.client.property.mapper.class_
+    ClientContact = Activity.contact.property.mapper.class_
+    Employee = Activity.assigned_to.property.mapper.class_
+    Job = Activity.job.property.mapper.class_
+    Candidate = Activity.candidate.property.mapper.class_
+    Placement = Activity.placement.property.mapper.class_
+    Contract = Activity.contract.property.mapper.class_
 
     # ============================================================
     # LOAD DATA
@@ -103,14 +108,32 @@ def show_activities():
         for candidate in candidates
     }
 
-    placement_options = {
-        f"{placement.position} - "
-        f"{placement.employee.first_name} "
-        f"{placement.employee.last_name}"
-        if placement.employee
-        else f"Placement #{placement.id}": placement.id
-        for placement in placements
-    }
+    placement_options = {}
+
+    for placement in placements:
+
+        if placement.employee:
+
+            employee_name = " ".join(
+                part
+                for part in [
+                    placement.employee.first_name,
+                    placement.employee.last_name
+                ]
+                if part
+            )
+
+            placement_name = (
+                f"{placement.position} - {employee_name}"
+            )
+
+        else:
+
+            placement_name = (
+                f"Placement #{placement.id}"
+            )
+
+        placement_options[placement_name] = placement.id
 
     contract_options = {
         f"{contract.contract_number} - "
@@ -118,9 +141,17 @@ def show_activities():
         for contract in contracts
     }
 
+    # ============================================================
+    # ACTIVITY FORM
+    # ============================================================
+
     with st.form("add_activity_form"):
 
         col1, col2 = st.columns(2)
+
+        # --------------------------------------------------------
+        # LEFT COLUMN
+        # --------------------------------------------------------
 
         with col1:
 
@@ -147,9 +178,12 @@ def show_activities():
             )
 
             due_date = st.date_input(
-                "Due Date",
-                value=None
+                "Due Date"
             )
+
+        # --------------------------------------------------------
+        # RIGHT COLUMN
+        # --------------------------------------------------------
 
         with col2:
 
@@ -187,6 +221,10 @@ def show_activities():
                 )
             )
 
+        # --------------------------------------------------------
+        # CONTACT / JOB
+        # --------------------------------------------------------
+
         col1, col2 = st.columns(2)
 
         with col1:
@@ -205,6 +243,10 @@ def show_activities():
                 )
             )
 
+        # --------------------------------------------------------
+        # CANDIDATE / PLACEMENT
+        # --------------------------------------------------------
+
         with col2:
 
             candidate = st.selectbox(
@@ -221,6 +263,10 @@ def show_activities():
                 )
             )
 
+        # --------------------------------------------------------
+        # CONTRACT
+        # --------------------------------------------------------
+
         contract = st.selectbox(
             "Contract",
             ["No Contract"] + list(
@@ -228,9 +274,17 @@ def show_activities():
             )
         )
 
+        # --------------------------------------------------------
+        # NOTES
+        # --------------------------------------------------------
+
         notes = st.text_area(
             "Notes"
         )
+
+        # --------------------------------------------------------
+        # SUBMIT
+        # --------------------------------------------------------
 
         submitted = st.form_submit_button(
             "Create Activity",
@@ -253,36 +307,43 @@ def show_activities():
                         if client != "No Client"
                         else None
                     ),
+
                     contact_id=(
                         contact_options[contact]
                         if contact != "No Contact"
                         else None
                     ),
+
                     assigned_to_id=(
                         employee_options[assigned_to]
                         if assigned_to != "Unassigned"
                         else None
                     ),
+
                     job_id=(
                         job_options[job]
                         if job != "No Job"
                         else None
                     ),
+
                     candidate_id=(
                         candidate_options[candidate]
                         if candidate != "No Candidate"
                         else None
                     ),
+
                     placement_id=(
                         placement_options[placement]
                         if placement != "No Placement"
                         else None
                     ),
+
                     contract_id=(
                         contract_options[contract]
                         if contract != "No Contract"
                         else None
                     ),
+
                     activity_type=activity_type,
                     subject=subject.strip(),
                     activity_date=activity_date,
@@ -332,6 +393,10 @@ def show_activities():
 
     col1, col2, col3 = st.columns(3)
 
+    # ------------------------------------------------------------
+    # STATUS FILTER
+    # ------------------------------------------------------------
+
     with col1:
 
         status_filter = st.selectbox(
@@ -344,6 +409,10 @@ def show_activities():
                 "Cancelled"
             ]
         )
+
+    # ------------------------------------------------------------
+    # ACTIVITY TYPE FILTER
+    # ------------------------------------------------------------
 
     with col2:
 
@@ -362,12 +431,20 @@ def show_activities():
             ]
         )
 
+    # ------------------------------------------------------------
+    # SEARCH
+    # ------------------------------------------------------------
+
     with col3:
 
         search = st.text_input(
             "Search",
             placeholder="Subject, client or notes..."
         )
+
+    # ============================================================
+    # APPLY FILTERS
+    # ============================================================
 
     filtered_activities = activities
 
@@ -397,8 +474,10 @@ def show_activities():
             if (
                 search_text
                 in (activity.subject or "").lower()
+
                 or search_text
                 in (activity.notes or "").lower()
+
                 or search_text
                 in (
                     activity.client.company_name
@@ -409,11 +488,12 @@ def show_activities():
         ]
 
     st.write(
-        f"Showing **{len(filtered_activities)}** activity/activities"
+        f"Showing **{len(filtered_activities)}** "
+        f"activity/activities"
     )
 
     # ============================================================
-    # DISPLAY
+    # DISPLAY ACTIVITIES
     # ============================================================
 
     for activity in filtered_activities:
@@ -423,6 +503,10 @@ def show_activities():
             col1, col2, col3, col4 = st.columns(
                 [3, 3, 2, 2]
             )
+
+            # ----------------------------------------------------
+            # ACTIVITY
+            # ----------------------------------------------------
 
             with col1:
 
@@ -440,33 +524,52 @@ def show_activities():
                         activity.client.company_name
                     )
 
+            # ----------------------------------------------------
+            # STATUS
+            # ----------------------------------------------------
+
             with col2:
 
-                st.write("**Status**")
+                st.write(
+                    "**Status**"
+                )
 
                 st.write(
                     activity.status or "—"
                 )
 
                 st.caption(
-                    f"Priority: {activity.priority or '—'}"
+                    f"Priority: "
+                    f"{activity.priority or '—'}"
                 )
+
+            # ----------------------------------------------------
+            # DATES
+            # ----------------------------------------------------
 
             with col3:
 
-                st.write("**Dates**")
+                st.write(
+                    "**Dates**"
+                )
 
                 if activity.activity_date:
 
                     st.write(
-                        f"Activity: {activity.activity_date}"
+                        f"Activity: "
+                        f"{activity.activity_date}"
                     )
 
                 if activity.due_date:
 
                     st.caption(
-                        f"Due: {activity.due_date}"
+                        f"Due: "
+                        f"{activity.due_date}"
                     )
+
+            # ----------------------------------------------------
+            # ASSIGNED EMPLOYEE
+            # ----------------------------------------------------
 
             with col4:
 
@@ -491,10 +594,18 @@ def show_activities():
                         "Unassigned"
                     )
 
+            # ----------------------------------------------------
+            # NOTES
+            # ----------------------------------------------------
+
             if activity.notes:
 
                 st.caption(
                     f"Notes: {activity.notes}"
                 )
+
+    # ============================================================
+    # CLOSE DATABASE SESSION
+    # ============================================================
 
     session.close()
