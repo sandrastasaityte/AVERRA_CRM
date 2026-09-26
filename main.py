@@ -1,415 +1,196 @@
 import streamlit as st
-from datetime import date
 
-from database import get_session
-from models import Payment, Invoice
+from database import create_database
 
+from screens.clients import show_clients
+from screens.client_contacts import show_client_contacts
+from screens.activities import show_activities
+from screens.employees import show_employees
+from screens.employee_skills import show_employee_skills
+from screens.jobs import show_jobs
+from screens.candidates import show_candidates
+from screens.placements import show_placements
+from screens.contracts import show_contracts
+from screens.invoices import show_invoices
+from screens.payments import show_payments
+from screens.reports import show_reports
 
-def show_payments():
 
-    st.title("Payments")
-    st.caption("Record and track client invoice payments.")
-
-    session = get_session()
+# ============================================================
+# PAGE CONFIGURATION
+# ============================================================
 
-    # ============================================================
-    # LOAD INVOICES
-    # ============================================================
+st.set_page_config(
+    page_title="AVERRA CRM",
+    page_icon="💼",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-    invoices = session.query(Invoice).order_by(
-        Invoice.invoice_date.desc(),
-        Invoice.id.desc()
-    ).all()
-
-    if not invoices:
-        st.warning("Please create an invoice first.")
-        session.close()
-        return
-
-    # ============================================================
-    # RECORD PAYMENT
-    # ============================================================
-
-    st.subheader("Record Payment")
-
-    with st.form("add_payment_form"):
-
-        invoice_options = {}
-
-        for invoice in invoices:
-
-            client_name = (
-                invoice.client.company_name
-                if invoice.client
-                else "Unknown Client"
-            )
-
-            balance = invoice.balance_due
-
-            invoice_options[
-                f"{invoice.invoice_number} | "
-                f"{client_name} | "
-                f"{invoice.currency} {balance:,.2f} outstanding"
-            ] = invoice.id
 
-        selected_invoice = st.selectbox(
-            "Invoice",
-            list(invoice_options.keys())
-        )
-
-        selected_invoice_id = invoice_options[selected_invoice]
+# ============================================================
+# CREATE DATABASE
+# ============================================================
 
-        invoice = session.query(Invoice).filter(
-            Invoice.id == selected_invoice_id
-        ).first()
+create_database()
 
-        if invoice:
-
-            st.info(
-                f"Invoice total: "
-                f"**{invoice.currency} "
-                f"{invoice.total_amount or 0:,.2f}**  \n"
-                f"Already paid: "
-                f"**{invoice.currency} "
-                f"{invoice.amount_paid or 0:,.2f}**  \n"
-                f"Outstanding: "
-                f"**{invoice.currency} "
-                f"{invoice.balance_due:,.2f}**"
-            )
-
-        # --------------------------------------------------------
-        # PAYMENT DETAILS
-        # --------------------------------------------------------
-
-        payment_date = st.date_input(
-            "Payment Date",
-            value=date.today()
-        )
 
-        amount = st.number_input(
-            "Payment Amount",
-            min_value=0.01,
-            step=100.00,
-            format="%.2f"
-        )
+# ============================================================
+# HEADER
+# ============================================================
 
-        col1, col2 = st.columns(2)
+st.sidebar.title("AVERRA CRM")
+st.sidebar.caption("Staffing & Outsourcing Management")
 
-        with col1:
 
-            payment_method = st.selectbox(
-                "Payment Method",
-                [
-                    "Bank Transfer",
-                    "Revolut",
-                    "Wise",
-                    "Card",
-                    "Direct Debit",
-                    "Cash",
-                    "Other"
-                ]
-            )
+# ============================================================
+# NAVIGATION
+# ============================================================
 
-        with col2:
+page = st.sidebar.radio(
+    "Navigation",
+    [
+        "Dashboard",
+        "Clients",
+        "Client Contacts",
+        "Activities",
+        "Employees",
+        "Employee Skills",
+        "Jobs",
+        "Candidates",
+        "Placements",
+        "Contracts",
+        "Invoices",
+        "Payments",
+        "Reports"
+    ]
+)
 
-            status = st.selectbox(
-                "Payment Status",
-                [
-                    "Received",
-                    "Pending",
-                    "Failed",
-                    "Reversed"
-                ]
-            )
 
-        reference = st.text_input(
-            "Payment Reference",
-            placeholder="Example: BANK-2026-001"
-        )
+# ============================================================
+# DASHBOARD
+# ============================================================
 
-        notes = st.text_area(
-            "Notes",
-            placeholder="Payment notes..."
-        )
+if page == "Dashboard":
 
-        submitted = st.form_submit_button(
-            "Record Payment",
-            use_container_width=True
-        )
+    st.title("AVERRA CRM")
+    st.subheader("Staffing & Outsourcing Management")
 
-        if submitted:
+    st.write(
+        "Welcome to the AVERRA CRM."
+    )
 
-            if amount <= 0:
+    st.info(
+        "Use the navigation menu on the left "
+        "to manage clients, employees, jobs, "
+        "candidates, placements, contracts, "
+        "invoices and payments."
+    )
 
-                st.error(
-                    "Payment amount must be greater than zero."
-                )
 
-            elif not invoice:
+# ============================================================
+# CLIENTS
+# ============================================================
 
-                st.error(
-                    "Selected invoice could not be found."
-                )
+elif page == "Clients":
 
-            elif status == "Received" and amount > invoice.balance_due:
+    show_clients()
 
-                st.error(
-                    "Payment cannot be greater than the "
-                    "outstanding invoice balance."
-                )
 
-            else:
+# ============================================================
+# CLIENT CONTACTS
+# ============================================================
 
-                payment = Payment(
-                    invoice_id=invoice.id,
-                    payment_date=payment_date,
-                    amount=amount,
-                    currency=invoice.currency,
-                    payment_method=payment_method,
-                    reference=reference.strip(),
-                    status=status,
-                    notes=notes.strip()
-                )
+elif page == "Client Contacts":
 
-                session.add(payment)
+    show_client_contacts()
 
-                # ------------------------------------------------
-                # UPDATE INVOICE
-                # ------------------------------------------------
 
-                if status == "Received":
+# ============================================================
+# ACTIVITIES
+# ============================================================
 
-                    invoice.amount_paid = (
-                        invoice.amount_paid or 0
-                    ) + amount
+elif page == "Activities":
 
-                    if invoice.amount_paid >= invoice.total_amount:
+    show_activities()
 
-                        invoice.amount_paid = invoice.total_amount
 
-                        invoice.status = "Paid"
+# ============================================================
+# EMPLOYEES
+# ============================================================
 
-                    elif invoice.amount_paid > 0:
+elif page == "Employees":
 
-                        invoice.status = "Partially Paid"
-
-                session.commit()
+    show_employees()
 
-                st.success(
-                    "Payment recorded successfully."
-                )
 
-                st.rerun()
-
-    # ============================================================
-    # PAYMENT REGISTER
-    # ============================================================
+# ============================================================
+# EMPLOYEE SKILLS
+# ============================================================
 
-    st.divider()
+elif page == "Employee Skills":
 
-    st.subheader("Payment Register")
-
-    payments = session.query(Payment).order_by(
-        Payment.payment_date.desc(),
-        Payment.id.desc()
-    ).all()
+    show_employee_skills()
 
-    if not payments:
 
-        st.info(
-            "No payments have been recorded yet."
-        )
+# ============================================================
+# JOBS
+# ============================================================
 
-        session.close()
-        return
+elif page == "Jobs":
 
-    # ============================================================
-    # FILTERS
-    # ============================================================
+    show_jobs()
 
-    col1, col2, col3 = st.columns(3)
 
-    with col1:
+# ============================================================
+# CANDIDATES
+# ============================================================
 
-        search = st.text_input(
-            "Search",
-            placeholder="Invoice or reference..."
-        )
+elif page == "Candidates":
 
-    with col2:
+    show_candidates()
 
-        status_filter = st.selectbox(
-            "Payment Status",
-            [
-                "All",
-                "Received",
-                "Pending",
-                "Failed",
-                "Reversed"
-            ]
-        )
 
-    with col3:
+# ============================================================
+# PLACEMENTS
+# ============================================================
 
-        method_filter = st.selectbox(
-            "Payment Method",
-            [
-                "All",
-                "Bank Transfer",
-                "Revolut",
-                "Wise",
-                "Card",
-                "Direct Debit",
-                "Cash",
-                "Other"
-            ]
-        )
+elif page == "Placements":
 
-    # ============================================================
-    # APPLY FILTERS
-    # ============================================================
+    show_placements()
 
-    filtered_payments = payments
 
-    if search:
+# ============================================================
+# CONTRACTS
+# ============================================================
 
-        search_lower = search.lower()
+elif page == "Contracts":
 
-        filtered_payments = [
-            payment
-            for payment in filtered_payments
+    show_contracts()
 
-            if (
-                payment.invoice
-                and search_lower
-                in (
-                    payment.invoice.invoice_number or ""
-                ).lower()
-            )
 
-            or (
-                search_lower
-                in (payment.reference or "").lower()
-            )
-        ]
+# ============================================================
+# INVOICES
+# ============================================================
 
-    if status_filter != "All":
+elif page == "Invoices":
 
-        filtered_payments = [
-            payment
-            for payment in filtered_payments
-            if payment.status == status_filter
-        ]
+    show_invoices()
 
-    if method_filter != "All":
 
-        filtered_payments = [
-            payment
-            for payment in filtered_payments
-            if payment.payment_method == method_filter
-        ]
+# ============================================================
+# PAYMENTS
+# ============================================================
 
-    # ============================================================
-    # DISPLAY
-    # ============================================================
+elif page == "Payments":
 
-    if not filtered_payments:
+    show_payments()
 
-        st.info(
-            "No payments match your filters."
-        )
 
-    else:
+# ============================================================
+# REPORTS
+# ============================================================
 
-        for payment in filtered_payments:
+elif page == "Reports":
 
-            invoice_number = (
-                payment.invoice.invoice_number
-                if payment.invoice
-                else "Unknown Invoice"
-            )
-
-            client_name = (
-                payment.invoice.client.company_name
-                if payment.invoice
-                and payment.invoice.client
-                else "Unknown Client"
-            )
-
-            with st.container(border=True):
-
-                col1, col2, col3, col4 = st.columns(
-                    [2, 3, 2, 2]
-                )
-
-                # ------------------------------------------------
-                # DATE
-                # ------------------------------------------------
-
-                with col1:
-
-                    if payment.payment_date:
-
-                        st.write(
-                            f"**{payment.payment_date.strftime('%d %b %Y')}**"
-                        )
-
-                    st.caption(
-                        payment.status
-                    )
-
-                # ------------------------------------------------
-                # INVOICE / CLIENT
-                # ------------------------------------------------
-
-                with col2:
-
-                    st.write(
-                        f"**{invoice_number}**"
-                    )
-
-                    st.caption(
-                        client_name
-                    )
-
-                # ------------------------------------------------
-                # AMOUNT
-                # ------------------------------------------------
-
-                with col3:
-
-                    st.write(
-                        f"**{payment.currency} "
-                        f"{payment.amount:,.2f}**"
-                    )
-
-                    st.caption(
-                        payment.payment_method
-                    )
-
-                # ------------------------------------------------
-                # REFERENCE
-                # ------------------------------------------------
-
-                with col4:
-
-                    if payment.reference:
-
-                        st.write(
-                            f"Reference: "
-                            f"**{payment.reference}**"
-                        )
-
-                    else:
-
-                        st.caption(
-                            "No payment reference"
-                        )
-
-                if payment.notes:
-
-                    st.caption(
-                        f"Notes: {payment.notes}"
-                    )
-
-    session.close()
+    show_reports()

@@ -1,566 +1,594 @@
 import streamlit as st
-import pandas as pd
 
 from database import get_session
-from models import (
-    Client,
-    Employee,
-    Job,
-    Candidate,
-    Placement,
-    Contract,
-    Invoice,
-    Payment,
-    Activity
-)
+from models import Client
 
 
-def show_reports():
+def show_clients():
 
-    st.title("Reports")
-    st.caption(
-        "Management reporting across sales, recruitment, placements and finance."
-    )
+    st.title("Clients")
+    st.subheader("AVERRA Client Management")
 
     session = get_session()
 
-    # ==========================================================
-    # DATA
-    # ==========================================================
+    # ============================================================
+    # ADD NEW CLIENT
+    # ============================================================
 
-    clients = session.query(Client).all()
-    employees = session.query(Employee).all()
-    jobs = session.query(Job).all()
-    candidates = session.query(Candidate).all()
-    placements = session.query(Placement).all()
-    contracts = session.query(Contract).all()
-    invoices = session.query(Invoice).all()
-    payments = session.query(Payment).all()
-    activities = session.query(Activity).all()
+    st.header("Add New Client")
 
-    # ==========================================================
-    # MANAGEMENT SUMMARY
-    # ==========================================================
+    with st.form("add_client_form"):
 
-    st.subheader("Management Summary")
+        col1, col2 = st.columns(2)
 
-    active_placements = [
-        p for p in placements
-        if p.status == "Active"
-    ]
+        with col1:
+            company_name = st.text_input("Company Name *")
+            industry = st.text_input("Industry")
+            website = st.text_input("Website")
+            country = st.text_input("Country", value="UK")
+            city = st.text_input("City")
 
-    open_jobs = [
-        j for j in jobs
-        if j.status not in ["Closed", "Cancelled"]
-    ]
+        with col2:
+            address = st.text_input("Address")
+            postcode = st.text_input("Postcode")
 
-    monthly_revenue = sum(
-        p.client_monthly_fee or 0
-        for p in active_placements
+            company_size = st.selectbox(
+                "Company Size",
+                [
+                    "",
+                    "1-10",
+                    "11-50",
+                    "51-200",
+                    "201-500",
+                    "501-1,000",
+                    "1,001-5,000",
+                    "5,001-10,000",
+                    "10,000+"
+                ]
+            )
+
+            status = st.selectbox(
+                "Status",
+                [
+                    "Lead",
+                    "Contacted",
+                    "Replied",
+                    "Call",
+                    "Proposal",
+                    "Negotiation",
+                    "Contract",
+                    "Won",
+                    "Lost"
+                ]
+            )
+
+            lead_source = st.selectbox(
+                "Lead Source",
+                [
+                    "",
+                    "LinkedIn",
+                    "Website",
+                    "Referral",
+                    "Email",
+                    "Cold Call",
+                    "Networking",
+                    "Job Board",
+                    "Other"
+                ]
+            )
+
+        account_owner = st.text_input("Account Owner")
+
+        notes = st.text_area("Notes")
+
+        submitted = st.form_submit_button(
+            "Add Client",
+            use_container_width=True
+        )
+
+        if submitted:
+
+            if not company_name.strip():
+                st.error("Company Name is required.")
+
+            else:
+
+                existing_client = (
+                    session.query(Client)
+                    .filter(
+                        Client.company_name.ilike(
+                            company_name.strip()
+                        )
+                    )
+                    .first()
+                )
+
+                if existing_client:
+
+                    st.error(
+                        "A client with this company name already exists."
+                    )
+
+                else:
+
+                    new_client = Client(
+                        company_name=company_name.strip(),
+                        industry=industry.strip(),
+                        website=website.strip(),
+                        country=country.strip(),
+                        city=city.strip(),
+                        address=address.strip(),
+                        postcode=postcode.strip(),
+                        company_size=company_size,
+                        status=status,
+                        lead_source=lead_source,
+                        account_owner=account_owner.strip(),
+                        notes=notes.strip()
+                    )
+
+                    session.add(new_client)
+                    session.commit()
+
+                    st.success(
+                        f"{company_name.strip()} added successfully."
+                    )
+
+                    st.rerun()
+
+    # ============================================================
+    # CLIENT LIST
+    # ============================================================
+
+    st.divider()
+
+    st.header("Client Register")
+
+    clients = (
+        session.query(Client)
+        .order_by(Client.company_name.asc())
+        .all()
     )
 
-    monthly_worker_cost = sum(
-        p.worker_monthly_cost or 0
-        for p in active_placements
-    )
+    if not clients:
 
-    monthly_gross_margin = (
-        monthly_revenue - monthly_worker_cost
-    )
+        st.info("No clients have been added yet.")
 
-    margin_percentage = (
-        (monthly_gross_margin / monthly_revenue) * 100
-        if monthly_revenue
-        else 0
-    )
+        session.close()
+        return
 
-    outstanding_invoices = sum(
-        max((i.total_amount or 0) - (i.amount_paid or 0), 0)
-        for i in invoices
-        if i.status not in ["Cancelled", "Paid"]
-    )
+    # ============================================================
+    # FILTERS
+    # ============================================================
 
-    total_paid = sum(
-        p.amount or 0
-        for p in payments
-        if p.status == "Received"
-    )
-
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric(
-            "Clients",
-            len(clients)
+
+        search = st.text_input(
+            "Search Clients",
+            placeholder="Company, industry or city..."
         )
 
     with col2:
-        st.metric(
-            "Employees",
-            len(employees)
+
+        status_filter = st.selectbox(
+            "Filter by Status",
+            [
+                "All",
+                "Lead",
+                "Contacted",
+                "Replied",
+                "Call",
+                "Proposal",
+                "Negotiation",
+                "Contract",
+                "Won",
+                "Lost"
+            ]
         )
 
     with col3:
-        st.metric(
-            "Open Jobs",
-            len(open_jobs)
-        )
 
-    with col4:
-        st.metric(
-            "Active Placements",
-            len(active_placements)
-        )
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric(
-            "Monthly Revenue",
-            f"£{monthly_revenue:,.2f}"
-        )
-
-    with col2:
-        st.metric(
-            "Worker Costs",
-            f"£{monthly_worker_cost:,.2f}"
-        )
-
-    with col3:
-        st.metric(
-            "Gross Margin",
-            f"£{monthly_gross_margin:,.2f}"
-        )
-
-    with col4:
-        st.metric(
-            "Margin %",
-            f"{margin_percentage:.1f}%"
-        )
-
-    st.divider()
-
-    # ==========================================================
-    # SALES PIPELINE
-    # ==========================================================
-
-    st.subheader("Sales Pipeline")
-
-    pipeline_statuses = [
-        "Lead",
-        "Contacted",
-        "Replied",
-        "Call",
-        "Proposal",
-        "Negotiation",
-        "Contract",
-        "Won",
-        "Lost"
-    ]
-
-    pipeline_data = []
-
-    for status in pipeline_statuses:
-
-        count = sum(
-            1
-            for client in clients
-            if client.status == status
-        )
-
-        pipeline_data.append(
+        industries = sorted(
             {
-                "Stage": status,
-                "Clients": count
+                client.industry
+                for client in clients
+                if client.industry
             }
         )
 
-    pipeline_df = pd.DataFrame(pipeline_data)
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.dataframe(
-            pipeline_df,
-            use_container_width=True,
-            hide_index=True
+        industry_filter = st.selectbox(
+            "Filter by Industry",
+            ["All"] + industries
         )
 
-    with col2:
+    # ============================================================
+    # APPLY FILTERS
+    # ============================================================
 
-        chart_data = pipeline_df.set_index("Stage")
+    filtered_clients = clients
 
-        st.bar_chart(
-            chart_data["Clients"]
-        )
+    if search:
 
-    # ==========================================================
-    # RECRUITMENT PIPELINE
-    # ==========================================================
+        search_text = search.lower()
 
-    st.divider()
-
-    st.subheader("Recruitment Pipeline")
-
-    job_status_data = (
-        pd.Series(
-            [job.status for job in jobs]
-        )
-        .value_counts()
-        .rename_axis("Status")
-        .reset_index(name="Jobs")
-    )
-
-    candidate_status_data = (
-        pd.Series(
-            [candidate.status for candidate in candidates]
-        )
-        .value_counts()
-        .rename_axis("Status")
-        .reset_index(name="Candidates")
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.write("**Jobs by Status**")
-
-        if job_status_data.empty:
-
-            st.info("No jobs available.")
-
-        else:
-
-            st.dataframe(
-                job_status_data,
-                use_container_width=True,
-                hide_index=True
+        filtered_clients = [
+            client
+            for client in filtered_clients
+            if (
+                search_text
+                in (client.company_name or "").lower()
+                or search_text
+                in (client.industry or "").lower()
+                or search_text
+                in (client.city or "").lower()
             )
-
-    with col2:
-
-        st.write("**Candidates by Status**")
-
-        if candidate_status_data.empty:
-
-            st.info("No candidates available.")
-
-        else:
-
-            st.dataframe(
-                candidate_status_data,
-                use_container_width=True,
-                hide_index=True
-            )
-
-    # ==========================================================
-    # PLACEMENT PROFITABILITY
-    # ==========================================================
-
-    st.divider()
-
-    st.subheader("Placement Profitability")
-
-    profitability_data = []
-
-    for placement in active_placements:
-
-        client_name = "Unknown"
-
-        employee_name = "Unknown"
-
-        job_title = "Unknown"
-
-        if placement.client:
-
-            client_name = placement.client.company_name
-
-        if placement.employee:
-
-            employee_name = (
-                f"{placement.employee.first_name} "
-                f"{placement.employee.last_name or ''}"
-            ).strip()
-
-        if placement.job:
-
-            job_title = placement.job.title
-
-        revenue = placement.client_monthly_fee or 0
-
-        cost = placement.worker_monthly_cost or 0
-
-        gross_margin = revenue - cost
-
-        margin = (
-            (gross_margin / revenue) * 100
-            if revenue
-            else 0
-        )
-
-        profitability_data.append(
-            {
-                "Client": client_name,
-                "Employee": employee_name,
-                "Position": job_title,
-                "Monthly Fee": revenue,
-                "Worker Cost": cost,
-                "Gross Margin": gross_margin,
-                "Margin %": margin
-            }
-        )
-
-    if profitability_data:
-
-        profitability_df = pd.DataFrame(
-            profitability_data
-        )
-
-        st.dataframe(
-            profitability_df.style.format(
-                {
-                    "Monthly Fee": "£{:,.2f}",
-                    "Worker Cost": "£{:,.2f}",
-                    "Gross Margin": "£{:,.2f}",
-                    "Margin %": "{:.1f}%"
-                }
-            ),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    else:
-
-        st.info(
-            "No active placements available."
-        )
-
-    # ==========================================================
-    # INVOICE REPORT
-    # ==========================================================
-
-    st.divider()
-
-    st.subheader("Invoice Report")
-
-    invoice_statuses = [
-        "Draft",
-        "Sent",
-        "Partially Paid",
-        "Paid",
-        "Overdue",
-        "Cancelled"
-    ]
-
-    invoice_data = []
-
-    for status in invoice_statuses:
-
-        matching = [
-            invoice
-            for invoice in invoices
-            if invoice.status == status
         ]
 
-        total = sum(
-            invoice.total_amount or 0
-            for invoice in matching
-        )
+    if status_filter != "All":
 
-        paid = sum(
-            invoice.amount_paid or 0
-            for invoice in matching
-        )
+        filtered_clients = [
+            client
+            for client in filtered_clients
+            if client.status == status_filter
+        ]
 
-        balance = total - paid
+    if industry_filter != "All":
 
-        invoice_data.append(
-            {
-                "Status": status,
-                "Invoices": len(matching),
-                "Total": total,
-                "Paid": paid,
-                "Balance": balance
-            }
-        )
+        filtered_clients = [
+            client
+            for client in filtered_clients
+            if client.industry == industry_filter
+        ]
 
-    invoice_df = pd.DataFrame(invoice_data)
-
-    st.dataframe(
-        invoice_df.style.format(
-            {
-                "Total": "£{:,.2f}",
-                "Paid": "£{:,.2f}",
-                "Balance": "£{:,.2f}"
-            }
-        ),
-        use_container_width=True,
-        hide_index=True
+    st.write(
+        f"Showing **{len(filtered_clients)}** client(s)"
     )
 
-    # ==========================================================
-    # OUTSTANDING / OVERDUE INVOICES
-    # ==========================================================
+    # ============================================================
+    # DISPLAY CLIENTS
+    # ============================================================
 
-    st.subheader("Outstanding Invoices")
+    for client in filtered_clients:
 
-    outstanding_data = []
+        with st.container(border=True):
 
-    for invoice in invoices:
-
-        balance = (
-            (invoice.total_amount or 0)
-            - (invoice.amount_paid or 0)
-        )
-
-        if balance <= 0:
-            continue
-
-        client_name = "Unknown"
-
-        if invoice.client:
-            client_name = invoice.client.company_name
-
-        outstanding_data.append(
-            {
-                "Invoice": invoice.invoice_number,
-                "Client": client_name,
-                "Invoice Date": invoice.invoice_date,
-                "Due Date": invoice.due_date,
-                "Status": invoice.status,
-                "Total": invoice.total_amount or 0,
-                "Paid": invoice.amount_paid or 0,
-                "Balance": balance
-            }
-        )
-
-    if outstanding_data:
-
-        outstanding_df = pd.DataFrame(
-            outstanding_data
-        )
-
-        st.dataframe(
-            outstanding_df.style.format(
-                {
-                    "Total": "£{:,.2f}",
-                    "Paid": "£{:,.2f}",
-                    "Balance": "£{:,.2f}"
-                }
-            ),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    else:
-
-        st.success(
-            "There are no outstanding invoices."
-        )
-
-    # ==========================================================
-    # PAYMENTS
-    # ==========================================================
-
-    st.divider()
-
-    st.subheader("Payment Summary")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.metric(
-            "Payments Received",
-            f"£{total_paid:,.2f}"
-        )
-
-    with col2:
-
-        st.metric(
-            "Outstanding Invoices",
-            f"£{outstanding_invoices:,.2f}"
-        )
-
-    payment_status_data = (
-        pd.Series(
-            [payment.status for payment in payments]
-        )
-        .value_counts()
-        .rename_axis("Status")
-        .reset_index(name="Payments")
-    )
-
-    if not payment_status_data.empty:
-
-        st.dataframe(
-            payment_status_data,
-            use_container_width=True,
-            hide_index=True
-        )
-
-    # ==========================================================
-    # ACTIVITY REPORT
-    # ==========================================================
-
-    st.divider()
-
-    st.subheader("Activity Report")
-
-    if activities:
-
-        activity_data = (
-            pd.Series(
-                [activity.activity_type for activity in activities]
+            col1, col2, col3, col4 = st.columns(
+                [3, 2, 3, 1]
             )
-            .value_counts()
-            .rename_axis("Activity Type")
-            .reset_index(name="Activities")
-        )
 
-        st.dataframe(
-            activity_data,
-            use_container_width=True,
-            hide_index=True
-        )
+            # ----------------------------------------------------
+            # COMPANY
+            # ----------------------------------------------------
 
-    else:
+            with col1:
 
-        st.info(
-            "No activities have been recorded."
-        )
+                st.subheader(
+                    client.company_name
+                )
 
-    # ==========================================================
-    # CONTRACT REPORT
-    # ==========================================================
+                if client.industry:
 
-    st.divider()
+                    st.write(
+                        client.industry
+                    )
 
-    st.subheader("Contract Report")
+                location = ", ".join(
+                    part
+                    for part in [
+                        client.city,
+                        client.country
+                    ]
+                    if part
+                )
 
-    contract_status_data = (
-        pd.Series(
-            [contract.status for contract in contracts]
-        )
-        .value_counts()
-        .rename_axis("Status")
-        .reset_index(name="Contracts")
+                if location:
+
+                    st.caption(location)
+
+            # ----------------------------------------------------
+            # STATUS
+            # ----------------------------------------------------
+
+            with col2:
+
+                st.write("**Status**")
+
+                st.write(
+                    client.status or "—"
+                )
+
+                if client.lead_source:
+
+                    st.caption(
+                        f"Source: {client.lead_source}"
+                    )
+
+            # ----------------------------------------------------
+            # DETAILS
+            # ----------------------------------------------------
+
+            with col3:
+
+                st.write("**Details**")
+
+                if client.website:
+
+                    st.write(
+                        client.website
+                    )
+
+                if client.company_size:
+
+                    st.caption(
+                        f"Size: {client.company_size}"
+                    )
+
+                if client.account_owner:
+
+                    st.caption(
+                        f"Owner: {client.account_owner}"
+                    )
+
+            # ----------------------------------------------------
+            # ACTION
+            # ----------------------------------------------------
+
+            with col4:
+
+                if st.button(
+                    "Edit",
+                    key=f"edit_{client.id}"
+                ):
+
+                    st.session_state[
+                        "editing_client_id"
+                    ] = client.id
+
+                    st.rerun()
+
+            if client.notes:
+
+                st.caption(
+                    f"Notes: {client.notes}"
+                )
+
+    # ============================================================
+    # EDIT CLIENT
+    # ============================================================
+
+    editing_id = st.session_state.get(
+        "editing_client_id"
     )
 
-    if not contract_status_data.empty:
+    if editing_id:
 
-        st.dataframe(
-            contract_status_data,
-            use_container_width=True,
-            hide_index=True
+        client = session.get(
+            Client,
+            editing_id
         )
 
-    else:
+        if client:
 
-        st.info(
-            "No contracts have been created."
-        )
+            st.divider()
+
+            st.header(
+                f"Edit Client: {client.company_name}"
+            )
+
+            with st.form(
+                f"edit_client_{client.id}"
+            ):
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+
+                    edit_company_name = st.text_input(
+                        "Company Name",
+                        value=client.company_name or ""
+                    )
+
+                    edit_industry = st.text_input(
+                        "Industry",
+                        value=client.industry or ""
+                    )
+
+                    edit_website = st.text_input(
+                        "Website",
+                        value=client.website or ""
+                    )
+
+                    edit_country = st.text_input(
+                        "Country",
+                        value=client.country or ""
+                    )
+
+                    edit_city = st.text_input(
+                        "City",
+                        value=client.city or ""
+                    )
+
+                with col2:
+
+                    edit_address = st.text_input(
+                        "Address",
+                        value=client.address or ""
+                    )
+
+                    edit_postcode = st.text_input(
+                        "Postcode",
+                        value=client.postcode or ""
+                    )
+
+                    sizes = [
+                        "",
+                        "1-10",
+                        "11-50",
+                        "51-200",
+                        "201-500",
+                        "501-1,000",
+                        "1,001-5,000",
+                        "5,001-10,000",
+                        "10,000+"
+                    ]
+
+                    current_size = (
+                        client.company_size
+                        if client.company_size in sizes
+                        else ""
+                    )
+
+                    edit_company_size = st.selectbox(
+                        "Company Size",
+                        sizes,
+                        index=sizes.index(current_size)
+                    )
+
+                    statuses = [
+                        "Lead",
+                        "Contacted",
+                        "Replied",
+                        "Call",
+                        "Proposal",
+                        "Negotiation",
+                        "Contract",
+                        "Won",
+                        "Lost"
+                    ]
+
+                    current_status = (
+                        client.status
+                        if client.status in statuses
+                        else "Lead"
+                    )
+
+                    edit_status = st.selectbox(
+                        "Status",
+                        statuses,
+                        index=statuses.index(current_status)
+                    )
+
+                    sources = [
+                        "",
+                        "LinkedIn",
+                        "Website",
+                        "Referral",
+                        "Email",
+                        "Cold Call",
+                        "Networking",
+                        "Job Board",
+                        "Other"
+                    ]
+
+                    current_source = (
+                        client.lead_source
+                        if client.lead_source in sources
+                        else ""
+                    )
+
+                    edit_lead_source = st.selectbox(
+                        "Lead Source",
+                        sources,
+                        index=sources.index(current_source)
+                    )
+
+                edit_account_owner = st.text_input(
+                    "Account Owner",
+                    value=client.account_owner or ""
+                )
+
+                edit_notes = st.text_area(
+                    "Notes",
+                    value=client.notes or ""
+                )
+
+                save = st.form_submit_button(
+                    "Save Changes",
+                    use_container_width=True
+                )
+
+                if save:
+
+                    if not edit_company_name.strip():
+
+                        st.error(
+                            "Company Name is required."
+                        )
+
+                    else:
+
+                        client.company_name = (
+                            edit_company_name.strip()
+                        )
+
+                        client.industry = (
+                            edit_industry.strip()
+                        )
+
+                        client.website = (
+                            edit_website.strip()
+                        )
+
+                        client.country = (
+                            edit_country.strip()
+                        )
+
+                        client.city = (
+                            edit_city.strip()
+                        )
+
+                        client.address = (
+                            edit_address.strip()
+                        )
+
+                        client.postcode = (
+                            edit_postcode.strip()
+                        )
+
+                        client.company_size = (
+                            edit_company_size
+                        )
+
+                        client.status = (
+                            edit_status
+                        )
+
+                        client.lead_source = (
+                            edit_lead_source
+                        )
+
+                        client.account_owner = (
+                            edit_account_owner.strip()
+                        )
+
+                        client.notes = (
+                            edit_notes.strip()
+                        )
+
+                        session.commit()
+
+                        st.session_state.pop(
+                            "editing_client_id",
+                            None
+                        )
+
+                        st.success(
+                            "Client updated successfully."
+                        )
+
+                        st.rerun()
+
+            if st.button(
+                "Cancel",
+                key=f"cancel_edit_{client.id}"
+            ):
+
+                st.session_state.pop(
+                    "editing_client_id",
+                    None
+                )
+
+                st.rerun()
 
     session.close()

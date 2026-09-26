@@ -1,179 +1,554 @@
-```python
 import streamlit as st
-from datetime import date
 
 from database import get_session
-from models import Candidate, Employee, Job
-
-
-CANDIDATE_STATUSES = [
-    "New",
-    "Screening",
-    "Interviewing",
-    "Shortlisted",
-    "Offered",
-    "Placed",
-    "Unavailable",
-    "Rejected",
-    "Inactive"
-]
+from models import Candidate, Job, Employee, Client
 
 
 def show_candidates():
 
     st.title("Candidates")
-    st.caption(
-        "Manage employee submissions to client jobs, recruitment stages and candidate decisions."
-    )
+    st.caption("Manage employee submissions and recruitment pipeline.")
 
     session = get_session()
-
-    # ============================================================
-    # GET EMPLOYEES AND JOBS
-    # ============================================================
-
-    employees = (
-        session.query(Employee)
-        .order_by(Employee.first_name, Employee.last_name)
-        .all()
-    )
-
-    jobs = (
-        session.query(Job)
-        .order_by(Job.position)
-        .all()
-    )
 
     # ============================================================
     # ADD CANDIDATE
     # ============================================================
 
-    st.subheader("Submit Candidate")
+    st.header("Submit Candidate")
+
+    jobs = (
+        session.query(Job)
+        .join(Client)
+        .order_by(Job.date_opened.desc())
+        .all()
+    )
+
+    employees = (
+        session.query(Employee)
+        .order_by(
+            Employee.first_name.asc(),
+            Employee.last_name.asc()
+        )
+        .all()
+    )
+
+    if not jobs:
+
+        st.info(
+            "Please create a Job before submitting a candidate."
+        )
+
+        session.close()
+        return
 
     if not employees:
-        st.warning(
-            "No employees exist yet. Add an employee before submitting a candidate."
+
+        st.info(
+            "Please add an Employee before submitting a candidate."
         )
 
-    elif not jobs:
-        st.warning(
-            "No jobs exist yet. Add a job before submitting a candidate."
+        session.close()
+        return
+
+    job_options = {
+        f"{job.position} - {job.client.company_name}": job.id
+        for job in jobs
+    }
+
+    employee_options = {
+        (
+            f"{employee.first_name} "
+            f"{employee.last_name} - "
+            f"{employee.role or 'No role'}"
+        ): employee.id
+        for employee in employees
+    }
+
+    with st.form("add_candidate_form"):
+
+        selected_job = st.selectbox(
+            "Job *",
+            list(job_options.keys())
         )
 
-    else:
+        selected_employee = st.selectbox(
+            "Employee *",
+            list(employee_options.keys())
+        )
 
-        employee_options = {
-            f"{employee.first_name} {employee.last_name} "
-            f"({employee.role or 'No role'})": employee.id
-            for employee in employees
-        }
+        date_submitted = st.date_input(
+            "Date Submitted"
+        )
 
-        job_options = {
-            f"{job.position} — {job.client.company_name}": job.id
-            for job in jobs
-        }
+        status = st.selectbox(
+            "Candidate Status",
+            [
+                "Submitted",
+                "Shortlisted",
+                "Interview",
+                "Offer",
+                "Placed",
+                "Rejected",
+                "Withdrawn"
+            ]
+        )
 
-        with st.form("add_candidate_form"):
+        interview_date = st.date_input(
+            "Interview Date",
+            value=None
+        )
 
-            col1, col2 = st.columns(2)
+        client_feedback = st.text_area(
+            "Client Feedback"
+        )
+
+        notes = st.text_area(
+            "Notes"
+        )
+
+        submitted = st.form_submit_button(
+            "Submit Candidate",
+            use_container_width=True
+        )
+
+        if submitted:
+
+            job_id = job_options[selected_job]
+
+            employee_id = employee_options[
+                selected_employee
+            ]
+
+            candidate = Candidate(
+                job_id=job_id,
+                employee_id=employee_id,
+                date_submitted=date_submitted,
+                status=status,
+                interview_date=interview_date,
+                client_feedback=client_feedback.strip(),
+                notes=notes.strip()
+            )
+
+            session.add(candidate)
+            session.commit()
+
+            st.success(
+                "Candidate submitted successfully."
+            )
+
+            st.rerun()
+
+    # ============================================================
+    # CANDIDATE REGISTER
+    # ============================================================
+
+    st.divider()
+
+    st.header("Candidate Register")
+
+    candidates = (
+        session.query(Candidate)
+        .order_by(
+            Candidate.date_submitted.desc()
+        )
+        .all()
+    )
+
+    if not candidates:
+
+        st.info(
+            "No candidates have been submitted yet."
+        )
+
+        session.close()
+        return
+
+    # ============================================================
+    # FILTERS
+    # ============================================================
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        search = st.text_input(
+            "Search",
+            placeholder="Candidate, job or company..."
+        )
+
+    with col2:
+
+        status_filter = st.selectbox(
+            "Status",
+            [
+                "All",
+                "Submitted",
+                "Shortlisted",
+                "Interview",
+                "Offer",
+                "Placed",
+                "Rejected",
+                "Withdrawn"
+            ]
+        )
+
+    # ============================================================
+    # APPLY FILTERS
+    # ============================================================
+
+    filtered_candidates = candidates
+
+    if search:
+
+        search_text = search.lower()
+
+        filtered_candidates = [
+            candidate
+            for candidate in filtered_candidates
+            if (
+                search_text
+                in (
+                    f"{candidate.employee.first_name if candidate.employee else ''} "
+                    f"{candidate.employee.last_name if candidate.employee else ''}"
+                ).lower()
+                or search_text
+                in (
+                    candidate.job.position
+                    if candidate.job
+                    else ""
+                ).lower()
+                or search_text
+                in (
+                    candidate.job.client.company_name
+                    if candidate.job and candidate.job.client
+                    else ""
+                ).lower()
+            )
+        ]
+
+    if status_filter != "All":
+
+        filtered_candidates = [
+            candidate
+            for candidate in filtered_candidates
+            if candidate.status == status_filter
+        ]
+
+    st.write(
+        f"Showing **{len(filtered_candidates)}** candidate(s)"
+    )
+
+    # ============================================================
+    # DISPLAY CANDIDATES
+    # ============================================================
+
+    for candidate in filtered_candidates:
+
+        with st.container(border=True):
+
+            col1, col2, col3, col4 = st.columns(
+                [3, 3, 2, 1]
+            )
+
+            # ----------------------------------------------------
+            # CANDIDATE
+            # ----------------------------------------------------
 
             with col1:
 
-                selected_employee = st.selectbox(
-                    "Employee / Candidate",
-                    list(employee_options.keys())
-                )
+                if candidate.employee:
 
-                date_submitted = st.date_input(
-                    "Date Submitted",
-                    value=date.today()
-                )
+                    employee_name = " ".join(
+                        part
+                        for part in [
+                            candidate.employee.first_name,
+                            candidate.employee.last_name
+                        ]
+                        if part
+                    )
 
-                status = st.selectbox(
-                    "Status",
-                    CANDIDATE_STATUSES
-                )
+                    st.subheader(
+                        employee_name
+                    )
+
+                    if candidate.employee.role:
+
+                        st.write(
+                            candidate.employee.role
+                        )
+
+                else:
+
+                    st.subheader(
+                        "Unknown Employee"
+                    )
+
+            # ----------------------------------------------------
+            # JOB
+            # ----------------------------------------------------
 
             with col2:
 
-                selected_job = st.selectbox(
-                    "Job",
-                    list(job_options.keys())
-                )
+                st.write("**Job**")
 
-                interview_date = st.date_input(
-                    "Interview Date",
-                    value=None
-                )
+                if candidate.job:
 
-                decision_date = st.date_input(
-                    "Decision Date",
-                    value=None
-                )
-
-            client_feedback = st.text_area(
-                "Client Feedback",
-                placeholder="Enter feedback received from the client..."
-            )
-
-            notes = st.text_area(
-                "Notes",
-                placeholder="Recruitment notes, interview details, next steps..."
-            )
-
-            submitted = st.form_submit_button(
-                "Submit Candidate",
-                use_container_width=True
-            )
-
-            if submitted:
-
-                employee_id = employee_options[selected_employee]
-                job_id = job_options[selected_job]
-
-                # ------------------------------------------------
-                # CHECK FOR DUPLICATE SUBMISSION
-                # ------------------------------------------------
-
-                duplicate = (
-                    session.query(Candidate)
-                    .filter(
-                        Candidate.employee_id == employee_id,
-                        Candidate.job_id == job_id
+                    st.write(
+                        candidate.job.position
                     )
-                    .first()
+
+                    if candidate.job.client:
+
+                        st.caption(
+                            candidate.job.client.company_name
+                        )
+
+                else:
+
+                    st.write("—")
+
+            # ----------------------------------------------------
+            # STATUS
+            # ----------------------------------------------------
+
+            with col3:
+
+                st.write("**Status**")
+
+                st.write(
+                    candidate.status or "—"
                 )
 
-                if duplicate:
-                    st.error(
-                        "This employee has already been submitted for this job."
+                if candidate.date_submitted:
+
+                    st.caption(
+                        f"Submitted: "
+                        f"{candidate.date_submitted}"
+                    )
+
+                if candidate.interview_date:
+
+                    st.caption(
+                        f"Interview: "
+                        f"{candidate.interview_date}"
+                    )
+
+            # ----------------------------------------------------
+            # EDIT
+            # ----------------------------------------------------
+
+            with col4:
+
+                if st.button(
+                    "Edit",
+                    key=f"edit_candidate_{candidate.id}"
+                ):
+
+                    st.session_state[
+                        "editing_candidate_id"
+                    ] = candidate.id
+
+                    st.rerun()
+
+            if candidate.client_feedback:
+
+                st.caption(
+                    f"Client Feedback: "
+                    f"{candidate.client_feedback}"
+                )
+
+            if candidate.notes:
+
+                st.caption(
+                    f"Notes: {candidate.notes}"
+                )
+
+    # ============================================================
+    # EDIT CANDIDATE
+    # ============================================================
+
+    editing_id = st.session_state.get(
+        "editing_candidate_id"
+    )
+
+    if editing_id:
+
+        candidate = session.get(
+            Candidate,
+            editing_id
+        )
+
+        if candidate:
+
+            st.divider()
+
+            st.header(
+                "Edit Candidate"
+            )
+
+            with st.form(
+                f"edit_candidate_form_{candidate.id}"
+            ):
+
+                job_names = list(
+                    job_options.keys()
+                )
+
+                current_job_name = None
+
+                for name, job_id in job_options.items():
+
+                    if job_id == candidate.job_id:
+
+                        current_job_name = name
+                        break
+
+                if current_job_name in job_names:
+
+                    job_index = job_names.index(
+                        current_job_name
                     )
 
                 else:
 
-                    candidate = Candidate(
-                        employee_id=employee_id,
-                        job_id=job_id,
-                        date_submitted=date_submitted,
-                        status=status,
-                        interview_date=interview_date,
-                        client_feedback=client_feedback.strip(),
-                        decision_date=decision_date,
-                        notes=notes.strip()
+                    job_index = 0
+
+                employee_names = list(
+                    employee_options.keys()
+                )
+
+                current_employee_name = None
+
+                for name, employee_id in employee_options.items():
+
+                    if employee_id == candidate.employee_id:
+
+                        current_employee_name = name
+                        break
+
+                if current_employee_name in employee_names:
+
+                    employee_index = employee_names.index(
+                        current_employee_name
                     )
 
-                    session.add(candidate)
+                else:
+
+                    employee_index = 0
+
+                edit_job = st.selectbox(
+                    "Job",
+                    job_names,
+                    index=job_index
+                )
+
+                edit_employee = st.selectbox(
+                    "Employee",
+                    employee_names,
+                    index=employee_index
+                )
+
+                edit_statuses = [
+                    "Submitted",
+                    "Shortlisted",
+                    "Interview",
+                    "Offer",
+                    "Placed",
+                    "Rejected",
+                    "Withdrawn"
+                ]
+
+                current_status = (
+                    candidate.status
+                    if candidate.status in edit_statuses
+                    else "Submitted"
+                )
+
+                edit_status = st.selectbox(
+                    "Status",
+                    edit_statuses,
+                    index=edit_statuses.index(
+                        current_status
+                    )
+                )
+
+                edit_date_submitted = st.date_input(
+                    "Date Submitted",
+                    value=candidate.date_submitted
+                )
+
+                edit_interview_date = st.date_input(
+                    "Interview Date",
+                    value=candidate.interview_date
+                )
+
+                edit_feedback = st.text_area(
+                    "Client Feedback",
+                    value=candidate.client_feedback or ""
+                )
+
+                edit_notes = st.text_area(
+                    "Notes",
+                    value=candidate.notes or ""
+                )
+
+                save = st.form_submit_button(
+                    "Save Changes",
+                    use_container_width=True
+                )
+
+                if save:
+
+                    candidate.job_id = job_options[
+                        edit_job
+                    ]
+
+                    candidate.employee_id = employee_options[
+                        edit_employee
+                    ]
+
+                    candidate.status = edit_status
+
+                    candidate.date_submitted = (
+                        edit_date_submitted
+                    )
+
+                    candidate.interview_date = (
+                        edit_interview_date
+                    )
+
+                    candidate.client_feedback = (
+                        edit_feedback.strip()
+                    )
+
+                    candidate.notes = (
+                        edit_notes.strip()
+                    )
+
                     session.commit()
 
+                    st.session_state.pop(
+                        "editing_candidate_id",
+                        None
+                    )
+
                     st.success(
-                        "Candidate submitted successfully."
+                        "Candidate updated successfully."
                     )
 
                     st.rerun()
 
-    st.divider()
+            if st.button(
+                "Cancel",
+                key=f"cancel_candidate_{candidate.id}"
+            ):
 
-    # ============================================================
-    # CANDIDATE REGISTER
-    # ==========
-```
+                st.session_state.pop(
+                    "editing_candidate_id",
+                    None
+                )
+
+                st.rerun()
+
+    session.close()
