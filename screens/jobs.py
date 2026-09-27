@@ -1,3 +1,4 @@
+
 import streamlit as st
 from datetime import date
 
@@ -45,6 +46,7 @@ WORK_PATTERNS = [
 
 def clean_text(value):
     """Safely return cleaned text."""
+
     if value is None:
         return ""
 
@@ -53,7 +55,9 @@ def clean_text(value):
 
 def get_client_name(job):
     """Return the client's company name."""
+
     if job.client:
+
         return (
             clean_text(job.client.company_name)
             or "Unknown Client"
@@ -64,26 +68,38 @@ def get_client_name(job):
 
 def get_candidate_count(job):
     """Safely return candidate count."""
-    candidates = getattr(job, "candidates", None)
+
+    candidates = getattr(
+        job,
+        "candidates",
+        None,
+    )
 
     if candidates is None:
         return 0
 
     try:
         return len(candidates)
+
     except TypeError:
         return 0
 
 
 def get_placement_count(job):
     """Safely return placement count."""
-    placements = getattr(job, "placements", None)
+
+    placements = getattr(
+        job,
+        "placements",
+        None,
+    )
 
     if placements is None:
         return 0
 
     try:
         return len(placements)
+
     except TypeError:
         return 0
 
@@ -98,12 +114,19 @@ def get_priority_icon(priority):
         "Urgent": "🔴",
     }
 
-    return icons.get(priority, "⚪")
+    return icons.get(
+        priority,
+        "⚪",
+    )
 
 
 def get_job_status(job):
     """Return a safe job status."""
-    return clean_text(job.status) or "Open"
+
+    return (
+        clean_text(job.status)
+        or "Open"
+    )
 
 
 def get_days_to_closing(job):
@@ -112,7 +135,10 @@ def get_days_to_closing(job):
     if not job.closing_date:
         return None
 
-    return (job.closing_date - date.today()).days
+    return (
+        job.closing_date
+        - date.today()
+    ).days
 
 
 def get_closing_label(job):
@@ -124,7 +150,9 @@ def get_closing_label(job):
         return "No closing date"
 
     if days < 0:
-        return f"Closed {abs(days)} day(s) ago"
+        return (
+            f"Closed {abs(days)} day(s) ago"
+        )
 
     if days == 0:
         return "Closes today"
@@ -132,7 +160,9 @@ def get_closing_label(job):
     if days == 1:
         return "Closes tomorrow"
 
-    return f"{days} days remaining"
+    return (
+        f"{days} days remaining"
+    )
 
 
 # ============================================================
@@ -144,7 +174,8 @@ def show_jobs():
     st.title("Jobs")
 
     st.caption(
-        "Create and manage client job requirements, vacancies and recruitment activity."
+        "Create and manage client job requirements, "
+        "vacancies and recruitment activity."
     )
 
     session = get_session()
@@ -154,9 +185,11 @@ def show_jobs():
     # ========================================================
 
     if "editing_job_id" not in st.session_state:
+
         st.session_state.editing_job_id = None
 
     if "confirm_delete_job_id" not in st.session_state:
+
         st.session_state.confirm_delete_job_id = None
 
     try:
@@ -185,7 +218,10 @@ def show_jobs():
 
         editing_job = None
 
-        if st.session_state.editing_job_id is not None:
+        if (
+            st.session_state.editing_job_id
+            is not None
+        ):
 
             editing_job = session.get(
                 Job,
@@ -203,7 +239,8 @@ def show_jobs():
         if editing_job:
 
             st.subheader(
-                f"Edit Job — {clean_text(editing_job.position)}"
+                f"Edit Job — "
+                f"{clean_text(editing_job.position)}"
             )
 
         else:
@@ -215,13 +252,20 @@ def show_jobs():
         # ====================================================
 
         client_options = {
-            f"{clean_text(client.company_name)} "
-            f"(ID: {client.id})": client.id
+            (
+                f"{clean_text(client.company_name)} "
+                f"(ID: {client.id})"
+            ): client.id
             for client in clients
         }
 
-        client_labels = list(client_options.keys())
-        client_ids = list(client_options.values())
+        client_labels = list(
+            client_options.keys()
+        )
+
+        client_ids = list(
+            client_options.values()
+        )
 
         if (
             editing_job
@@ -265,12 +309,15 @@ def show_jobs():
                 position = st.text_input(
                     "Position",
                     value=(
-                        clean_text(editing_job.position)
+                        clean_text(
+                            editing_job.position
+                        )
                         if editing_job
                         else ""
                     ),
                     placeholder=(
-                        "Example: Remote Finance Specialist"
+                        "Example: "
+                        "Remote Finance Specialist"
                     ),
                 )
 
@@ -279,7 +326,9 @@ def show_jobs():
                 department = st.text_input(
                     "Department",
                     value=(
-                        clean_text(editing_job.department)
+                        clean_text(
+                            editing_job.department
+                        )
                         if editing_job
                         else ""
                     ),
@@ -289,7 +338,9 @@ def show_jobs():
             skills_required = st.text_area(
                 "Skills Required",
                 value=(
-                    clean_text(editing_job.skills_required)
+                    clean_text(
+                        editing_job.skills_required
+                    )
                     if editing_job
                     else ""
                 ),
@@ -309,7 +360,8 @@ def show_jobs():
                     else ""
                 ),
                 placeholder=(
-                    "Example: 3+ years in finance operations"
+                    "Example: 3+ years "
+                    "in finance operations"
                 ),
             )
 
@@ -330,7 +382,8 @@ def show_jobs():
                     format="%.2f",
                     value=(
                         float(
-                            editing_job.client_budget or 0.0
+                            editing_job.client_budget
+                            or 0.0
                         )
                         if editing_job
                         else 0.0
@@ -340,14 +393,19 @@ def show_jobs():
             with budget_col2:
 
                 current_currency = (
-                    clean_text(editing_job.currency)
+                    clean_text(
+                        editing_job.currency
+                    )
                     if editing_job
                     else "GBP"
                 )
 
                 currency_index = (
-                    CURRENCIES.index(current_currency)
-                    if current_currency in CURRENCIES
+                    CURRENCIES.index(
+                        current_currency
+                    )
+                    if current_currency
+                    in CURRENCIES
                     else 0
                 )
 
@@ -361,7 +419,9 @@ def show_jobs():
             # OPENINGS / WORK PATTERN
             # =================================================
 
-            openings_col1, openings_col2 = st.columns(2)
+            openings_col1, openings_col2 = (
+                st.columns(2)
+            )
 
             with openings_col1:
 
@@ -370,7 +430,10 @@ def show_jobs():
                     min_value=1,
                     step=1,
                     value=(
-                        int(editing_job.openings or 1)
+                        int(
+                            editing_job.openings
+                            or 1
+                        )
                         if editing_job
                         else 1
                     ),
@@ -379,7 +442,9 @@ def show_jobs():
             with openings_col2:
 
                 current_work_pattern = (
-                    clean_text(editing_job.work_pattern)
+                    clean_text(
+                        editing_job.work_pattern
+                    )
                     if editing_job
                     else "Full-time"
                 )
@@ -388,7 +453,8 @@ def show_jobs():
                     WORK_PATTERNS.index(
                         current_work_pattern
                     )
-                    if current_work_pattern in WORK_PATTERNS
+                    if current_work_pattern
+                    in WORK_PATTERNS
                     else 0
                 )
 
@@ -405,7 +471,9 @@ def show_jobs():
             remote_country = st.text_input(
                 "Remote Country",
                 value=(
-                    clean_text(editing_job.remote_country)
+                    clean_text(
+                        editing_job.remote_country
+                    )
                     if editing_job
                     else "India"
                 ),
@@ -452,19 +520,26 @@ def show_jobs():
             # STATUS / PRIORITY
             # =================================================
 
-            status_col1, status_col2 = st.columns(2)
+            status_col1, status_col2 = (
+                st.columns(2)
+            )
 
             with status_col1:
 
                 current_status = (
-                    clean_text(editing_job.status)
+                    clean_text(
+                        editing_job.status
+                    )
                     if editing_job
                     else "Open"
                 )
 
                 status_index = (
-                    JOB_STATUSES.index(current_status)
-                    if current_status in JOB_STATUSES
+                    JOB_STATUSES.index(
+                        current_status
+                    )
+                    if current_status
+                    in JOB_STATUSES
                     else 0
                 )
 
@@ -477,14 +552,19 @@ def show_jobs():
             with status_col2:
 
                 current_priority = (
-                    clean_text(editing_job.priority)
+                    clean_text(
+                        editing_job.priority
+                    )
                     if editing_job
                     else "Medium"
                 )
 
                 priority_index = (
-                    JOB_PRIORITIES.index(current_priority)
-                    if current_priority in JOB_PRIORITIES
+                    JOB_PRIORITIES.index(
+                        current_priority
+                    )
+                    if current_priority
+                    in JOB_PRIORITIES
                     else 1
                 )
 
@@ -501,11 +581,15 @@ def show_jobs():
             notes = st.text_area(
                 "Notes",
                 value=(
-                    clean_text(editing_job.notes)
+                    clean_text(
+                        editing_job.notes
+                    )
                     if editing_job
                     else ""
                 ),
-                placeholder="Additional job information...",
+                placeholder=(
+                    "Additional job information..."
+                ),
             )
 
             # =================================================
@@ -521,12 +605,29 @@ def show_jobs():
 
             if submitted:
 
-                position_clean = position.strip()
-                department_clean = department.strip()
-                skills_clean = skills_required.strip()
-                experience_clean = experience_required.strip()
-                remote_country_clean = remote_country.strip()
-                notes_clean = notes.strip()
+                position_clean = (
+                    position.strip()
+                )
+
+                department_clean = (
+                    department.strip()
+                )
+
+                skills_clean = (
+                    skills_required.strip()
+                )
+
+                experience_clean = (
+                    experience_required.strip()
+                )
+
+                remote_country_clean = (
+                    remote_country.strip()
+                )
+
+                notes_clean = (
+                    notes.strip()
+                )
 
                 # =============================================
                 # VALIDATION
@@ -541,35 +642,41 @@ def show_jobs():
                 elif date_opened > date.today():
 
                     st.error(
-                        "Date opened cannot be in the future."
+                        "Date opened cannot be "
+                        "in the future."
                     )
 
                 elif closing_date < date_opened:
 
                     st.error(
-                        "Closing date cannot be before the opening date."
+                        "Closing date cannot be "
+                        "before the opening date."
                     )
 
                 elif client_budget < 0:
 
                     st.error(
-                        "Client budget cannot be negative."
+                        "Client budget cannot "
+                        "be negative."
                     )
 
                 elif openings < 1:
 
                     st.error(
-                        "There must be at least one opening."
+                        "There must be at least "
+                        "one opening."
                     )
 
                 else:
 
                     selected_client_id = (
-                        client_options[selected_client]
+                        client_options[
+                            selected_client
+                        ]
                     )
 
                     # =========================================
-                    # UPDATE
+                    # UPDATE EXISTING JOB
                     # =========================================
 
                     if editing_job:
@@ -638,7 +745,9 @@ def show_jobs():
 
                             session.commit()
 
-                            st.session_state.editing_job_id = None
+                            st.session_state.editing_job_id = (
+                                None
+                            )
 
                             st.success(
                                 "Job updated successfully."
@@ -655,7 +764,7 @@ def show_jobs():
                             )
 
                     # =========================================
-                    # CREATE
+                    # CREATE NEW JOB
                     # =========================================
 
                     else:
@@ -665,12 +774,16 @@ def show_jobs():
                             position=position_clean,
                             department=department_clean,
                             skills_required=skills_clean,
-                            experience_required=experience_clean,
+                            experience_required=(
+                                experience_clean
+                            ),
                             client_budget=client_budget,
                             currency=currency,
                             openings=openings,
                             work_pattern=work_pattern,
-                            remote_country=remote_country_clean,
+                            remote_country=(
+                                remote_country_clean
+                            ),
                             date_opened=date_opened,
                             closing_date=closing_date,
                             status=status,
@@ -681,6 +794,7 @@ def show_jobs():
                         try:
 
                             session.add(job)
+
                             session.commit()
 
                             st.success(
@@ -756,7 +870,9 @@ def show_jobs():
             for job in jobs
         )
 
-        k1, k2, k3, k4, k5 = st.columns(5)
+        k1, k2, k3, k4, k5 = (
+            st.columns(5)
+        )
 
         with k1:
 
@@ -794,21 +910,25 @@ def show_jobs():
             )
 
         st.caption(
-            f"Total candidates linked to jobs: {total_candidates}"
+            "Total candidates linked to jobs: "
+            f"{total_candidates}"
         )
 
         # ====================================================
         # FILTERS
         # ====================================================
 
-        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        filter_col1, filter_col2, filter_col3 = (
+            st.columns(3)
+        )
 
         with filter_col1:
 
             search = st.text_input(
                 "Search",
                 placeholder=(
-                    "Position, client, department or skills..."
+                    "Position, client, "
+                    "department or skills..."
                 ),
             )
 
@@ -834,18 +954,24 @@ def show_jobs():
 
         if search.strip():
 
-            search_lower = search.strip().lower()
+            search_lower = (
+                search.strip().lower()
+            )
 
             filtered_jobs = [
                 job
                 for job in filtered_jobs
                 if (
                     search_lower
-                    in clean_text(job.position).lower()
+                    in clean_text(
+                        job.position
+                    ).lower()
                 )
                 or (
                     search_lower
-                    in clean_text(job.department).lower()
+                    in clean_text(
+                        job.department
+                    ).lower()
                 )
                 or (
                     search_lower
@@ -867,7 +993,9 @@ def show_jobs():
                 )
                 or (
                     search_lower
-                    in get_client_name(job).lower()
+                    in get_client_name(
+                        job
+                    ).lower()
                 )
             ]
 
@@ -885,8 +1013,9 @@ def show_jobs():
             filtered_jobs = [
                 job
                 for job in filtered_jobs
-                if clean_text(job.priority)
-                == priority_filter
+                if clean_text(
+                    job.priority
+                ) == priority_filter
             ]
 
         # ====================================================
@@ -894,7 +1023,8 @@ def show_jobs():
         # ====================================================
 
         st.caption(
-            f"Showing {len(filtered_jobs)} of {len(jobs)} job(s)"
+            f"Showing {len(filtered_jobs)} "
+            f"of {len(jobs)} job(s)"
         )
 
         if not filtered_jobs:
@@ -913,15 +1043,24 @@ def show_jobs():
 
             client_name = get_client_name(job)
 
-            candidate_count = get_candidate_count(job)
+            candidate_count = (
+                get_candidate_count(job)
+            )
 
-            placement_count = get_placement_count(job)
+            placement_count = (
+                get_placement_count(job)
+            )
 
-            priority = clean_text(job.priority) or "Medium"
+            priority = (
+                clean_text(job.priority)
+                or "Medium"
+            )
 
             status = get_job_status(job)
 
-            closing_label = get_closing_label(job)
+            closing_label = (
+                get_closing_label(job)
+            )
 
             with st.container(border=True):
 
@@ -929,8 +1068,10 @@ def show_jobs():
                 # MAIN JOB ROW
                 # ==========================================
 
-                col1, col2, col3, col4, col5 = st.columns(
-                    [2.2, 2.5, 2, 2, 2]
+                col1, col2, col3, col4, col5 = (
+                    st.columns(
+                        [2.2, 2.5, 2, 2, 2]
+                    )
                 )
 
                 # ------------------------------------------
@@ -945,7 +1086,9 @@ def show_jobs():
                     )
 
                     department_text = (
-                        clean_text(job.department)
+                        clean_text(
+                            job.department
+                        )
                         or "No department"
                     )
 
@@ -964,13 +1107,14 @@ def show_jobs():
                     )
 
                     st.caption(
-                        f"{int(job.openings or 0)} opening(s)"
+                        f"{int(job.openings or 0)} "
+                        f"opening(s)"
                     )
 
                     if job.remote_country:
 
                         st.caption(
-                            f"Remote: "
+                            "Remote: "
                             f"{clean_text(job.remote_country)}"
                         )
 
@@ -985,7 +1129,9 @@ def show_jobs():
                     )
 
                     currency = (
-                        clean_text(job.currency)
+                        clean_text(
+                            job.currency
+                        )
                         or "GBP"
                     )
 
@@ -997,7 +1143,9 @@ def show_jobs():
                     )
 
                     st.caption(
-                        clean_text(job.work_pattern)
+                        clean_text(
+                            job.work_pattern
+                        )
                         or "No work pattern"
                     )
 
@@ -1027,11 +1175,13 @@ def show_jobs():
                 with col5:
 
                     st.write(
-                        f"Candidates: **{candidate_count}**"
+                        f"Candidates: "
+                        f"**{candidate_count}**"
                     )
 
                     st.write(
-                        f"Placements: **{placement_count}**"
+                        f"Placements: "
+                        f"**{placement_count}**"
                     )
 
                     edit_btn = st.button(
@@ -1052,7 +1202,9 @@ def show_jobs():
 
                 if edit_btn:
 
-                    st.session_state.editing_job_id = job.id
+                    st.session_state.editing_job_id = (
+                        job.id
+                    )
 
                     st.session_state.confirm_delete_job_id = (
                         None
@@ -1070,7 +1222,9 @@ def show_jobs():
                         job.id
                     )
 
-                    st.session_state.editing_job_id = None
+                    st.session_state.editing_job_id = (
+                        None
+                    )
 
                     st.rerun()
 
@@ -1084,23 +1238,32 @@ def show_jobs():
                 ):
 
                     has_candidates = (
-                        get_candidate_count(job) > 0
+                        get_candidate_count(job)
+                        > 0
                     )
 
                     has_placements = (
-                        get_placement_count(job) > 0
+                        get_placement_count(job)
+                        > 0
                     )
 
-                    if has_candidates or has_placements:
+                    if (
+                        has_candidates
+                        or has_placements
+                    ):
 
                         st.warning(
-                            "This job cannot be deleted because "
-                            "it has candidates or placements attached."
+                            "This job cannot be deleted "
+                            "because it has candidates "
+                            "or placements attached."
                         )
 
                         close_delete = st.button(
                             "Close",
-                            key=f"close_delete_{job.id}",
+                            key=(
+                                f"close_delete_"
+                                f"{job.id}"
+                            ),
                             use_container_width=True,
                         )
 
@@ -1115,18 +1278,24 @@ def show_jobs():
                     else:
 
                         st.warning(
-                            f"Are you sure you want to delete "
-                            f"job **#{job.id} — "
+                            f"Are you sure you want "
+                            f"to delete job "
+                            f"**#{job.id} — "
                             f"{clean_text(job.position)}**?"
                         )
 
-                        confirm_col1, confirm_col2 = st.columns(2)
+                        confirm_col1, confirm_col2 = (
+                            st.columns(2)
+                        )
 
                         with confirm_col1:
 
                             confirm_delete = st.button(
                                 "Yes, Delete Job",
-                                key=f"confirm_job_{job.id}",
+                                key=(
+                                    f"confirm_job_"
+                                    f"{job.id}"
+                                ),
                                 type="primary",
                                 use_container_width=True,
                             )
@@ -1135,7 +1304,10 @@ def show_jobs():
 
                             cancel_delete = st.button(
                                 "Cancel",
-                                key=f"cancel_job_{job.id}",
+                                key=(
+                                    f"cancel_job_"
+                                    f"{job.id}"
+                                ),
                                 use_container_width=True,
                             )
 
@@ -1152,6 +1324,7 @@ def show_jobs():
                             try:
 
                                 session.delete(job)
+
                                 session.commit()
 
                                 st.session_state.confirm_delete_job_id = (
@@ -1180,56 +1353,93 @@ def show_jobs():
                 # JOB DETAILS
                 # ==========================================
 
-                with st.expander("View Job Details"):
+                with st.expander(
+                    "View Job Details"
+                ):
 
-                    detail_col1, detail_col2 = st.columns(2)
+                    detail_col1, detail_col2 = (
+                        st.columns(2)
+                    )
+
+                    # --------------------------------------
+                    # LEFT DETAILS
+                    # --------------------------------------
 
                     with detail_col1:
 
-                        st.write(
-                            f"**Skills Required:** "
-                            f"{clean_text(job.skills_required) "
-                            "or 'Not specified'}"
+                        skills_text = (
+                            clean_text(
+                                job.skills_required
+                            )
+                            or "Not specified"
+                        )
+
+                        experience_text = (
+                            clean_text(
+                                job.experience_required
+                            )
+                            or "Not specified"
+                        )
+
+                        remote_country_text = (
+                            clean_text(
+                                job.remote_country
+                            )
+                            or "Not specified"
                         )
 
                         st.write(
-                            f"**Experience Required:** "
-                            f"{clean_text(job.experience_required) "
-                            "or 'Not specified'}"
+                            "**Skills Required:** "
+                            f"{skills_text}"
                         )
 
                         st.write(
-                            f"**Remote Country:** "
-                            f"{clean_text(job.remote_country) "
-                            "or 'Not specified'}"
+                            "**Experience Required:** "
+                            f"{experience_text}"
                         )
+
+                        st.write(
+                            "**Remote Country:** "
+                            f"{remote_country_text}"
+                        )
+
+                    # --------------------------------------
+                    # RIGHT DETAILS
+                    # --------------------------------------
 
                     with detail_col2:
 
                         if job.date_opened:
 
                             st.write(
-                                f"**Date Opened:** "
+                                "**Date Opened:** "
                                 f"{job.date_opened.strftime('%d %b %Y')}"
                             )
 
                         if job.closing_date:
 
                             st.write(
-                                f"**Closing Date:** "
+                                "**Closing Date:** "
                                 f"{job.closing_date.strftime('%d %b %Y')}"
                             )
 
+                        work_pattern_text = (
+                            clean_text(
+                                job.work_pattern
+                            )
+                            or "Not specified"
+                        )
+
                         st.write(
-                            f"**Work Pattern:** "
-                            f"{clean_text(job.work_pattern) "
-                            "or 'Not specified'}"
+                            "**Work Pattern:** "
+                            f"{work_pattern_text}"
                         )
 
                     if job.notes:
 
                         st.write(
-                            f"**Notes:** {clean_text(job.notes)}"
+                            "**Notes:** "
+                            f"{clean_text(job.notes)}"
                         )
 
     except Exception as e:

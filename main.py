@@ -2,6 +2,8 @@ import streamlit as st
 
 from database import create_database
 
+from dashboard import show_dashboard
+
 from screens.clients import show_clients
 from screens.client_contacts import show_client_contacts
 from screens.activities import show_activities
@@ -24,7 +26,7 @@ st.set_page_config(
     page_title="AVERRA CRM",
     page_icon="💼",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 
@@ -36,11 +38,13 @@ create_database()
 
 
 # ============================================================
-# HEADER
+# SIDEBAR
 # ============================================================
 
 st.sidebar.title("AVERRA CRM")
 st.sidebar.caption("Staffing & Outsourcing Management")
+
+st.sidebar.divider()
 
 
 # ============================================================
@@ -62,8 +66,8 @@ page = st.sidebar.radio(
         "Contracts",
         "Invoices",
         "Payments",
-        "Reports"
-    ]
+        "Reports",
+    ],
 )
 
 
@@ -73,19 +77,7 @@ page = st.sidebar.radio(
 
 if page == "Dashboard":
 
-    st.title("AVERRA CRM")
-    st.subheader("Staffing & Outsourcing Management")
-
-    st.write(
-        "Welcome to the AVERRA CRM."
-    )
-
-    st.info(
-        "Use the navigation menu on the left "
-        "to manage clients, employees, jobs, "
-        "candidates, placements, contracts, "
-        "invoices and payments."
-    )
+    show_dashboard()
 
 
 # ============================================================
