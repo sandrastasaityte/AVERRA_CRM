@@ -5,16 +5,153 @@ from database import get_session
 from models import Job, Client
 
 
+# ============================================================
+# CONSTANTS
+# ============================================================
+
+CURRENCIES = [
+    "GBP",
+    "EUR",
+    "USD",
+    "INR",
+]
+
+JOB_STATUSES = [
+    "Open",
+    "On Hold",
+    "Closed",
+    "Filled",
+    "Cancelled",
+]
+
+JOB_PRIORITIES = [
+    "Low",
+    "Medium",
+    "High",
+    "Urgent",
+]
+
+WORK_PATTERNS = [
+    "Full-time",
+    "Part-time",
+    "Contract",
+    "Temporary",
+]
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def clean_text(value):
+    """Safely return cleaned text."""
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def get_client_name(job):
+    """Return the client's company name."""
+    if job.client:
+        return (
+            clean_text(job.client.company_name)
+            or "Unknown Client"
+        )
+
+    return "Unknown Client"
+
+
+def get_candidate_count(job):
+    """Safely return candidate count."""
+    candidates = getattr(job, "candidates", None)
+
+    if candidates is None:
+        return 0
+
+    try:
+        return len(candidates)
+    except TypeError:
+        return 0
+
+
+def get_placement_count(job):
+    """Safely return placement count."""
+    placements = getattr(job, "placements", None)
+
+    if placements is None:
+        return 0
+
+    try:
+        return len(placements)
+    except TypeError:
+        return 0
+
+
+def get_priority_icon(priority):
+    """Return a simple visual indicator for priority."""
+
+    icons = {
+        "Low": "🟢",
+        "Medium": "🟡",
+        "High": "🟠",
+        "Urgent": "🔴",
+    }
+
+    return icons.get(priority, "⚪")
+
+
+def get_job_status(job):
+    """Return a safe job status."""
+    return clean_text(job.status) or "Open"
+
+
+def get_days_to_closing(job):
+    """Return days remaining until closing date."""
+
+    if not job.closing_date:
+        return None
+
+    return (job.closing_date - date.today()).days
+
+
+def get_closing_label(job):
+    """Return readable closing-date information."""
+
+    days = get_days_to_closing(job)
+
+    if days is None:
+        return "No closing date"
+
+    if days < 0:
+        return f"Closed {abs(days)} day(s) ago"
+
+    if days == 0:
+        return "Closes today"
+
+    if days == 1:
+        return "Closes tomorrow"
+
+    return f"{days} days remaining"
+
+
+# ============================================================
+# MAIN SCREEN
+# ============================================================
+
 def show_jobs():
 
     st.title("Jobs")
-    st.caption("Create and manage client job requirements.")
+
+    st.caption(
+        "Create and manage client job requirements, vacancies and recruitment activity."
+    )
 
     session = get_session()
 
-    # ============================================================
+    # ========================================================
     # SESSION STATE
-    # ============================================================
+    # ========================================================
 
     if "editing_job_id" not in st.session_state:
         st.session_state.editing_job_id = None
@@ -22,588 +159,803 @@ def show_jobs():
     if "confirm_delete_job_id" not in st.session_state:
         st.session_state.confirm_delete_job_id = None
 
-    # ============================================================
-    # LOAD DATA
-    # ============================================================
+    try:
 
-    clients = session.query(Client).order_by(
-        Client.company_name
-    ).all()
+        # ====================================================
+        # LOAD CLIENTS
+        # ====================================================
 
-    if not clients:
-        st.warning("Please add a client first.")
-        session.close()
-        return
-
-    editing_job = None
-
-    if st.session_state.editing_job_id is not None:
-
-        editing_job = session.get(
-            Job,
-            st.session_state.editing_job_id
+        clients = (
+            session.query(Client)
+            .order_by(Client.company_name)
+            .all()
         )
 
-        if editing_job is None:
-            st.session_state.editing_job_id = None
-        else:
-            st.subheader(
-                f"Edit Job — {editing_job.position}"
+        if not clients:
+
+            st.warning(
+                "Please add a client before creating a job."
             )
 
-    # ============================================================
-    # JOB FORM
-    # ============================================================
+            return
 
-    if editing_job is None:
-        st.subheader("Create Job")
+        # ====================================================
+        # LOAD EDITING JOB
+        # ====================================================
 
-    with st.form("job_form"):
+        editing_job = None
 
-        # --------------------------------------------------------
-        # CLIENT
-        # --------------------------------------------------------
+        if st.session_state.editing_job_id is not None:
+
+            editing_job = session.get(
+                Job,
+                st.session_state.editing_job_id,
+            )
+
+            if editing_job is None:
+
+                st.session_state.editing_job_id = None
+
+        # ====================================================
+        # FORM TITLE
+        # ====================================================
+
+        if editing_job:
+
+            st.subheader(
+                f"Edit Job — {clean_text(editing_job.position)}"
+            )
+
+        else:
+
+            st.subheader("Create Job")
+
+        # ====================================================
+        # CLIENT OPTIONS
+        # ====================================================
 
         client_options = {
-            f"{client.company_name} (ID: {client.id})": client.id
+            f"{clean_text(client.company_name)} "
+            f"(ID: {client.id})": client.id
             for client in clients
         }
 
+        client_labels = list(client_options.keys())
         client_ids = list(client_options.values())
 
-        if editing_job and editing_job.client_id in client_ids:
+        if (
+            editing_job
+            and editing_job.client_id in client_ids
+        ):
+
             client_index = client_ids.index(
                 editing_job.client_id
             )
+
         else:
+
             client_index = 0
 
-        selected_client = st.selectbox(
-            "Client",
-            list(client_options.keys()),
-            index=client_index
-        )
+        # ====================================================
+        # JOB FORM
+        # ====================================================
 
-        # --------------------------------------------------------
-        # JOB DETAILS
-        # --------------------------------------------------------
+        with st.form("job_form"):
 
-        col1, col2 = st.columns(2)
+            # =================================================
+            # CLIENT
+            # =================================================
 
-        with col1:
-
-            position = st.text_input(
-                "Position",
-                value=(
-                    editing_job.position
-                    if editing_job
-                    else ""
-                ),
-                placeholder="Example: Remote Finance Specialist"
+            selected_client = st.selectbox(
+                "Client",
+                client_labels,
+                index=client_index,
             )
 
-        with col2:
+            # =================================================
+            # JOB DETAILS
+            # =================================================
 
-            department = st.text_input(
-                "Department",
-                value=(
-                    editing_job.department
-                    if editing_job
-                    else ""
-                ),
-                placeholder="Example: Finance"
-            )
+            st.subheader("Job Details")
 
-        skills_required = st.text_area(
-            "Skills Required",
-            value=(
-                editing_job.skills_required
-                if editing_job
-                else ""
-            ),
-            placeholder=(
-                "Example: Excel, Power BI, "
-                "reconciliations, treasury"
-            )
-        )
+            col1, col2 = st.columns(2)
 
-        experience_required = st.text_input(
-            "Experience Required",
-            value=(
-                editing_job.experience_required
-                if editing_job
-                else ""
-            ),
-            placeholder="Example: 3+ years in finance operations"
-        )
+            with col1:
 
-        # --------------------------------------------------------
-        # BUDGET
-        # --------------------------------------------------------
-
-        st.subheader("Client Budget")
-
-        col3, col4 = st.columns(2)
-
-        with col3:
-
-            client_budget = st.number_input(
-                "Monthly Budget",
-                min_value=0.0,
-                step=100.0,
-                format="%.2f",
-                value=(
-                    float(editing_job.client_budget or 0.0)
-                    if editing_job
-                    else 0.0
+                position = st.text_input(
+                    "Position",
+                    value=(
+                        clean_text(editing_job.position)
+                        if editing_job
+                        else ""
+                    ),
+                    placeholder=(
+                        "Example: Remote Finance Specialist"
+                    ),
                 )
-            )
 
-        with col4:
+            with col2:
 
-            currencies = [
-                "GBP",
-                "EUR",
-                "USD",
-                "INR"
-            ]
+                department = st.text_input(
+                    "Department",
+                    value=(
+                        clean_text(editing_job.department)
+                        if editing_job
+                        else ""
+                    ),
+                    placeholder="Example: Finance",
+                )
 
-            current_currency = (
-                editing_job.currency
-                if editing_job
-                else "GBP"
-            )
-
-            currency_index = (
-                currencies.index(current_currency)
-                if current_currency in currencies
-                else 0
-            )
-
-            currency = st.selectbox(
-                "Currency",
-                currencies,
-                index=currency_index
-            )
-
-        # --------------------------------------------------------
-        # OPENINGS / WORK PATTERN
-        # --------------------------------------------------------
-
-        col5, col6 = st.columns(2)
-
-        with col5:
-
-            openings = st.number_input(
-                "Number of Openings",
-                min_value=1,
-                step=1,
+            skills_required = st.text_area(
+                "Skills Required",
                 value=(
-                    editing_job.openings
+                    clean_text(editing_job.skills_required)
                     if editing_job
+                    else ""
+                ),
+                placeholder=(
+                    "Example: Excel, Power BI, "
+                    "reconciliations, treasury"
+                ),
+            )
+
+            experience_required = st.text_input(
+                "Experience Required",
+                value=(
+                    clean_text(
+                        editing_job.experience_required
+                    )
+                    if editing_job
+                    else ""
+                ),
+                placeholder=(
+                    "Example: 3+ years in finance operations"
+                ),
+            )
+
+            # =================================================
+            # CLIENT BUDGET
+            # =================================================
+
+            st.subheader("Client Budget")
+
+            budget_col1, budget_col2 = st.columns(2)
+
+            with budget_col1:
+
+                client_budget = st.number_input(
+                    "Monthly Budget",
+                    min_value=0.0,
+                    step=100.0,
+                    format="%.2f",
+                    value=(
+                        float(
+                            editing_job.client_budget or 0.0
+                        )
+                        if editing_job
+                        else 0.0
+                    ),
+                )
+
+            with budget_col2:
+
+                current_currency = (
+                    clean_text(editing_job.currency)
+                    if editing_job
+                    else "GBP"
+                )
+
+                currency_index = (
+                    CURRENCIES.index(current_currency)
+                    if current_currency in CURRENCIES
+                    else 0
+                )
+
+                currency = st.selectbox(
+                    "Currency",
+                    CURRENCIES,
+                    index=currency_index,
+                )
+
+            # =================================================
+            # OPENINGS / WORK PATTERN
+            # =================================================
+
+            openings_col1, openings_col2 = st.columns(2)
+
+            with openings_col1:
+
+                openings = st.number_input(
+                    "Number of Openings",
+                    min_value=1,
+                    step=1,
+                    value=(
+                        int(editing_job.openings or 1)
+                        if editing_job
+                        else 1
+                    ),
+                )
+
+            with openings_col2:
+
+                current_work_pattern = (
+                    clean_text(editing_job.work_pattern)
+                    if editing_job
+                    else "Full-time"
+                )
+
+                work_pattern_index = (
+                    WORK_PATTERNS.index(
+                        current_work_pattern
+                    )
+                    if current_work_pattern in WORK_PATTERNS
+                    else 0
+                )
+
+                work_pattern = st.selectbox(
+                    "Work Pattern",
+                    WORK_PATTERNS,
+                    index=work_pattern_index,
+                )
+
+            # =================================================
+            # REMOTE LOCATION
+            # =================================================
+
+            remote_country = st.text_input(
+                "Remote Country",
+                value=(
+                    clean_text(editing_job.remote_country)
+                    if editing_job
+                    else "India"
+                ),
+                placeholder="Example: India",
+            )
+
+            # =================================================
+            # DATES
+            # =================================================
+
+            st.subheader("Dates")
+
+            date_col1, date_col2 = st.columns(2)
+
+            with date_col1:
+
+                date_opened = st.date_input(
+                    "Date Opened",
+                    value=(
+                        editing_job.date_opened
+                        if (
+                            editing_job
+                            and editing_job.date_opened
+                        )
+                        else date.today()
+                    ),
+                )
+
+            with date_col2:
+
+                closing_date = st.date_input(
+                    "Closing Date",
+                    value=(
+                        editing_job.closing_date
+                        if (
+                            editing_job
+                            and editing_job.closing_date
+                        )
+                        else date.today()
+                    ),
+                )
+
+            # =================================================
+            # STATUS / PRIORITY
+            # =================================================
+
+            status_col1, status_col2 = st.columns(2)
+
+            with status_col1:
+
+                current_status = (
+                    clean_text(editing_job.status)
+                    if editing_job
+                    else "Open"
+                )
+
+                status_index = (
+                    JOB_STATUSES.index(current_status)
+                    if current_status in JOB_STATUSES
+                    else 0
+                )
+
+                status = st.selectbox(
+                    "Job Status",
+                    JOB_STATUSES,
+                    index=status_index,
+                )
+
+            with status_col2:
+
+                current_priority = (
+                    clean_text(editing_job.priority)
+                    if editing_job
+                    else "Medium"
+                )
+
+                priority_index = (
+                    JOB_PRIORITIES.index(current_priority)
+                    if current_priority in JOB_PRIORITIES
                     else 1
                 )
-            )
 
-        with col6:
+                priority = st.selectbox(
+                    "Priority",
+                    JOB_PRIORITIES,
+                    index=priority_index,
+                )
 
-            work_patterns = [
-                "Full-time",
-                "Part-time",
-                "Contract",
-                "Temporary"
-            ]
+            # =================================================
+            # NOTES
+            # =================================================
 
-            current_work_pattern = (
-                editing_job.work_pattern
-                if editing_job
-                else "Full-time"
-            )
-
-            work_pattern_index = (
-                work_patterns.index(current_work_pattern)
-                if current_work_pattern in work_patterns
-                else 0
-            )
-
-            work_pattern = st.selectbox(
-                "Work Pattern",
-                work_patterns,
-                index=work_pattern_index
-            )
-
-        # --------------------------------------------------------
-        # LOCATION
-        # --------------------------------------------------------
-
-        remote_country = st.text_input(
-            "Remote Country",
-            value=(
-                editing_job.remote_country
-                if editing_job
-                else "India"
-            ),
-            placeholder="Example: India"
-        )
-
-        # --------------------------------------------------------
-        # DATES
-        # --------------------------------------------------------
-
-        col7, col8 = st.columns(2)
-
-        with col7:
-
-            date_opened = st.date_input(
-                "Date Opened",
+            notes = st.text_area(
+                "Notes",
                 value=(
-                    editing_job.date_opened
-                    if editing_job and editing_job.date_opened
-                    else date.today()
-                )
+                    clean_text(editing_job.notes)
+                    if editing_job
+                    else ""
+                ),
+                placeholder="Additional job information...",
             )
 
-        with col8:
+            # =================================================
+            # SUBMIT
+            # =================================================
 
-            closing_date = st.date_input(
-                "Closing Date",
-                value=(
-                    editing_job.closing_date
-                    if editing_job and editing_job.closing_date
-                    else date.today()
-                )
-            )
-
-        # --------------------------------------------------------
-        # STATUS / PRIORITY
-        # --------------------------------------------------------
-
-        col9, col10 = st.columns(2)
-
-        with col9:
-
-            statuses = [
-                "Open",
-                "On Hold",
-                "Closed",
-                "Filled",
-                "Cancelled"
-            ]
-
-            current_status = (
-                editing_job.status
+            submitted = st.form_submit_button(
+                "Save Changes"
                 if editing_job
-                else "Open"
+                else "Create Job",
+                use_container_width=True,
             )
 
-            status_index = (
-                statuses.index(current_status)
-                if current_status in statuses
-                else 0
-            )
+            if submitted:
 
-            status = st.selectbox(
-                "Job Status",
-                statuses,
-                index=status_index
-            )
+                position_clean = position.strip()
+                department_clean = department.strip()
+                skills_clean = skills_required.strip()
+                experience_clean = experience_required.strip()
+                remote_country_clean = remote_country.strip()
+                notes_clean = notes.strip()
 
-        with col10:
+                # =============================================
+                # VALIDATION
+                # =============================================
 
-            priorities = [
-                "Low",
-                "Medium",
-                "High",
-                "Urgent"
-            ]
+                if not position_clean:
 
-            current_priority = (
-                editing_job.priority
-                if editing_job
-                else "Medium"
-            )
-
-            priority_index = (
-                priorities.index(current_priority)
-                if current_priority in priorities
-                else 1
-            )
-
-            priority = st.selectbox(
-                "Priority",
-                priorities,
-                index=priority_index
-            )
-
-        # --------------------------------------------------------
-        # NOTES
-        # --------------------------------------------------------
-
-        notes = st.text_area(
-            "Notes",
-            value=(
-                editing_job.notes
-                if editing_job
-                else ""
-            ),
-            placeholder="Additional job information..."
-        )
-
-        # --------------------------------------------------------
-        # BUTTON
-        # --------------------------------------------------------
-
-        submitted = st.form_submit_button(
-            "Save Changes"
-            if editing_job
-            else "Create Job",
-            use_container_width=True
-        )
-
-        # ========================================================
-        # SAVE
-        # ========================================================
-
-        if submitted:
-
-            if not position.strip():
-
-                st.error(
-                    "Position is required."
-                )
-
-            elif closing_date < date_opened:
-
-                st.error(
-                    "Closing date cannot be before the opening date."
-                )
-
-            else:
-
-                selected_client_id = client_options[
-                    selected_client
-                ]
-
-                if editing_job:
-
-                    editing_job.client_id = selected_client_id
-                    editing_job.position = position.strip()
-                    editing_job.department = department.strip()
-                    editing_job.skills_required = skills_required.strip()
-                    editing_job.experience_required = experience_required.strip()
-                    editing_job.client_budget = client_budget
-                    editing_job.currency = currency
-                    editing_job.openings = openings
-                    editing_job.work_pattern = work_pattern
-                    editing_job.remote_country = remote_country.strip()
-                    editing_job.date_opened = date_opened
-                    editing_job.closing_date = closing_date
-                    editing_job.status = status
-                    editing_job.priority = priority
-                    editing_job.notes = notes.strip()
-
-                    session.commit()
-
-                    st.success(
-                        "Job updated successfully."
+                    st.error(
+                        "Position is required."
                     )
 
-                    st.session_state.editing_job_id = None
+                elif date_opened > date.today():
 
-                    st.rerun()
+                    st.error(
+                        "Date opened cannot be in the future."
+                    )
+
+                elif closing_date < date_opened:
+
+                    st.error(
+                        "Closing date cannot be before the opening date."
+                    )
+
+                elif client_budget < 0:
+
+                    st.error(
+                        "Client budget cannot be negative."
+                    )
+
+                elif openings < 1:
+
+                    st.error(
+                        "There must be at least one opening."
+                    )
 
                 else:
 
-                    job = Job(
-                        client_id=selected_client_id,
-                        position=position.strip(),
-                        department=department.strip(),
-                        skills_required=skills_required.strip(),
-                        experience_required=experience_required.strip(),
-                        client_budget=client_budget,
-                        currency=currency,
-                        openings=openings,
-                        work_pattern=work_pattern,
-                        remote_country=remote_country.strip(),
-                        date_opened=date_opened,
-                        closing_date=closing_date,
-                        status=status,
-                        priority=priority,
-                        notes=notes.strip()
+                    selected_client_id = (
+                        client_options[selected_client]
                     )
 
-                    session.add(job)
-                    session.commit()
+                    # =========================================
+                    # UPDATE
+                    # =========================================
 
-                    st.success(
-                        "Job created successfully."
-                    )
+                    if editing_job:
 
-                    st.rerun()
+                        editing_job.client_id = (
+                            selected_client_id
+                        )
 
-    # ============================================================
-    # JOB REGISTER
-    # ============================================================
+                        editing_job.position = (
+                            position_clean
+                        )
 
-    st.divider()
+                        editing_job.department = (
+                            department_clean
+                        )
 
-    st.subheader("Job Register")
+                        editing_job.skills_required = (
+                            skills_clean
+                        )
 
-    jobs = session.query(Job).order_by(
-        Job.date_opened.desc(),
-        Job.id.desc()
-    ).all()
+                        editing_job.experience_required = (
+                            experience_clean
+                        )
 
-    if not jobs:
+                        editing_job.client_budget = (
+                            client_budget
+                        )
 
-        st.info(
-            "No jobs have been created yet."
+                        editing_job.currency = (
+                            currency
+                        )
+
+                        editing_job.openings = (
+                            openings
+                        )
+
+                        editing_job.work_pattern = (
+                            work_pattern
+                        )
+
+                        editing_job.remote_country = (
+                            remote_country_clean
+                        )
+
+                        editing_job.date_opened = (
+                            date_opened
+                        )
+
+                        editing_job.closing_date = (
+                            closing_date
+                        )
+
+                        editing_job.status = (
+                            status
+                        )
+
+                        editing_job.priority = (
+                            priority
+                        )
+
+                        editing_job.notes = (
+                            notes_clean
+                        )
+
+                        try:
+
+                            session.commit()
+
+                            st.session_state.editing_job_id = None
+
+                            st.success(
+                                "Job updated successfully."
+                            )
+
+                            st.rerun()
+
+                        except Exception as e:
+
+                            session.rollback()
+
+                            st.error(
+                                f"Could not update job: {e}"
+                            )
+
+                    # =========================================
+                    # CREATE
+                    # =========================================
+
+                    else:
+
+                        job = Job(
+                            client_id=selected_client_id,
+                            position=position_clean,
+                            department=department_clean,
+                            skills_required=skills_clean,
+                            experience_required=experience_clean,
+                            client_budget=client_budget,
+                            currency=currency,
+                            openings=openings,
+                            work_pattern=work_pattern,
+                            remote_country=remote_country_clean,
+                            date_opened=date_opened,
+                            closing_date=closing_date,
+                            status=status,
+                            priority=priority,
+                            notes=notes_clean,
+                        )
+
+                        try:
+
+                            session.add(job)
+                            session.commit()
+
+                            st.success(
+                                "Job created successfully."
+                            )
+
+                            st.rerun()
+
+                        except Exception as e:
+
+                            session.rollback()
+
+                            st.error(
+                                f"Could not create job: {e}"
+                            )
+
+        # ====================================================
+        # JOB REGISTER
+        # ====================================================
+
+        st.divider()
+
+        st.subheader("Job Register")
+
+        jobs = (
+            session.query(Job)
+            .order_by(
+                Job.date_opened.desc(),
+                Job.id.desc(),
+            )
+            .all()
         )
 
-        session.close()
-        return
+        if not jobs:
 
-    # ============================================================
-    # FILTERS
-    # ============================================================
+            st.info(
+                "No jobs have been created yet."
+            )
 
-    col1, col2, col3 = st.columns(3)
+            return
 
-    with col1:
+        # ====================================================
+        # KPI SUMMARY
+        # ====================================================
 
-        search = st.text_input(
-            "Search",
-            placeholder="Position, client or department..."
+        total_jobs = len(jobs)
+
+        open_jobs = sum(
+            1
+            for job in jobs
+            if get_job_status(job) == "Open"
         )
 
-    with col2:
+        on_hold_jobs = sum(
+            1
+            for job in jobs
+            if get_job_status(job) == "On Hold"
+        )
 
-        status_filter = st.selectbox(
-            "Status",
-            [
-                "All",
+        filled_jobs = sum(
+            1
+            for job in jobs
+            if get_job_status(job) == "Filled"
+        )
+
+        total_openings = sum(
+            int(job.openings or 0)
+            for job in jobs
+        )
+
+        total_candidates = sum(
+            get_candidate_count(job)
+            for job in jobs
+        )
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+
+        with k1:
+
+            st.metric(
+                "Total Jobs",
+                total_jobs,
+            )
+
+        with k2:
+
+            st.metric(
                 "Open",
+                open_jobs,
+            )
+
+        with k3:
+
+            st.metric(
                 "On Hold",
-                "Closed",
+                on_hold_jobs,
+            )
+
+        with k4:
+
+            st.metric(
                 "Filled",
-                "Cancelled"
+                filled_jobs,
+            )
+
+        with k5:
+
+            st.metric(
+                "Openings",
+                total_openings,
+            )
+
+        st.caption(
+            f"Total candidates linked to jobs: {total_candidates}"
+        )
+
+        # ====================================================
+        # FILTERS
+        # ====================================================
+
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+
+        with filter_col1:
+
+            search = st.text_input(
+                "Search",
+                placeholder=(
+                    "Position, client, department or skills..."
+                ),
+            )
+
+        with filter_col2:
+
+            status_filter = st.selectbox(
+                "Status",
+                ["All"] + JOB_STATUSES,
+            )
+
+        with filter_col3:
+
+            priority_filter = st.selectbox(
+                "Priority",
+                ["All"] + JOB_PRIORITIES,
+            )
+
+        # ====================================================
+        # APPLY FILTERS
+        # ====================================================
+
+        filtered_jobs = jobs
+
+        if search.strip():
+
+            search_lower = search.strip().lower()
+
+            filtered_jobs = [
+                job
+                for job in filtered_jobs
+                if (
+                    search_lower
+                    in clean_text(job.position).lower()
+                )
+                or (
+                    search_lower
+                    in clean_text(job.department).lower()
+                )
+                or (
+                    search_lower
+                    in clean_text(
+                        job.skills_required
+                    ).lower()
+                )
+                or (
+                    search_lower
+                    in clean_text(
+                        job.experience_required
+                    ).lower()
+                )
+                or (
+                    search_lower
+                    in clean_text(
+                        job.remote_country
+                    ).lower()
+                )
+                or (
+                    search_lower
+                    in get_client_name(job).lower()
+                )
             ]
-        )
 
-    with col3:
+        if status_filter != "All":
 
-        priority_filter = st.selectbox(
-            "Priority",
-            [
-                "All",
-                "Low",
-                "Medium",
-                "High",
-                "Urgent"
+            filtered_jobs = [
+                job
+                for job in filtered_jobs
+                if get_job_status(job)
+                == status_filter
             ]
+
+        if priority_filter != "All":
+
+            filtered_jobs = [
+                job
+                for job in filtered_jobs
+                if clean_text(job.priority)
+                == priority_filter
+            ]
+
+        # ====================================================
+        # RESULT COUNT
+        # ====================================================
+
+        st.caption(
+            f"Showing {len(filtered_jobs)} of {len(jobs)} job(s)"
         )
 
-    # ============================================================
-    # APPLY FILTERS
-    # ============================================================
+        if not filtered_jobs:
 
-    filtered_jobs = jobs
-
-    if search:
-
-        search_lower = search.lower()
-
-        filtered_jobs = [
-            job
-            for job in filtered_jobs
-            if (
-                search_lower
-                in (job.position or "").lower()
+            st.info(
+                "No jobs match your filters."
             )
-            or (
-                search_lower
-                in (job.department or "").lower()
-            )
-            or (
-                job.client
-                and search_lower
-                in (job.client.company_name or "").lower()
-            )
-        ]
 
-    if status_filter != "All":
+            return
 
-        filtered_jobs = [
-            job
-            for job in filtered_jobs
-            if job.status == status_filter
-        ]
-
-    if priority_filter != "All":
-
-        filtered_jobs = [
-            job
-            for job in filtered_jobs
-            if job.priority == priority_filter
-        ]
-
-    # ============================================================
-    # DISPLAY JOBS
-    # ============================================================
-
-    if not filtered_jobs:
-
-        st.info(
-            "No jobs match your filters."
-        )
-
-    else:
+        # ====================================================
+        # DISPLAY JOBS
+        # ====================================================
 
         for job in filtered_jobs:
 
-            client_name = (
-                job.client.company_name
-                if job.client
-                else "Unknown Client"
-            )
+            client_name = get_client_name(job)
 
-            candidate_count = (
-                len(job.candidates)
-                if hasattr(job, "candidates")
-                and job.candidates
-                else 0
-            )
+            candidate_count = get_candidate_count(job)
 
-            placement_count = (
-                len(job.placements)
-                if hasattr(job, "placements")
-                and job.placements
-                else 0
-            )
+            placement_count = get_placement_count(job)
+
+            priority = clean_text(job.priority) or "Medium"
+
+            status = get_job_status(job)
+
+            closing_label = get_closing_label(job)
 
             with st.container(border=True):
 
+                # ==========================================
+                # MAIN JOB ROW
+                # ==========================================
+
                 col1, col2, col3, col4, col5 = st.columns(
-                    [2, 3, 2, 2, 2]
+                    [2.2, 2.5, 2, 2, 2]
                 )
 
-                # ------------------------------------------------
+                # ------------------------------------------
                 # JOB
-                # ------------------------------------------------
+                # ------------------------------------------
 
                 with col1:
 
                     st.write(
-                        f"**#{job.id} — {job.position}**"
+                        f"**#{job.id} — "
+                        f"{clean_text(job.position)}**"
+                    )
+
+                    department_text = (
+                        clean_text(job.department)
+                        or "No department"
                     )
 
                     st.caption(
-                        job.department or "No department"
+                        department_text
                     )
 
-                # ------------------------------------------------
+                # ------------------------------------------
                 # CLIENT
-                # ------------------------------------------------
+                # ------------------------------------------
 
                 with col2:
 
@@ -612,43 +964,65 @@ def show_jobs():
                     )
 
                     st.caption(
-                        f"{job.openings} opening(s)"
+                        f"{int(job.openings or 0)} opening(s)"
                     )
 
-                # ------------------------------------------------
+                    if job.remote_country:
+
+                        st.caption(
+                            f"Remote: "
+                            f"{clean_text(job.remote_country)}"
+                        )
+
+                # ------------------------------------------
                 # BUDGET
-                # ------------------------------------------------
+                # ------------------------------------------
 
                 with col3:
 
+                    budget = float(
+                        job.client_budget or 0
+                    )
+
+                    currency = (
+                        clean_text(job.currency)
+                        or "GBP"
+                    )
+
                     st.write(
                         f"Budget: **"
-                        f"{job.currency} "
-                        f"{job.client_budget or 0:,.2f}"
+                        f"{currency} "
+                        f"{budget:,.2f}"
                         f"**"
                     )
 
                     st.caption(
-                        job.work_pattern or ""
+                        clean_text(job.work_pattern)
+                        or "No work pattern"
                     )
 
-                # ------------------------------------------------
+                # ------------------------------------------
                 # STATUS
-                # ------------------------------------------------
+                # ------------------------------------------
 
                 with col4:
 
                     st.write(
-                        f"Status: **{job.status}**"
+                        f"Status: **{status}**"
                     )
 
                     st.write(
-                        f"Priority: **{job.priority}**"
+                        f"{get_priority_icon(priority)} "
+                        f"Priority: **{priority}**"
                     )
 
-                # ------------------------------------------------
-                # ACTIVITY
-                # ------------------------------------------------
+                    st.caption(
+                        closing_label
+                    )
+
+                # ------------------------------------------
+                # ACTIVITY / ACTIONS
+                # ------------------------------------------
 
                 with col5:
 
@@ -663,36 +1037,46 @@ def show_jobs():
                     edit_btn = st.button(
                         "Edit",
                         key=f"edit_job_{job.id}",
-                        use_container_width=True
+                        use_container_width=True,
                     )
 
                     delete_btn = st.button(
                         "Delete",
                         key=f"delete_job_{job.id}",
-                        use_container_width=True
+                        use_container_width=True,
                     )
 
-                # ------------------------------------------------
+                # ==========================================
                 # EDIT
-                # ------------------------------------------------
+                # ==========================================
 
                 if edit_btn:
 
                     st.session_state.editing_job_id = job.id
+
+                    st.session_state.confirm_delete_job_id = (
+                        None
+                    )
+
                     st.rerun()
 
-                # ------------------------------------------------
-                # DELETE
-                # ------------------------------------------------
+                # ==========================================
+                # DELETE REQUEST
+                # ==========================================
 
                 if delete_btn:
 
-                    st.session_state.confirm_delete_job_id = job.id
+                    st.session_state.confirm_delete_job_id = (
+                        job.id
+                    )
+
+                    st.session_state.editing_job_id = None
+
                     st.rerun()
 
-                # ------------------------------------------------
+                # ==========================================
                 # DELETE CONFIRMATION
-                # ------------------------------------------------
+                # ==========================================
 
                 if (
                     st.session_state.confirm_delete_job_id
@@ -700,35 +1084,40 @@ def show_jobs():
                 ):
 
                     has_candidates = (
-                        hasattr(job, "candidates")
-                        and len(job.candidates) > 0
+                        get_candidate_count(job) > 0
                     )
 
                     has_placements = (
-                        hasattr(job, "placements")
-                        and len(job.placements) > 0
+                        get_placement_count(job) > 0
                     )
 
                     if has_candidates or has_placements:
 
                         st.warning(
                             "This job cannot be deleted because "
-                            "it has candidates or placements."
+                            "it has candidates or placements attached."
                         )
 
-                        if st.button(
+                        close_delete = st.button(
                             "Close",
-                            key=f"close_delete_{job.id}"
-                        ):
+                            key=f"close_delete_{job.id}",
+                            use_container_width=True,
+                        )
 
-                            st.session_state.confirm_delete_job_id = None
+                        if close_delete:
+
+                            st.session_state.confirm_delete_job_id = (
+                                None
+                            )
+
                             st.rerun()
 
                     else:
 
                         st.warning(
                             f"Are you sure you want to delete "
-                            f"job #{job.id}?"
+                            f"job **#{job.id} — "
+                            f"{clean_text(job.position)}**?"
                         )
 
                         confirm_col1, confirm_col2 = st.columns(2)
@@ -739,7 +1128,7 @@ def show_jobs():
                                 "Yes, Delete Job",
                                 key=f"confirm_job_{job.id}",
                                 type="primary",
-                                use_container_width=True
+                                use_container_width=True,
                             )
 
                         with confirm_col2:
@@ -747,70 +1136,110 @@ def show_jobs():
                             cancel_delete = st.button(
                                 "Cancel",
                                 key=f"cancel_job_{job.id}",
-                                use_container_width=True
+                                use_container_width=True,
                             )
 
                         if cancel_delete:
 
-                            st.session_state.confirm_delete_job_id = None
+                            st.session_state.confirm_delete_job_id = (
+                                None
+                            )
+
                             st.rerun()
 
                         if confirm_delete:
 
-                            session.delete(job)
-                            session.commit()
+                            try:
 
-                            st.success(
-                                "Job deleted successfully."
-                            )
+                                session.delete(job)
+                                session.commit()
 
-                            st.session_state.confirm_delete_job_id = None
+                                st.session_state.confirm_delete_job_id = (
+                                    None
+                                )
 
-                            st.rerun()
+                                st.success(
+                                    "Job deleted successfully."
+                                )
 
-                # ------------------------------------------------
-                # ADDITIONAL DETAILS
-                # ------------------------------------------------
+                                st.rerun()
+
+                            except Exception as e:
+
+                                session.rollback()
+
+                                st.session_state.confirm_delete_job_id = (
+                                    None
+                                )
+
+                                st.error(
+                                    f"Could not delete job: {e}"
+                                )
+
+                # ==========================================
+                # JOB DETAILS
+                # ==========================================
 
                 with st.expander("View Job Details"):
 
-                    st.write(
-                        f"**Skills Required:** "
-                        f"{job.skills_required or 'Not specified'}"
-                    )
+                    detail_col1, detail_col2 = st.columns(2)
 
-                    st.write(
-                        f"**Experience Required:** "
-                        f"{job.experience_required or 'Not specified'}"
-                    )
-
-                    st.write(
-                        f"**Remote Country:** "
-                        f"{job.remote_country or 'Not specified'}"
-                    )
-
-                    if job.date_opened:
+                    with detail_col1:
 
                         st.write(
-                            f"**Date Opened:** "
-                            f"{job.date_opened.strftime('%d %b %Y')}"
+                            f"**Skills Required:** "
+                            f"{clean_text(job.skills_required) "
+                            "or 'Not specified'}"
                         )
 
-                    if job.closing_date:
+                        st.write(
+                            f"**Experience Required:** "
+                            f"{clean_text(job.experience_required) "
+                            "or 'Not specified'}"
+                        )
 
                         st.write(
-                            f"**Closing Date:** "
-                            f"{job.closing_date.strftime('%d %b %Y')}"
+                            f"**Remote Country:** "
+                            f"{clean_text(job.remote_country) "
+                            "or 'Not specified'}"
+                        )
+
+                    with detail_col2:
+
+                        if job.date_opened:
+
+                            st.write(
+                                f"**Date Opened:** "
+                                f"{job.date_opened.strftime('%d %b %Y')}"
+                            )
+
+                        if job.closing_date:
+
+                            st.write(
+                                f"**Closing Date:** "
+                                f"{job.closing_date.strftime('%d %b %Y')}"
+                            )
+
+                        st.write(
+                            f"**Work Pattern:** "
+                            f"{clean_text(job.work_pattern) "
+                            "or 'Not specified'}"
                         )
 
                     if job.notes:
 
                         st.write(
-                            f"**Notes:** {job.notes}"
+                            f"**Notes:** {clean_text(job.notes)}"
                         )
 
-    # ============================================================
-    # CLOSE SESSION
-    # ============================================================
+    except Exception as e:
 
-    session.close()
+        session.rollback()
+
+        st.error(
+            f"An error occurred while loading jobs: {e}"
+        )
+
+    finally:
+
+        session.close()
