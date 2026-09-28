@@ -1,4 +1,3 @@
-
 import streamlit as st
 
 from database import get_session
@@ -19,29 +18,42 @@ CLIENT_STATUSES = [
     "Contract",
     "Won",
     "Lost",
+    "Active",
+    "Inactive",
+]
+
+LEAD_SOURCES = [
+    "Website",
+    "LinkedIn",
+    "Referral",
+    "Cold Outreach",
+    "Email",
+    "Job Board",
+    "Networking",
+    "Existing Client",
+    "Other",
 ]
 
 COMPANY_SIZES = [
-    "",
     "1-10",
     "11-50",
     "51-200",
     "201-500",
-    "501-1,000",
-    "1,001-5,000",
-    "5,001-10,000",
-    "10,000+",
+    "501-1000",
+    "1001-5000",
+    "5001+",
 ]
 
-LEAD_SOURCES = [
-    "",
-    "LinkedIn",
-    "Website",
-    "Referral",
-    "Email",
-    "Cold Call",
-    "Networking",
-    "Job Board",
+COUNTRIES = [
+    "UK",
+    "Ireland",
+    "Lithuania",
+    "Germany",
+    "France",
+    "Netherlands",
+    "United States",
+    "Canada",
+    "Australia",
     "Other",
 ]
 
@@ -50,26 +62,121 @@ LEAD_SOURCES = [
 # HELPER FUNCTIONS
 # ============================================================
 
-def get_location(client):
-    """Return a readable client location."""
+def get_client_name(client):
+    """Return the client's company name."""
 
-    return ", ".join(
-        part
-        for part in [
-            client.city,
-            client.country,
-        ]
-        if part
+    company_name = (
+        client.company_name or ""
+    ).strip()
+
+    return (
+        company_name
+        or f"Client {client.id}"
     )
 
 
-def get_status_label(status):
-    """Return a readable status label."""
+def get_client_label(client):
+    """Return a consistent client label."""
 
-    if not status:
-        return "—"
+    return (
+        f"{get_client_name(client)} "
+        f"(ID: {client.id})"
+    )
 
-    return status
+
+def is_valid_website(website):
+    """Basic website URL validation."""
+
+    website = (
+        website or ""
+    ).strip()
+
+    if not website:
+        return True
+
+    website_lower = website.lower()
+
+    return (
+        website_lower.startswith("http://")
+        or website_lower.startswith("https://")
+    )
+
+
+def get_contact_count(client):
+    """Return number of contacts linked to a client."""
+
+    try:
+
+        return len(
+            client.contacts
+        )
+
+    except Exception:
+
+        return 0
+
+
+def get_primary_contact_count(client):
+    """Return number of primary contacts linked to a client."""
+
+    try:
+
+        return sum(
+            1
+            for contact in client.contacts
+            if contact.primary_contact == "Yes"
+        )
+
+    except Exception:
+
+        return 0
+
+
+def get_related_record_counts(client):
+    """Return counts of records linked to a client."""
+
+    try:
+
+        return {
+            "contacts": len(client.contacts),
+            "jobs": len(client.jobs),
+            "placements": len(client.placements),
+            "activities": len(client.activities),
+            "contracts": len(client.contracts),
+            "invoices": len(client.invoices),
+        }
+
+    except Exception:
+
+        return {
+            "contacts": 0,
+            "jobs": 0,
+            "placements": 0,
+            "activities": 0,
+            "contracts": 0,
+            "invoices": 0,
+        }
+
+
+def has_related_records(client):
+    """Check whether the client has linked CRM records."""
+
+    counts = get_related_record_counts(
+        client
+    )
+
+    return any(
+        count > 0
+        for count in counts.values()
+    )
+
+
+def clear_delete_confirmation(client_id):
+    """Clear delete confirmation state."""
+
+    st.session_state[
+        f"confirm_delete_client_{client_id}"
+    ] = False
 
 
 # ============================================================
@@ -81,7 +188,7 @@ def show_clients():
     st.title("Clients")
 
     st.caption(
-        "Manage AVERRA clients, prospects and sales pipeline."
+        "Manage AVERRA clients, prospects and business relationships."
     )
 
     session = get_session()
@@ -101,17 +208,38 @@ def show_clients():
         )
 
         # ========================================================
-        # CLIENT OVERVIEW
+        # SESSION STATE
         # ========================================================
+
+        if "editing_client_id" not in st.session_state:
+
+            st.session_state.editing_client_id = None
+
+        # ========================================================
+        # OVERVIEW
+        # ========================================================
+
+        st.subheader("Overview")
 
         total_clients = len(clients)
 
-        active_pipeline = sum(
+        active_clients = sum(
             1
             for client in clients
-            if client.status not in [
-                "Won",
-                "Lost",
+            if client.status == "Active"
+        )
+
+        pipeline_clients = sum(
+            1
+            for client in clients
+            if client.status in [
+                "Lead",
+                "Contacted",
+                "Replied",
+                "Call",
+                "Proposal",
+                "Negotiation",
+                "Contract",
             ]
         )
 
@@ -127,8 +255,6 @@ def show_clients():
             if client.status == "Lost"
         )
 
-        st.header("Client Overview")
-
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
@@ -141,128 +267,371 @@ def show_clients():
         with col2:
 
             st.metric(
-                "Active Pipeline",
-                active_pipeline,
+                "Active",
+                active_clients,
             )
 
         with col3:
+
+            st.metric(
+                "Pipeline",
+                pipeline_clients,
+            )
+
+        with col4:
 
             st.metric(
                 "Won",
                 won_clients,
             )
 
-        with col4:
-
-            st.metric(
-                "Lost",
-                lost_clients,
-            )
-
         st.divider()
 
         # ========================================================
-        # ADD NEW CLIENT
+        # ADD / EDIT CLIENT
         # ========================================================
 
-        st.header("Add New Client")
+        editing_client = None
 
-        with st.form("add_client_form"):
+        editing_client_id = (
+            st.session_state.editing_client_id
+        )
+
+        if editing_client_id:
+
+            editing_client = session.get(
+                Client,
+                editing_client_id,
+            )
+
+            if not editing_client:
+
+                st.session_state.editing_client_id = None
+
+                editing_client_id = None
+
+        # ========================================================
+        # DEFAULT VALUES
+        # ========================================================
+
+        if editing_client:
+
+            st.subheader(
+                "Edit Client"
+            )
+
+            default_company_name = (
+                editing_client.company_name
+                or ""
+            )
+
+            default_industry = (
+                editing_client.industry
+                or ""
+            )
+
+            default_website = (
+                editing_client.website
+                or ""
+            )
+
+            default_country = (
+                editing_client.country
+                or "UK"
+            )
+
+            default_city = (
+                editing_client.city
+                or ""
+            )
+
+            default_address = (
+                editing_client.address
+                or ""
+            )
+
+            default_postcode = (
+                editing_client.postcode
+                or ""
+            )
+
+            default_company_size = (
+                editing_client.company_size
+                or ""
+            )
+
+            default_status = (
+                editing_client.status
+                or "Lead"
+            )
+
+            default_lead_source = (
+                editing_client.lead_source
+                or ""
+            )
+
+            default_next_follow_up = (
+                editing_client.next_follow_up
+            )
+
+            default_account_owner = (
+                editing_client.account_owner
+                or ""
+            )
+
+            default_notes = (
+                editing_client.notes
+                or ""
+            )
+
+        else:
+
+            st.subheader(
+                "Add Client"
+            )
+
+            default_company_name = ""
+            default_industry = ""
+            default_website = ""
+            default_country = "UK"
+            default_city = ""
+            default_address = ""
+            default_postcode = ""
+            default_company_size = ""
+            default_status = "Lead"
+            default_lead_source = ""
+            default_next_follow_up = None
+            default_account_owner = ""
+            default_notes = ""
+
+        # ========================================================
+        # CLIENT FORM
+        # ========================================================
+
+        with st.form(
+            "client_form",
+            clear_on_submit=False,
+        ):
+
+            company_name = st.text_input(
+                "Company Name *",
+                value=default_company_name,
+                placeholder="e.g. ABC Limited",
+            )
+
+            col1, col2 = st.columns(2)
 
             # ====================================================
             # COMPANY INFORMATION
             # ====================================================
 
-            col1, col2 = st.columns(2)
-
             with col1:
 
-                company_name = st.text_input(
-                    "Company Name *"
-                )
-
                 industry = st.text_input(
-                    "Industry"
+                    "Industry",
+                    value=default_industry,
+                    placeholder=(
+                        "e.g. Accounting, "
+                        "Architecture, Technology"
+                    ),
                 )
 
                 website = st.text_input(
-                    "Website"
+                    "Website",
+                    value=default_website,
+                    placeholder=(
+                        "https://www.example.com"
+                    ),
                 )
 
-                country = st.text_input(
+                country = st.selectbox(
                     "Country",
-                    value="UK",
+                    COUNTRIES,
+                    index=(
+                        COUNTRIES.index(
+                            default_country
+                        )
+                        if default_country
+                        in COUNTRIES
+                        else 0
+                    ),
                 )
 
                 city = st.text_input(
-                    "City"
-                )
-
-            # ====================================================
-            # ADDRESS / CLASSIFICATION
-            # ====================================================
-
-            with col2:
-
-                address = st.text_input(
-                    "Address"
-                )
-
-                postcode = st.text_input(
-                    "Postcode"
+                    "City",
+                    value=default_city,
                 )
 
                 company_size = st.selectbox(
                     "Company Size",
-                    COMPANY_SIZES,
+                    ["Not specified"]
+                    + COMPANY_SIZES,
+                    index=(
+                        (
+                            COMPANY_SIZES.index(
+                                default_company_size
+                            )
+                            + 1
+                        )
+                        if default_company_size
+                        in COMPANY_SIZES
+                        else 0
+                    ),
                 )
+
+            # ====================================================
+            # SALES INFORMATION
+            # ====================================================
+
+            with col2:
 
                 status = st.selectbox(
                     "Status",
                     CLIENT_STATUSES,
+                    index=(
+                        CLIENT_STATUSES.index(
+                            default_status
+                        )
+                        if default_status
+                        in CLIENT_STATUSES
+                        else 0
+                    ),
                 )
 
                 lead_source = st.selectbox(
                     "Lead Source",
-                    LEAD_SOURCES,
+                    ["Not specified"]
+                    + LEAD_SOURCES,
+                    index=(
+                        (
+                            LEAD_SOURCES.index(
+                                default_lead_source
+                            )
+                            + 1
+                        )
+                        if default_lead_source
+                        in LEAD_SOURCES
+                        else 0
+                    ),
+                )
+
+                account_owner = st.text_input(
+                    "Account Owner",
+                    value=default_account_owner,
+                    placeholder="e.g. Sandra",
+                )
+
+                next_follow_up = st.date_input(
+                    "Next Follow-Up",
+                    value=default_next_follow_up,
+                    min_value=None,
                 )
 
             # ====================================================
-            # ACCOUNT MANAGEMENT
+            # ADDRESS
             # ====================================================
 
-            account_owner = st.text_input(
-                "Account Owner"
+            address = st.text_input(
+                "Address",
+                value=default_address,
             )
 
-            next_follow_up = st.date_input(
-                "Next Follow-Up",
-                value=None,
+            postcode = st.text_input(
+                "Postcode",
+                value=default_postcode,
             )
+
+            # ====================================================
+            # NOTES
+            # ====================================================
 
             notes = st.text_area(
-                "Notes"
-            )
-
-            submitted = st.form_submit_button(
-                "Add Client",
-                use_container_width=True,
+                "Notes",
+                value=default_notes,
             )
 
             # ====================================================
-            # PROCESS NEW CLIENT
+            # SUBMIT
+            # ====================================================
+
+            if editing_client:
+
+                submitted = st.form_submit_button(
+                    "Update Client",
+                    use_container_width=True,
+                )
+
+            else:
+
+                submitted = st.form_submit_button(
+                    "Add Client",
+                    use_container_width=True,
+                )
+
+            # ====================================================
+            # PROCESS FORM
             # ====================================================
 
             if submitted:
 
-                clean_company_name = (
+                company_name = (
                     company_name.strip()
                 )
 
-                if not clean_company_name:
+                industry = (
+                    industry.strip()
+                )
+
+                website = (
+                    website.strip()
+                )
+
+                city = (
+                    city.strip()
+                )
+
+                address = (
+                    address.strip()
+                )
+
+                postcode = (
+                    postcode.strip()
+                )
+
+                account_owner = (
+                    account_owner.strip()
+                )
+
+                notes = (
+                    notes.strip()
+                )
+
+                # Convert placeholder selections
+                if company_size == "Not specified":
+
+                    company_size = ""
+
+                if lead_source == "Not specified":
+
+                    lead_source = ""
+
+                # ================================================
+                # VALIDATION
+                # ================================================
+
+                if not company_name:
 
                     st.error(
-                        "Company Name is required."
+                        "Company name is required."
+                    )
+
+                elif not is_valid_website(
+                    website
+                ):
+
+                    st.error(
+                        "Please enter a valid website URL "
+                        "starting with http:// or https://."
                     )
 
                 else:
@@ -271,79 +640,199 @@ def show_clients():
                     # DUPLICATE CHECK
                     # ============================================
 
-                    existing_client = (
+                    duplicate_query = (
                         session.query(Client)
                         .filter(
                             Client.company_name.ilike(
-                                clean_company_name
+                                company_name
                             )
                         )
-                        .first()
                     )
 
-                    if existing_client:
+                    if editing_client:
+
+                        duplicate_query = (
+                            duplicate_query.filter(
+                                Client.id
+                                != editing_client.id
+                            )
+                        )
+
+                    duplicate = (
+                        duplicate_query.first()
+                    )
+
+                    if duplicate:
 
                         st.error(
-                            "A client with this company "
-                            "name already exists."
+                            "A client with this company name "
+                            "already exists."
                         )
 
                     else:
 
-                        new_client = Client(
-                            company_name=(
-                                clean_company_name
-                            ),
-                            industry=(
-                                industry.strip()
-                            ),
-                            website=(
-                                website.strip()
-                            ),
-                            country=(
-                                country.strip()
-                            ),
-                            city=(
-                                city.strip()
-                            ),
-                            address=(
-                                address.strip()
-                            ),
-                            postcode=(
-                                postcode.strip()
-                            ),
-                            company_size=(
+                        # ========================================
+                        # UPDATE EXISTING CLIENT
+                        # ========================================
+
+                        if editing_client:
+
+                            editing_client.company_name = (
+                                company_name
+                            )
+
+                            editing_client.industry = (
+                                industry
+                            )
+
+                            editing_client.website = (
+                                website
+                            )
+
+                            editing_client.country = (
+                                country
+                            )
+
+                            editing_client.city = (
+                                city
+                            )
+
+                            editing_client.address = (
+                                address
+                            )
+
+                            editing_client.postcode = (
+                                postcode
+                            )
+
+                            editing_client.company_size = (
                                 company_size
-                            ),
-                            status=(
+                            )
+
+                            editing_client.status = (
                                 status
-                            ),
-                            lead_source=(
+                            )
+
+                            editing_client.lead_source = (
                                 lead_source
-                            ),
-                            next_follow_up=(
+                            )
+
+                            editing_client.next_follow_up = (
                                 next_follow_up
-                            ),
-                            account_owner=(
-                                account_owner.strip()
-                            ),
-                            notes=(
-                                notes.strip()
-                            ),
-                        )
+                            )
 
-                        session.add(
-                            new_client
-                        )
+                            editing_client.account_owner = (
+                                account_owner
+                            )
 
-                        session.commit()
+                            editing_client.notes = (
+                                notes
+                            )
 
-                        st.success(
-                            f"{clean_company_name} "
-                            "added successfully."
-                        )
+                            message = (
+                                "Client updated successfully."
+                            )
 
-                        st.rerun()
+                        # ========================================
+                        # CREATE NEW CLIENT
+                        # ========================================
+
+                        else:
+
+                            new_client = Client(
+                                company_name=(
+                                    company_name
+                                ),
+                                industry=(
+                                    industry
+                                ),
+                                website=(
+                                    website
+                                ),
+                                country=(
+                                    country
+                                ),
+                                city=(
+                                    city
+                                ),
+                                address=(
+                                    address
+                                ),
+                                postcode=(
+                                    postcode
+                                ),
+                                company_size=(
+                                    company_size
+                                ),
+                                status=(
+                                    status
+                                ),
+                                lead_source=(
+                                    lead_source
+                                ),
+                                next_follow_up=(
+                                    next_follow_up
+                                ),
+                                account_owner=(
+                                    account_owner
+                                ),
+                                notes=(
+                                    notes
+                                ),
+                            )
+
+                            session.add(
+                                new_client
+                            )
+
+                            message = (
+                                "Client added successfully."
+                            )
+
+                        # ========================================
+                        # SAVE
+                        # ========================================
+
+                        try:
+
+                            session.commit()
+
+                            st.session_state[
+                                "editing_client_id"
+                            ] = None
+
+                            st.success(
+                                message
+                            )
+
+                            st.rerun()
+
+                        except Exception as error:
+
+                            session.rollback()
+
+                            st.error(
+                                "The client could not be saved."
+                            )
+
+                            st.exception(error)
+
+        # ========================================================
+        # CANCEL EDITING
+        # ========================================================
+
+        if editing_client:
+
+            if st.button(
+                "Cancel Editing",
+                use_container_width=True,
+            ):
+
+                st.session_state[
+                    "editing_client_id"
+                ] = None
+
+                st.rerun()
 
         st.divider()
 
@@ -351,194 +840,148 @@ def show_clients():
         # CLIENT REGISTER
         # ========================================================
 
-        st.header("Client Register")
+        st.subheader(
+            "Client Register"
+        )
 
-        if not clients:
+        search_text = st.text_input(
+            "Search Clients",
+            placeholder=(
+                "Search company, industry, "
+                "city, country, website, owner or notes..."
+            ),
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            status_filter = st.selectbox(
+                "Status",
+                ["All Statuses"]
+                + CLIENT_STATUSES,
+            )
+
+        with col2:
+
+            country_filter = st.selectbox(
+                "Country",
+                ["All Countries"]
+                + COUNTRIES,
+            )
+
+        with col3:
+
+            lead_source_filter = st.selectbox(
+                "Lead Source",
+                ["All Sources"]
+                + LEAD_SOURCES,
+            )
+
+        # ========================================================
+        # APPLY FILTERS
+        # ========================================================
+
+        filtered_clients = []
+
+        search_lower = (
+            search_text.strip().lower()
+        )
+
+        for client in clients:
+
+            # ====================================================
+            # SEARCH
+            # ====================================================
+
+            if search_lower:
+
+                combined_text = " ".join(
+                    [
+                        client.company_name or "",
+                        client.industry or "",
+                        client.website or "",
+                        client.country or "",
+                        client.city or "",
+                        client.address or "",
+                        client.postcode or "",
+                        client.company_size or "",
+                        client.status or "",
+                        client.lead_source or "",
+                        client.account_owner or "",
+                        client.notes or "",
+                    ]
+                ).lower()
+
+                if search_lower not in combined_text:
+
+                    continue
+
+            # ====================================================
+            # STATUS FILTER
+            # ====================================================
+
+            if (
+                status_filter != "All Statuses"
+                and client.status
+                != status_filter
+            ):
+
+                continue
+
+            # ====================================================
+            # COUNTRY FILTER
+            # ====================================================
+
+            if (
+                country_filter != "All Countries"
+                and client.country
+                != country_filter
+            ):
+
+                continue
+
+            # ====================================================
+            # LEAD SOURCE FILTER
+            # ====================================================
+
+            if (
+                lead_source_filter
+                != "All Sources"
+                and client.lead_source
+                != lead_source_filter
+            ):
+
+                continue
+
+            filtered_clients.append(
+                client
+            )
+
+        # ========================================================
+        # REGISTER SUMMARY
+        # ========================================================
+
+        st.caption(
+            f"Showing {len(filtered_clients)} "
+            f"of {len(clients)} clients"
+        )
+
+        # ========================================================
+        # NO RESULTS
+        # ========================================================
+
+        if not filtered_clients:
 
             st.info(
-                "No clients have been added yet."
+                "No clients match your filters."
             )
+
+        # ========================================================
+        # DISPLAY CLIENTS
+        # ========================================================
 
         else:
-
-            # ====================================================
-            # FILTER OPTIONS
-            # ====================================================
-
-            industries = sorted(
-                {
-                    client.industry
-                    for client in clients
-                    if client.industry
-                }
-            )
-
-            countries = sorted(
-                {
-                    client.country
-                    for client in clients
-                    if client.country
-                }
-            )
-
-            # ====================================================
-            # FILTERS
-            # ====================================================
-
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-
-                search = st.text_input(
-                    "Search",
-                    placeholder=(
-                        "Company, industry, city, "
-                        "website or owner..."
-                    ),
-                )
-
-            with col2:
-
-                status_filter = st.selectbox(
-                    "Status",
-                    ["All"] + CLIENT_STATUSES,
-                )
-
-            with col3:
-
-                industry_filter = st.selectbox(
-                    "Industry",
-                    ["All"] + industries,
-                )
-
-            with col4:
-
-                country_filter = st.selectbox(
-                    "Country",
-                    ["All"] + countries,
-                )
-
-            # ====================================================
-            # APPLY FILTERS
-            # ====================================================
-
-            filtered_clients = clients
-
-            # ----------------------------------------------------
-            # SEARCH
-            # ----------------------------------------------------
-
-            if search:
-
-                search_text = (
-                    search.strip().lower()
-                )
-
-                filtered_clients = [
-                    client
-                    for client in filtered_clients
-                    if (
-                        search_text
-                        in (
-                            client.company_name
-                            or ""
-                        ).lower()
-
-                        or search_text
-                        in (
-                            client.industry
-                            or ""
-                        ).lower()
-
-                        or search_text
-                        in (
-                            client.city
-                            or ""
-                        ).lower()
-
-                        or search_text
-                        in (
-                            client.country
-                            or ""
-                        ).lower()
-
-                        or search_text
-                        in (
-                            client.website
-                            or ""
-                        ).lower()
-
-                        or search_text
-                        in (
-                            client.account_owner
-                            or ""
-                        ).lower()
-
-                        or search_text
-                        in (
-                            client.lead_source
-                            or ""
-                        ).lower()
-
-                        or search_text
-                        in (
-                            client.notes
-                            or ""
-                        ).lower()
-                    )
-                ]
-
-            # ----------------------------------------------------
-            # STATUS
-            # ----------------------------------------------------
-
-            if status_filter != "All":
-
-                filtered_clients = [
-                    client
-                    for client in filtered_clients
-                    if client.status
-                    == status_filter
-                ]
-
-            # ----------------------------------------------------
-            # INDUSTRY
-            # ----------------------------------------------------
-
-            if industry_filter != "All":
-
-                filtered_clients = [
-                    client
-                    for client in filtered_clients
-                    if client.industry
-                    == industry_filter
-                ]
-
-            # ----------------------------------------------------
-            # COUNTRY
-            # ----------------------------------------------------
-
-            if country_filter != "All":
-
-                filtered_clients = [
-                    client
-                    for client in filtered_clients
-                    if client.country
-                    == country_filter
-                ]
-
-            # ====================================================
-            # FILTER RESULT
-            # ====================================================
-
-            st.write(
-                f"Showing **{len(filtered_clients)}** "
-                f"client(s)"
-            )
-
-            # ====================================================
-            # DISPLAY CLIENTS
-            # ====================================================
 
             for client in filtered_clients:
 
@@ -546,103 +989,88 @@ def show_clients():
                     border=True
                 ):
 
-                    col1, col2, col3, col4 = (
-                        st.columns(
-                            [3, 2, 3, 1]
-                        )
+                    col1, col2, col3 = st.columns(
+                        [3, 2, 1]
                     )
 
                     # ============================================
-                    # COMPANY
+                    # CLIENT INFORMATION
                     # ============================================
 
                     with col1:
 
-                        st.subheader(
-                            client.company_name
+                        st.markdown(
+                            f"### "
+                            f"{get_client_name(client)}"
                         )
 
-                        if client.industry:
+                        st.write(
+                            f"**Industry:** "
+                            f"{client.industry or 'Not specified'}"
+                        )
+
+                        st.write(
+                            f"**Status:** "
+                            f"{client.status or 'Not specified'}"
+                        )
+
+                        st.write(
+                            f"**Country:** "
+                            f"{client.country or 'Not specified'}"
+                        )
+
+                        if client.city:
 
                             st.write(
-                                client.industry
-                            )
-
-                        location = get_location(
-                            client
-                        )
-
-                        if location:
-
-                            st.caption(
-                                location
+                                f"**City:** "
+                                f"{client.city}"
                             )
 
                     # ============================================
-                    # STATUS
+                    # CLIENT DETAILS
                     # ============================================
 
                     with col2:
 
-                        st.write(
-                            "**Pipeline Status**"
-                        )
-
-                        st.write(
-                            get_status_label(
-                                client.status
-                            )
-                        )
-
-                        if client.lead_source:
-
-                            st.caption(
-                                f"Source: "
-                                f"{client.lead_source}"
-                            )
-
-                    # ============================================
-                    # DETAILS
-                    # ============================================
-
-                    with col3:
-
-                        st.write(
-                            "**Details**"
-                        )
-
                         if client.website:
 
-                            st.write(
-                                client.website
+                            st.markdown(
+                                f"[Website]"
+                                f"({client.website})"
                             )
 
-                        if client.company_size:
+                        st.write(
+                            f"**Lead Source:** "
+                            f"{client.lead_source or 'Not specified'}"
+                        )
 
-                            st.caption(
-                                f"Size: "
-                                f"{client.company_size}"
-                            )
+                        st.write(
+                            f"**Account Owner:** "
+                            f"{client.account_owner or 'Not specified'}"
+                        )
 
-                        if client.account_owner:
+                        st.write(
+                            f"**Contacts:** "
+                            f"{get_contact_count(client)}"
+                        )
 
-                            st.caption(
-                                f"Owner: "
-                                f"{client.account_owner}"
-                            )
+                        st.write(
+                            f"**Primary Contacts:** "
+                            f"{get_primary_contact_count(client)}"
+                        )
 
                         if client.next_follow_up:
 
-                            st.caption(
-                                "Follow-up: "
-                                f"{client.next_follow_up}"
+                            st.write(
+                                f"**Next Follow-Up:** "
+                                f"{client.next_follow_up.strftime('%d %b %Y')}"
                             )
 
                     # ============================================
                     # ACTIONS
                     # ============================================
 
-                    with col4:
+                    with col3:
 
                         if st.button(
                             "Edit",
@@ -657,11 +1085,6 @@ def show_clients():
                                 "editing_client_id"
                             ] = client.id
 
-                            st.session_state.pop(
-                                "deleting_client_id",
-                                None,
-                            )
-
                             st.rerun()
 
                         if st.button(
@@ -674,15 +1097,33 @@ def show_clients():
                         ):
 
                             st.session_state[
-                                "deleting_client_id"
-                            ] = client.id
-
-                            st.session_state.pop(
-                                "editing_client_id",
-                                None,
-                            )
+                                (
+                                    f"confirm_delete_client_"
+                                    f"{client.id}"
+                                )
+                            ] = True
 
                             st.rerun()
+
+                    # ============================================
+                    # ADDRESS
+                    # ============================================
+
+                    if client.address:
+
+                        address_text = (
+                            client.address
+                        )
+
+                        if client.postcode:
+
+                            address_text += (
+                                f", {client.postcode}"
+                            )
+
+                        st.caption(
+                            f"Address: {address_text}"
+                        )
 
                     # ============================================
                     # NOTES
@@ -690,430 +1131,175 @@ def show_clients():
 
                     if client.notes:
 
-                        st.write(
-                            "**Notes**"
-                        )
-
                         st.caption(
-                            client.notes
+                            f"Notes: "
+                            f"{client.notes}"
                         )
 
-            # ====================================================
-            # DELETE CLIENT
-            # ====================================================
+                    # ============================================
+                    # DELETE CONFIRMATION
+                    # ============================================
 
-            deleting_id = st.session_state.get(
-                "deleting_client_id"
-            )
-
-            if deleting_id:
-
-                client = session.get(
-                    Client,
-                    deleting_id,
-                )
-
-                if client:
-
-                    st.divider()
-
-                    st.warning(
-                        "Are you sure you want to delete "
-                        f"{client.company_name}?"
-                    )
-
-                    st.warning(
-                        "Deleting a client may affect "
-                        "related contacts, jobs, placements, "
-                        "contracts, invoices and activities."
-                    )
-
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-
-                        if st.button(
-                            "Yes, Delete Client",
-                            key="confirm_delete_client",
-                            use_container_width=True,
-                        ):
-
-                            session.delete(
-                                client
-                            )
-
-                            session.commit()
-
-                            st.session_state.pop(
-                                "deleting_client_id",
-                                None,
-                            )
-
-                            st.success(
-                                "Client deleted successfully."
-                            )
-
-                            st.rerun()
-
-                    with col2:
-
-                        if st.button(
-                            "Cancel",
-                            key="cancel_delete_client",
-                            use_container_width=True,
-                        ):
-
-                            st.session_state.pop(
-                                "deleting_client_id",
-                                None,
-                            )
-
-                            st.rerun()
-
-            # ====================================================
-            # EDIT CLIENT
-            # ====================================================
-
-            editing_id = st.session_state.get(
-                "editing_client_id"
-            )
-
-            if editing_id:
-
-                client = session.get(
-                    Client,
-                    editing_id,
-                )
-
-                if client:
-
-                    st.divider()
-
-                    st.header(
-                        f"Edit Client: "
-                        f"{client.company_name}"
-                    )
-
-                    with st.form(
-                        f"edit_client_{client.id}"
+                    if st.session_state.get(
+                        (
+                            f"confirm_delete_client_"
+                            f"{client.id}"
+                        ),
+                        False,
                     ):
 
-                        # ========================================
-                        # COMPANY INFORMATION
-                        # ========================================
-
-                        col1, col2 = st.columns(2)
-
-                        with col1:
-
-                            edit_company_name = (
-                                st.text_input(
-                                    "Company Name *",
-                                    value=(
-                                        client.company_name
-                                        or ""
-                                    ),
-                                )
-                            )
-
-                            edit_industry = (
-                                st.text_input(
-                                    "Industry",
-                                    value=(
-                                        client.industry
-                                        or ""
-                                    ),
-                                )
-                            )
-
-                            edit_website = (
-                                st.text_input(
-                                    "Website",
-                                    value=(
-                                        client.website
-                                        or ""
-                                    ),
-                                )
-                            )
-
-                            edit_country = (
-                                st.text_input(
-                                    "Country",
-                                    value=(
-                                        client.country
-                                        or ""
-                                    ),
-                                )
-                            )
-
-                            edit_city = (
-                                st.text_input(
-                                    "City",
-                                    value=(
-                                        client.city
-                                        or ""
-                                    ),
-                                )
-                            )
-
-                        # ========================================
-                        # ADDRESS / CLASSIFICATION
-                        # ========================================
-
-                        with col2:
-
-                            edit_address = (
-                                st.text_input(
-                                    "Address",
-                                    value=(
-                                        client.address
-                                        or ""
-                                    ),
-                                )
-                            )
-
-                            edit_postcode = (
-                                st.text_input(
-                                    "Postcode",
-                                    value=(
-                                        client.postcode
-                                        or ""
-                                    ),
-                                )
-                            )
-
-                            current_size = (
-                                client.company_size
-                                if client.company_size
-                                in COMPANY_SIZES
-                                else ""
-                            )
-
-                            edit_company_size = (
-                                st.selectbox(
-                                    "Company Size",
-                                    COMPANY_SIZES,
-                                    index=(
-                                        COMPANY_SIZES.index(
-                                            current_size
-                                        )
-                                    ),
-                                )
-                            )
-
-                            current_status = (
-                                client.status
-                                if client.status
-                                in CLIENT_STATUSES
-                                else "Lead"
-                            )
-
-                            edit_status = (
-                                st.selectbox(
-                                    "Status",
-                                    CLIENT_STATUSES,
-                                    index=(
-                                        CLIENT_STATUSES.index(
-                                            current_status
-                                        )
-                                    ),
-                                )
-                            )
-
-                            current_source = (
-                                client.lead_source
-                                if client.lead_source
-                                in LEAD_SOURCES
-                                else ""
-                            )
-
-                            edit_lead_source = (
-                                st.selectbox(
-                                    "Lead Source",
-                                    LEAD_SOURCES,
-                                    index=(
-                                        LEAD_SOURCES.index(
-                                            current_source
-                                        )
-                                    ),
-                                )
-                            )
-
-                        # ========================================
-                        # ACCOUNT MANAGEMENT
-                        # ========================================
-
-                        edit_account_owner = (
-                            st.text_input(
-                                "Account Owner",
-                                value=(
-                                    client.account_owner
-                                    or ""
-                                ),
+                        related_counts = (
+                            get_related_record_counts(
+                                client
                             )
                         )
 
-                        edit_next_follow_up = (
-                            st.date_input(
-                                "Next Follow-Up",
-                                value=(
-                                    client.next_follow_up
-                                ),
+                        if has_related_records(
+                            client
+                        ):
+
+                            st.warning(
+                                "This client has related "
+                                "CRM records and should not "
+                                "be deleted."
                             )
-                        )
 
-                        edit_notes = (
-                            st.text_area(
-                                "Notes",
-                                value=(
-                                    client.notes
-                                    or ""
+                            related_items = []
+
+                            for label, count in [
+                                (
+                                    "Contacts",
+                                    related_counts["contacts"],
                                 ),
+                                (
+                                    "Jobs",
+                                    related_counts["jobs"],
+                                ),
+                                (
+                                    "Placements",
+                                    related_counts["placements"],
+                                ),
+                                (
+                                    "Activities",
+                                    related_counts["activities"],
+                                ),
+                                (
+                                    "Contracts",
+                                    related_counts["contracts"],
+                                ),
+                                (
+                                    "Invoices",
+                                    related_counts["invoices"],
+                                ),
+                            ]:
+
+                                if count > 0:
+
+                                    related_items.append(
+                                        f"{label}: {count}"
+                                    )
+
+                            st.write(
+                                " | ".join(
+                                    related_items
+                                )
                             )
-                        )
 
-                        # ========================================
-                        # FORM BUTTONS
-                        # ========================================
+                            st.info(
+                                "Instead of deleting the client, "
+                                "change its status to Inactive "
+                                "or Lost."
+                            )
 
-                        col1, col2 = st.columns(2)
+                            if st.button(
+                                "Cancel",
+                                key=(
+                                    f"cancel_delete_client_"
+                                    f"{client.id}"
+                                ),
+                                use_container_width=True,
+                            ):
 
-                        with col1:
+                                clear_delete_confirmation(
+                                    client.id
+                                )
 
-                            save = (
-                                st.form_submit_button(
-                                    "Save Changes",
+                                st.rerun()
+
+                        else:
+
+                            st.warning(
+                                "Are you sure you want to "
+                                "delete this client?"
+                            )
+
+                            confirm_col1, confirm_col2 = (
+                                st.columns(2)
+                            )
+
+                            with confirm_col1:
+
+                                if st.button(
+                                    "Yes, Delete",
+                                    key=(
+                                        f"confirm_yes_client_"
+                                        f"{client.id}"
+                                    ),
                                     use_container_width=True,
-                                )
-                            )
+                                ):
 
-                        with col2:
+                                    try:
 
-                            cancel = (
-                                st.form_submit_button(
+                                        session.delete(
+                                            client
+                                        )
+
+                                        session.commit()
+
+                                        clear_delete_confirmation(
+                                            client.id
+                                        )
+
+                                        st.success(
+                                            "Client deleted "
+                                            "successfully."
+                                        )
+
+                                        st.rerun()
+
+                                    except Exception as error:
+
+                                        session.rollback()
+
+                                        clear_delete_confirmation(
+                                            client.id
+                                        )
+
+                                        st.error(
+                                            "The client could "
+                                            "not be deleted."
+                                        )
+
+                                        st.exception(
+                                            error
+                                        )
+
+                            with confirm_col2:
+
+                                if st.button(
                                     "Cancel",
+                                    key=(
+                                        f"confirm_no_client_"
+                                        f"{client.id}"
+                                    ),
                                     use_container_width=True,
-                                )
-                            )
+                                ):
 
-                        # ========================================
-                        # SAVE EDIT
-                        # ========================================
-
-                        if save:
-
-                            clean_company_name = (
-                                edit_company_name.strip()
-                            )
-
-                            if not clean_company_name:
-
-                                st.error(
-                                    "Company Name is required."
-                                )
-
-                            else:
-
-                                duplicate = (
-                                    session.query(
-                                        Client
-                                    )
-                                    .filter(
-                                        Client.company_name.ilike(
-                                            clean_company_name
-                                        ),
-                                        Client.id
-                                        != client.id,
-                                    )
-                                    .first()
-                                )
-
-                                if duplicate:
-
-                                    st.error(
-                                        "Another client with this "
-                                        "company name already exists."
-                                    )
-
-                                else:
-
-                                    client.company_name = (
-                                        clean_company_name
-                                    )
-
-                                    client.industry = (
-                                        edit_industry.strip()
-                                    )
-
-                                    client.website = (
-                                        edit_website.strip()
-                                    )
-
-                                    client.country = (
-                                        edit_country.strip()
-                                    )
-
-                                    client.city = (
-                                        edit_city.strip()
-                                    )
-
-                                    client.address = (
-                                        edit_address.strip()
-                                    )
-
-                                    client.postcode = (
-                                        edit_postcode.strip()
-                                    )
-
-                                    client.company_size = (
-                                        edit_company_size
-                                    )
-
-                                    client.status = (
-                                        edit_status
-                                    )
-
-                                    client.lead_source = (
-                                        edit_lead_source
-                                    )
-
-                                    client.account_owner = (
-                                        edit_account_owner.strip()
-                                    )
-
-                                    client.next_follow_up = (
-                                        edit_next_follow_up
-                                    )
-
-                                    client.notes = (
-                                        edit_notes.strip()
-                                    )
-
-                                    session.commit()
-
-                                    st.session_state.pop(
-                                        "editing_client_id",
-                                        None,
-                                    )
-
-                                    st.success(
-                                        "Client updated successfully."
+                                    clear_delete_confirmation(
+                                        client.id
                                     )
 
                                     st.rerun()
-
-                        # ========================================
-                        # CANCEL EDIT
-                        # ========================================
-
-                        if cancel:
-
-                            st.session_state.pop(
-                                "editing_client_id",
-                                None,
-                            )
-
-                            st.rerun()
 
     except Exception as error:
 
@@ -1129,4 +1315,3 @@ def show_clients():
     finally:
 
         session.close()
-

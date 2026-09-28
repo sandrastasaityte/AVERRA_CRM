@@ -1,4 +1,3 @@
-
 import streamlit as st
 
 from database import get_session
@@ -44,6 +43,15 @@ def get_full_name(contact):
     return full_name or f"Contact {contact.id}"
 
 
+def get_client_label(client):
+    """Return a consistent client label."""
+
+    return (
+        f"{client.company_name} "
+        f"(ID: {client.id})"
+    )
+
+
 def is_valid_email(email):
     """Basic email validation."""
 
@@ -54,16 +62,71 @@ def is_valid_email(email):
     if not email:
         return True
 
+    if email.count("@") != 1:
+        return False
+
+    local_part, domain = email.split("@")
+
+    if not local_part:
+        return False
+
+    if not domain:
+        return False
+
+    if "." not in domain:
+        return False
+
+    if domain.startswith("."):
+        return False
+
+    if domain.endswith("."):
+        return False
+
+    return True
+
+
+def is_valid_linkedin(linkedin):
+    """Basic LinkedIn URL validation."""
+
+    linkedin = (
+        linkedin or ""
+    ).strip()
+
+    if not linkedin:
+        return True
+
+    linkedin_lower = linkedin.lower()
+
     return (
-        "@" in email
-        and "." in email.split("@")[-1]
+        linkedin_lower.startswith(
+            "https://www.linkedin.com/"
+        )
+        or linkedin_lower.startswith(
+            "https://linkedin.com/"
+        )
+        or linkedin_lower.startswith(
+            "http://www.linkedin.com/"
+        )
+        or linkedin_lower.startswith(
+            "http://linkedin.com/"
+        )
     )
 
 
 def is_primary(contact):
     """Check whether a contact is marked as primary."""
 
-    return contact.primary_contact == "Yes"
+    return (
+        contact.primary_contact == "Yes"
+    )
+
+
+def clear_delete_confirmation(contact_id):
+    """Clear delete confirmation state."""
+
+    st.session_state[
+        f"confirm_delete_contact_{contact_id}"
+    ] = False
 
 
 # ============================================================
@@ -121,18 +184,12 @@ def show_client_contacts():
         # ========================================================
 
         client_labels = [
-            (
-                f"{client.company_name} "
-                f"(ID: {client.id})"
-            )
+            get_client_label(client)
             for client in clients
         ]
 
         client_lookup = {
-            (
-                f"{client.company_name} "
-                f"(ID: {client.id})"
-            ): client
+            get_client_label(client): client
             for client in clients
         }
 
@@ -213,6 +270,13 @@ def show_client_contacts():
                 editing_contact_id,
             )
 
+            # Contact may have been deleted elsewhere.
+            if not editing_contact:
+
+                st.session_state.editing_contact_id = None
+
+                editing_contact_id = None
+
         # ========================================================
         # DEFAULT VALUES
         # ========================================================
@@ -226,8 +290,9 @@ def show_client_contacts():
             if editing_contact.client:
 
                 selected_client_label = (
-                    f"{editing_contact.client.company_name} "
-                    f"(ID: {editing_contact.client.id})"
+                    get_client_label(
+                        editing_contact.client
+                    )
                 )
 
             else:
@@ -380,6 +445,9 @@ def show_client_contacts():
                     linkedin = st.text_input(
                         "LinkedIn",
                         value=default_linkedin,
+                        placeholder=(
+                            "https://www.linkedin.com/in/..."
+                        ),
                     )
 
                     preferred_contact = st.selectbox(
@@ -450,13 +518,33 @@ def show_client_contacts():
 
                 if submitted:
 
-                    first_name = first_name.strip()
-                    last_name = last_name.strip()
-                    job_title = job_title.strip()
-                    email = email.strip()
-                    phone = phone.strip()
-                    linkedin = linkedin.strip()
-                    notes = notes.strip()
+                    first_name = (
+                        first_name.strip()
+                    )
+
+                    last_name = (
+                        last_name.strip()
+                    )
+
+                    job_title = (
+                        job_title.strip()
+                    )
+
+                    email = (
+                        email.strip()
+                    )
+
+                    phone = (
+                        phone.strip()
+                    )
+
+                    linkedin = (
+                        linkedin.strip()
+                    )
+
+                    notes = (
+                        notes.strip()
+                    )
 
                     # ================================================
                     # VALIDATION
@@ -472,6 +560,12 @@ def show_client_contacts():
 
                         st.error(
                             "Please enter a valid email address."
+                        )
+
+                    elif not is_valid_linkedin(linkedin):
+
+                        st.error(
+                            "Please enter a valid LinkedIn URL."
                         )
 
                     else:
@@ -672,17 +766,30 @@ def show_client_contacts():
                             # SAVE
                             # ========================================
 
-                            session.commit()
+                            try:
 
-                            st.session_state[
-                                "editing_contact_id"
-                            ] = None
+                                session.commit()
 
-                            st.success(
-                                message
-                            )
+                                st.session_state[
+                                    "editing_contact_id"
+                                ] = None
 
-                            st.rerun()
+                                st.success(
+                                    message
+                                )
+
+                                st.rerun()
+
+                            except Exception as error:
+
+                                session.rollback()
+
+                                st.error(
+                                    "The contact could not be "
+                                    "saved."
+                                )
+
+                                st.exception(error)
 
             # ====================================================
             # CANCEL EDITING
@@ -997,15 +1104,17 @@ def show_client_contacts():
                                 f"{contact.id}"
                             ] = True
 
+                            st.rerun()
+
                     # ================================================
                     # LINKEDIN
                     # ================================================
 
                     if contact.linkedin:
 
-                        st.caption(
-                            f"LinkedIn: "
-                            f"{contact.linkedin}"
+                        st.markdown(
+                            f"[LinkedIn profile]"
+                            f"({contact.linkedin})"
                         )
 
                     # ================================================
@@ -1051,24 +1160,40 @@ def show_client_contacts():
                                 use_container_width=True,
                             ):
 
-                                session.delete(
-                                    contact
-                                )
+                                try:
 
-                                session.commit()
-
-                                st.session_state[
-                                    (
-                                        f"confirm_delete_contact_"
-                                        f"{contact.id}"
+                                    session.delete(
+                                        contact
                                     )
-                                ] = False
 
-                                st.success(
-                                    "Contact deleted successfully."
-                                )
+                                    session.commit()
 
-                                st.rerun()
+                                    clear_delete_confirmation(
+                                        contact.id
+                                    )
+
+                                    st.success(
+                                        "Contact deleted "
+                                        "successfully."
+                                    )
+
+                                    st.rerun()
+
+                                except Exception as error:
+
+                                    session.rollback()
+
+                                    clear_delete_confirmation(
+                                        contact.id
+                                    )
+
+                                    st.error(
+                                        "This contact could not "
+                                        "be deleted. It may be "
+                                        "linked to other CRM records."
+                                    )
+
+                                    st.exception(error)
 
                         with confirm_col2:
 
@@ -1081,12 +1206,9 @@ def show_client_contacts():
                                 use_container_width=True,
                             ):
 
-                                st.session_state[
-                                    (
-                                        f"confirm_delete_contact_"
-                                        f"{contact.id}"
-                                    )
-                                ] = False
+                                clear_delete_confirmation(
+                                    contact.id
+                                )
 
                                 st.rerun()
 
