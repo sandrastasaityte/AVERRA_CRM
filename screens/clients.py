@@ -1,4 +1,5 @@
 import streamlit as st
+from datetime import date
 
 from database import get_session
 from models import Client
@@ -57,6 +58,16 @@ COUNTRIES = [
     "Other",
 ]
 
+PIPELINE_STATUSES = [
+    "Lead",
+    "Contacted",
+    "Replied",
+    "Call",
+    "Proposal",
+    "Negotiation",
+    "Contract",
+]
+
 
 # ============================================================
 # HELPER FUNCTIONS
@@ -84,13 +95,52 @@ def get_client_label(client):
     )
 
 
+def normalize_text(value):
+    """Normalize text for comparisons."""
+
+    return " ".join(
+        (value or "").strip().lower().split()
+    )
+
+
+def normalize_website(website):
+    """
+    Normalize a website URL.
+
+    If the user enters:
+        www.example.com
+
+    it becomes:
+        https://www.example.com
+    """
+
+    website = (
+        website or ""
+    ).strip()
+
+    if not website:
+        return ""
+
+    website_lower = website.lower()
+
+    if (
+        website_lower.startswith("http://")
+        or website_lower.startswith("https://")
+    ):
+        return website
+
+    if website_lower.startswith("www."):
+        return f"https://{website}"
+
+    return f"https://{website}"
+
+
 def is_valid_website(website):
     """Basic website URL validation."""
 
     website = (
         website or ""
     ).strip()
-
     if not website:
         return True
 
@@ -106,13 +156,8 @@ def get_contact_count(client):
     """Return number of contacts linked to a client."""
 
     try:
-
-        return len(
-            client.contacts
-        )
-
+        return len(client.contacts)
     except Exception:
-
         return 0
 
 
@@ -120,55 +165,119 @@ def get_primary_contact_count(client):
     """Return number of primary contacts linked to a client."""
 
     try:
-
         return sum(
             1
             for contact in client.contacts
             if contact.primary_contact == "Yes"
         )
-
     except Exception:
-
         return 0
 
 
 def get_related_record_counts(client):
     """Return counts of records linked to a client."""
 
+    counts = {
+        "contacts": 0,
+        "jobs": 0,
+        "placements": 0,
+        "activities": 0,
+        "contracts": 0,
+        "invoices": 0,
+    }
+
     try:
-
-        return {
-            "contacts": len(client.contacts),
-            "jobs": len(client.jobs),
-            "placements": len(client.placements),
-            "activities": len(client.activities),
-            "contracts": len(client.contracts),
-            "invoices": len(client.invoices),
-        }
-
+        counts["contacts"] = len(client.contacts)
     except Exception:
+        pass
 
-        return {
-            "contacts": 0,
-            "jobs": 0,
-            "placements": 0,
-            "activities": 0,
-            "contracts": 0,
-            "invoices": 0,
-        }
+    try:
+        counts["jobs"] = len(client.jobs)
+    except Exception:
+        pass
+
+    try:
+        counts["placements"] = len(client.placements)
+    except Exception:
+        pass
+
+    try:
+        counts["activities"] = len(client.activities)
+    except Exception:
+        pass
+
+    try:
+        counts["contracts"] = len(client.contracts)
+    except Exception:
+        pass
+
+    try:
+        counts["invoices"] = len(client.invoices)
+    except Exception:
+        pass
+
+    return counts
 
 
 def has_related_records(client):
     """Check whether the client has linked CRM records."""
 
-    counts = get_related_record_counts(
-        client
-    )
+    counts = get_related_record_counts(client)
 
     return any(
         count > 0
         for count in counts.values()
     )
+
+
+def get_follow_up_state(client):
+    """
+    Return the follow-up state.
+
+    Possible values:
+        None
+        "Overdue"
+        "Today"
+        "Upcoming"
+    """
+
+    follow_up = client.next_follow_up
+
+    if not follow_up:
+        return None
+
+    today = date.today()
+
+    if follow_up < today:
+        return "Overdue"
+
+    if follow_up == today:
+        return "Today"
+
+    return "Upcoming"
+
+
+def get_follow_up_label(client):
+    """Return a human-readable follow-up label."""
+
+    follow_up = client.next_follow_up
+
+    if not follow_up:
+        return "No follow-up scheduled"
+
+    state = get_follow_up_state(client)
+
+    formatted_date = follow_up.strftime(
+        "%d %b %Y"
+    )
+
+    if state == "Overdue":
+        return f"Overdue — {formatted_date}"
+
+    if state == "Today":
+        return f"Today — {formatted_date}"
+
+    return f"{formatted_date}"
 
 
 def clear_delete_confirmation(client_id):
@@ -212,7 +321,6 @@ def show_clients():
         # ========================================================
 
         if "editing_client_id" not in st.session_state:
-
             st.session_state.editing_client_id = None
 
         # ========================================================
@@ -232,15 +340,7 @@ def show_clients():
         pipeline_clients = sum(
             1
             for client in clients
-            if client.status in [
-                "Lead",
-                "Contacted",
-                "Replied",
-                "Call",
-                "Proposal",
-                "Negotiation",
-                "Contract",
-            ]
+            if client.status in PIPELINE_STATUSES
         )
 
         won_clients = sum(
@@ -253,6 +353,20 @@ def show_clients():
             1
             for client in clients
             if client.status == "Lost"
+        )
+
+        overdue_followups = sum(
+            1
+            for client in clients
+            if get_follow_up_state(client)
+            == "Overdue"
+        )
+
+        today_followups = sum(
+            1
+            for client in clients
+            if get_follow_up_state(client)
+            == "Today"
         )
 
         col1, col2, col3, col4 = st.columns(4)
@@ -285,6 +399,30 @@ def show_clients():
                 won_clients,
             )
 
+        # ========================================================
+        # FOLLOW-UP SUMMARY
+        # ========================================================
+
+        if overdue_followups > 0 or today_followups > 0:
+
+            st.divider()
+
+            follow_col1, follow_col2 = st.columns(2)
+
+            with follow_col1:
+
+                st.metric(
+                    "Overdue Follow-Ups",
+                    overdue_followups,
+                )
+
+            with follow_col2:
+
+                st.metric(
+                    "Follow-Ups Today",
+                    today_followups,
+                )
+
         st.divider()
 
         # ========================================================
@@ -316,58 +454,46 @@ def show_clients():
 
         if editing_client:
 
-            st.subheader(
-                "Edit Client"
-            )
+            st.subheader("Edit Client")
 
             default_company_name = (
-                editing_client.company_name
-                or ""
+                editing_client.company_name or ""
             )
 
             default_industry = (
-                editing_client.industry
-                or ""
+                editing_client.industry or ""
             )
 
             default_website = (
-                editing_client.website
-                or ""
+                editing_client.website or ""
             )
 
             default_country = (
-                editing_client.country
-                or "UK"
+                editing_client.country or "UK"
             )
 
             default_city = (
-                editing_client.city
-                or ""
+                editing_client.city or ""
             )
 
             default_address = (
-                editing_client.address
-                or ""
+                editing_client.address or ""
             )
 
             default_postcode = (
-                editing_client.postcode
-                or ""
+                editing_client.postcode or ""
             )
 
             default_company_size = (
-                editing_client.company_size
-                or ""
+                editing_client.company_size or ""
             )
 
             default_status = (
-                editing_client.status
-                or "Lead"
+                editing_client.status or "Lead"
             )
 
             default_lead_source = (
-                editing_client.lead_source
-                or ""
+                editing_client.lead_source or ""
             )
 
             default_next_follow_up = (
@@ -375,20 +501,16 @@ def show_clients():
             )
 
             default_account_owner = (
-                editing_client.account_owner
-                or ""
+                editing_client.account_owner or ""
             )
 
             default_notes = (
-                editing_client.notes
-                or ""
+                editing_client.notes or ""
             )
 
         else:
 
-            st.subheader(
-                "Add Client"
-            )
+            st.subheader("Add Client")
 
             default_company_name = ""
             default_industry = ""
@@ -431,8 +553,7 @@ def show_clients():
                     "Industry",
                     value=default_industry,
                     placeholder=(
-                        "e.g. Accounting, "
-                        "Architecture, Technology"
+                        "e.g. Accounting, Architecture, Technology"
                     ),
                 )
 
@@ -451,8 +572,7 @@ def show_clients():
                         COUNTRIES.index(
                             default_country
                         )
-                        if default_country
-                        in COUNTRIES
+                        if default_country in COUNTRIES
                         else 0
                     ),
                 )
@@ -464,15 +584,11 @@ def show_clients():
 
                 company_size = st.selectbox(
                     "Company Size",
-                    ["Not specified"]
-                    + COMPANY_SIZES,
+                    ["Not specified"] + COMPANY_SIZES,
                     index=(
-                        (
-                            COMPANY_SIZES.index(
-                                default_company_size
-                            )
-                            + 1
-                        )
+                        COMPANY_SIZES.index(
+                            default_company_size
+                        ) + 1
                         if default_company_size
                         in COMPANY_SIZES
                         else 0
@@ -500,15 +616,11 @@ def show_clients():
 
                 lead_source = st.selectbox(
                     "Lead Source",
-                    ["Not specified"]
-                    + LEAD_SOURCES,
+                    ["Not specified"] + LEAD_SOURCES,
                     index=(
-                        (
-                            LEAD_SOURCES.index(
-                                default_lead_source
-                            )
-                            + 1
-                        )
+                        LEAD_SOURCES.index(
+                            default_lead_source
+                        ) + 1
                         if default_lead_source
                         in LEAD_SOURCES
                         else 0
@@ -521,11 +633,37 @@ def show_clients():
                     placeholder="e.g. Sandra",
                 )
 
-                next_follow_up = st.date_input(
-                    "Next Follow-Up",
-                    value=default_next_follow_up,
-                    min_value=None,
+                # ====================================================
+                # FOLLOW-UP
+                # ====================================================
+
+                has_follow_up = st.checkbox(
+                    "Schedule Follow-Up",
+                    value=(
+                        default_next_follow_up
+                        is not None
+                    ),
                 )
+
+                if has_follow_up:
+
+                    if default_next_follow_up:
+
+                        next_follow_up = st.date_input(
+                            "Next Follow-Up",
+                            value=default_next_follow_up,
+                        )
+
+                    else:
+
+                        next_follow_up = st.date_input(
+                            "Next Follow-Up",
+                            value=date.today(),
+                        )
+
+                else:
+
+                    next_follow_up = None
 
             # ====================================================
             # ADDRESS
@@ -582,8 +720,8 @@ def show_clients():
                     industry.strip()
                 )
 
-                website = (
-                    website.strip()
+                website = normalize_website(
+                    website
                 )
 
                 city = (
@@ -596,6 +734,7 @@ def show_clients():
 
                 postcode = (
                     postcode.strip()
+                    .upper()
                 )
 
                 account_owner = (
@@ -606,13 +745,14 @@ def show_clients():
                     notes.strip()
                 )
 
-                # Convert placeholder selections
-                if company_size == "Not specified":
+                # ================================================
+                # PLACEHOLDER VALUES
+                # ================================================
 
+                if company_size == "Not specified":
                     company_size = ""
 
                 if lead_source == "Not specified":
-
                     lead_source = ""
 
                 # ================================================
@@ -630,37 +770,46 @@ def show_clients():
                 ):
 
                     st.error(
-                        "Please enter a valid website URL "
-                        "starting with http:// or https://."
+                        "Please enter a valid website URL."
                     )
 
                 else:
 
                     # ============================================
-                    # DUPLICATE CHECK
+                    # DUPLICATE COMPANY CHECK
                     # ============================================
 
-                    duplicate_query = (
-                        session.query(Client)
-                        .filter(
-                            Client.company_name.ilike(
-                                company_name
-                            )
+                    normalized_company_name = (
+                        normalize_text(
+                            company_name
                         )
                     )
 
-                    if editing_client:
+                    duplicate = None
 
-                        duplicate_query = (
-                            duplicate_query.filter(
-                                Client.id
-                                != editing_client.id
-                            )
+                    for existing_client in clients:
+
+                        if (
+                            editing_client
+                            and existing_client.id
+                            == editing_client.id
+                        ):
+                            continue
+
+                        existing_name = normalize_text(
+                            existing_client.company_name
                         )
 
-                    duplicate = (
-                        duplicate_query.first()
-                    )
+                        if (
+                            existing_name
+                            == normalized_company_name
+                        ):
+
+                            duplicate = (
+                                existing_client
+                            )
+
+                            break
 
                     if duplicate:
 
@@ -740,45 +889,19 @@ def show_clients():
                         else:
 
                             new_client = Client(
-                                company_name=(
-                                    company_name
-                                ),
-                                industry=(
-                                    industry
-                                ),
-                                website=(
-                                    website
-                                ),
-                                country=(
-                                    country
-                                ),
-                                city=(
-                                    city
-                                ),
-                                address=(
-                                    address
-                                ),
-                                postcode=(
-                                    postcode
-                                ),
-                                company_size=(
-                                    company_size
-                                ),
-                                status=(
-                                    status
-                                ),
-                                lead_source=(
-                                    lead_source
-                                ),
-                                next_follow_up=(
-                                    next_follow_up
-                                ),
-                                account_owner=(
-                                    account_owner
-                                ),
-                                notes=(
-                                    notes
-                                ),
+                                company_name=company_name,
+                                industry=industry,
+                                website=website,
+                                country=country,
+                                city=city,
+                                address=address,
+                                postcode=postcode,
+                                company_size=company_size,
+                                status=status,
+                                lead_source=lead_source,
+                                next_follow_up=next_follow_up,
+                                account_owner=account_owner,
+                                notes=notes,
                             )
 
                             session.add(
@@ -840,42 +963,50 @@ def show_clients():
         # CLIENT REGISTER
         # ========================================================
 
-        st.subheader(
-            "Client Register"
-        )
+        st.subheader("Client Register")
 
         search_text = st.text_input(
             "Search Clients",
             placeholder=(
-                "Search company, industry, "
-                "city, country, website, owner or notes..."
+                "Search company, industry, city, "
+                "country, website, owner or notes..."
             ),
         )
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
         with col1:
 
             status_filter = st.selectbox(
                 "Status",
-                ["All Statuses"]
-                + CLIENT_STATUSES,
+                ["All Statuses"] + CLIENT_STATUSES,
             )
 
         with col2:
 
             country_filter = st.selectbox(
                 "Country",
-                ["All Countries"]
-                + COUNTRIES,
+                ["All Countries"] + COUNTRIES,
             )
 
         with col3:
 
             lead_source_filter = st.selectbox(
                 "Lead Source",
-                ["All Sources"]
-                + LEAD_SOURCES,
+                ["All Sources"] + LEAD_SOURCES,
+            )
+
+        with col4:
+
+            follow_up_filter = st.selectbox(
+                "Follow-Up",
+                [
+                    "All",
+                    "Overdue",
+                    "Today",
+                    "Upcoming",
+                    "No Follow-Up",
+                ],
             )
 
         # ========================================================
@@ -914,7 +1045,6 @@ def show_clients():
                 ).lower()
 
                 if search_lower not in combined_text:
-
                     continue
 
             # ====================================================
@@ -923,10 +1053,8 @@ def show_clients():
 
             if (
                 status_filter != "All Statuses"
-                and client.status
-                != status_filter
+                and client.status != status_filter
             ):
-
                 continue
 
             # ====================================================
@@ -935,10 +1063,8 @@ def show_clients():
 
             if (
                 country_filter != "All Countries"
-                and client.country
-                != country_filter
+                and client.country != country_filter
             ):
-
                 continue
 
             # ====================================================
@@ -946,12 +1072,32 @@ def show_clients():
             # ====================================================
 
             if (
-                lead_source_filter
-                != "All Sources"
+                lead_source_filter != "All Sources"
                 and client.lead_source
                 != lead_source_filter
             ):
+                continue
 
+            # ====================================================
+            # FOLLOW-UP FILTER
+            # ====================================================
+
+            follow_up_state = (
+                get_follow_up_state(client)
+            )
+
+            if (
+                follow_up_filter != "All"
+                and follow_up_filter != "No Follow-Up"
+                and follow_up_state
+                != follow_up_filter
+            ):
+                continue
+
+            if (
+                follow_up_filter == "No Follow-Up"
+                and client.next_follow_up
+            ):
                 continue
 
             filtered_clients.append(
@@ -1035,8 +1181,7 @@ def show_clients():
                         if client.website:
 
                             st.markdown(
-                                f"[Website]"
-                                f"({client.website})"
+                                f"[Website]({client.website})"
                             )
 
                         st.write(
@@ -1061,10 +1206,30 @@ def show_clients():
 
                         if client.next_follow_up:
 
-                            st.write(
-                                f"**Next Follow-Up:** "
-                                f"{client.next_follow_up.strftime('%d %b %Y')}"
+                            follow_up_state = (
+                                get_follow_up_state(client)
                             )
+
+                            if follow_up_state == "Overdue":
+
+                                st.error(
+                                    f"**Follow-Up:** "
+                                    f"{get_follow_up_label(client)}"
+                                )
+
+                            elif follow_up_state == "Today":
+
+                                st.warning(
+                                    f"**Follow-Up:** "
+                                    f"{get_follow_up_label(client)}"
+                                )
+
+                            else:
+
+                                st.write(
+                                    f"**Next Follow-Up:** "
+                                    f"{get_follow_up_label(client)}"
+                                )
 
                     # ============================================
                     # ACTIONS
@@ -1106,6 +1271,44 @@ def show_clients():
                             st.rerun()
 
                     # ============================================
+                    # RELATED RECORDS
+                    # ============================================
+
+                    related_counts = (
+                        get_related_record_counts(
+                            client
+                        )
+                    )
+
+                    related_parts = []
+
+                    for label, key in [
+                        ("Contacts", "contacts"),
+                        ("Jobs", "jobs"),
+                        ("Placements", "placements"),
+                        ("Activities", "activities"),
+                        ("Contracts", "contracts"),
+                        ("Invoices", "invoices"),
+                    ]:
+
+                        count = related_counts[key]
+
+                        if count > 0:
+
+                            related_parts.append(
+                                f"{label}: {count}"
+                            )
+
+                    if related_parts:
+
+                        st.caption(
+                            "Related records: "
+                            + " | ".join(
+                                related_parts
+                            )
+                        )
+
+                    # ============================================
                     # ADDRESS
                     # ============================================
 
@@ -1132,8 +1335,7 @@ def show_clients():
                     if client.notes:
 
                         st.caption(
-                            f"Notes: "
-                            f"{client.notes}"
+                            f"Notes: {client.notes}"
                         )
 
                     # ============================================
@@ -1166,32 +1368,16 @@ def show_clients():
 
                             related_items = []
 
-                            for label, count in [
-                                (
-                                    "Contacts",
-                                    related_counts["contacts"],
-                                ),
-                                (
-                                    "Jobs",
-                                    related_counts["jobs"],
-                                ),
-                                (
-                                    "Placements",
-                                    related_counts["placements"],
-                                ),
-                                (
-                                    "Activities",
-                                    related_counts["activities"],
-                                ),
-                                (
-                                    "Contracts",
-                                    related_counts["contracts"],
-                                ),
-                                (
-                                    "Invoices",
-                                    related_counts["invoices"],
-                                ),
+                            for label, key in [
+                                ("Contacts", "contacts"),
+                                ("Jobs", "jobs"),
+                                ("Placements", "placements"),
+                                ("Activities", "activities"),
+                                ("Contracts", "contracts"),
+                                ("Invoices", "invoices"),
                             ]:
+
+                                count = related_counts[key]
 
                                 if count > 0:
 

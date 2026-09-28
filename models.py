@@ -14,6 +14,12 @@ from sqlalchemy.orm import relationship
 
 from database import Base
 
+from utils.calculations import (
+    calculate_gross_margin,
+    calculate_gross_margin_percentage,
+    calculate_invoice_balance,
+)
+
 
 # ============================================================
 # CLIENTS
@@ -33,40 +39,60 @@ class Client(Base):
         nullable=False,
     )
 
-    industry = Column(String(100))
+    industry = Column(
+        String(100),
+    )
 
-    website = Column(String(300))
+    website = Column(
+        String(300),
+    )
 
     country = Column(
         String(100),
         default="UK",
     )
 
-    city = Column(String(100))
+    city = Column(
+        String(100),
+    )
 
-    address = Column(String(300))
+    address = Column(
+        String(300),
+    )
 
-    postcode = Column(String(30))
+    postcode = Column(
+        String(30),
+    )
 
-    company_size = Column(String(50))
+    company_size = Column(
+        String(50),
+    )
 
     status = Column(
         String(50),
         default="Lead",
     )
 
-    lead_source = Column(String(100))
+    lead_source = Column(
+        String(100),
+    )
 
     date_added = Column(
         Date,
         default=date.today,
     )
 
-    next_follow_up = Column(Date)
+    next_follow_up = Column(
+        Date,
+    )
 
-    account_owner = Column(String(100))
+    account_owner = Column(
+        String(100),
+    )
 
-    notes = Column(Text)
+    notes = Column(
+        Text,
+    )
 
     # --------------------------------------------------------
     # Relationships
@@ -162,7 +188,9 @@ class ClientContact(Base):
         default="Active",
     )
 
-    notes = Column(Text)
+    notes = Column(
+        Text,
+    )
 
     # --------------------------------------------------------
     # Relationships
@@ -252,7 +280,9 @@ class Employee(Base):
         String(500),
     )
 
-    notes = Column(Text)
+    notes = Column(
+        Text,
+    )
 
     # --------------------------------------------------------
     # Relationships
@@ -320,7 +350,9 @@ class EmployeeSkill(Base):
         String(200),
     )
 
-    notes = Column(Text)
+    notes = Column(
+        Text,
+    )
 
     # --------------------------------------------------------
     # Relationships
@@ -410,7 +442,9 @@ class Job(Base):
         default="Medium",
     )
 
-    notes = Column(Text)
+    notes = Column(
+        Text,
+    )
 
     # --------------------------------------------------------
     # Relationships
@@ -618,23 +652,28 @@ class Placement(Base):
 
     @property
     def gross_margin(self):
+        """
+        Calculate monthly gross margin.
 
-        revenue = self.client_monthly_fee or 0
-        cost = self.worker_monthly_cost or 0
+        Revenue = client monthly fee
+        Cost = worker monthly cost
+        """
 
-        return revenue - cost
+        return calculate_gross_margin(
+            self.client_monthly_fee,
+            self.worker_monthly_cost,
+        )
 
     @property
     def gross_margin_percentage(self):
+        """
+        Calculate gross margin percentage.
+        """
 
-        revenue = self.client_monthly_fee or 0
-
-        if revenue == 0:
-            return 0
-
-        return (
-            self.gross_margin / revenue
-        ) * 100
+        return calculate_gross_margin_percentage(
+            self.client_monthly_fee,
+            self.worker_monthly_cost,
+        )
 
 
 # ============================================================
@@ -965,11 +1004,14 @@ class Invoice(Base):
 
     @property
     def balance_due(self):
+        """
+        Calculate outstanding invoice balance.
+        """
 
-        total = self.total_amount or 0
-        paid = self.amount_paid or 0
-
-        return max(total - paid, 0)
+        return calculate_invoice_balance(
+            self.total_amount,
+            self.amount_paid,
+        )
 
 
 # ============================================================

@@ -1,4 +1,3 @@
-
 import streamlit as st
 from datetime import date
 
@@ -39,50 +38,433 @@ CURRENCIES = [
 # HELPER FUNCTIONS
 # ============================================================
 
+def normalize_text(value):
+    """
+    Normalize text for reliable comparisons and searching.
+    """
+
+    return " ".join(
+        str(value or "").strip().lower().split()
+    )
+
+
+def normalize_url(url):
+    """
+    Add HTTPS when a user enters a bare domain.
+    """
+
+    url = str(url or "").strip()
+
+    if not url:
+        return ""
+
+    lower_url = url.lower()
+
+    if (
+        lower_url.startswith("http://")
+        or lower_url.startswith("https://")
+    ):
+        return url
+
+    return f"https://{url}"
+
+
+def is_valid_url(url):
+    """
+    Basic URL validation.
+    """
+
+    url = str(url or "").strip()
+
+    if not url:
+        return True
+
+    lower_url = url.lower()
+
+    return (
+        lower_url.startswith("http://")
+        or lower_url.startswith("https://")
+    )
+
+
 def get_client_name(contract):
+    """
+    Return a safe client name.
+    """
+
     if contract.client:
-        return contract.client.company_name or "Unknown Client"
+
+        return (
+            contract.client.company_name
+            or f"Client {contract.client.id}"
+        )
 
     return "No Client"
 
 
+def get_client_label(client):
+    """
+    Return a safe dropdown label.
+    """
+
+    company_name = (
+        client.company_name or ""
+    ).strip()
+
+    if not company_name:
+        company_name = f"Client {client.id}"
+
+    return f"{company_name} (ID {client.id})"
+
+
 def get_placement_label(placement):
-    client_name = (
-        placement.client.company_name
-        if placement.client
-        else "No Client"
+    """
+    Return a safe placement label.
+    """
+
+    position = (
+        placement.position
+        or "Unnamed Position"
     )
 
-    position = placement.position or "Unnamed Position"
+    if placement.client:
 
-    return f"{position} - {client_name} (ID {placement.id})"
+        client_name = (
+            placement.client.company_name
+            or f"Client {placement.client.id}"
+        )
+
+    else:
+
+        client_name = "No Client"
+
+    return (
+        f"{position} - "
+        f"{client_name} "
+        f"(ID {placement.id})"
+    )
 
 
-def is_renewal_due(contract):
+def get_status_display(status):
+    """
+    Return a safe contract status.
+    """
+
+    return status or "Draft"
+
+
+def get_days_until_renewal(contract):
+    """
+    Return number of days until renewal.
+
+    Negative = overdue.
+    Zero = today.
+    Positive = future.
+    """
+
     if not contract.renewal_date:
-        return False
+        return None
 
-    if contract.status in ["Expired", "Terminated"]:
-        return False
+    return (
+        contract.renewal_date
+        - date.today()
+    ).days
 
-    return contract.renewal_date <= date.today()
+
+def get_renewal_state(contract):
+    """
+    Return the renewal state.
+
+    Possible values:
+
+        None
+        Overdue
+        Today
+        Soon
+        Future
+    """
+
+    if not contract.renewal_date:
+        return None
+
+    if contract.status in [
+        "Expired",
+        "Terminated",
+    ]:
+        return None
+
+    days = get_days_until_renewal(
+        contract
+    )
+
+    if days is None:
+        return None
+
+    if days < 0:
+        return "Overdue"
+
+    if days == 0:
+        return "Today"
+
+    if days <= 30:
+        return "Soon"
+
+    return "Future"
+
+
+def get_renewal_label(contract):
+    """
+    Return a human-readable renewal label.
+    """
+
+    if not contract.renewal_date:
+        return "No renewal date"
+
+    formatted_date = (
+        contract.renewal_date.strftime(
+            "%d %b %Y"
+        )
+    )
+
+    state = get_renewal_state(
+        contract
+    )
+
+    if state == "Overdue":
+
+        days = abs(
+            get_days_until_renewal(
+                contract
+            )
+        )
+
+        return (
+            f"{formatted_date} "
+            f"(overdue by {days} days)"
+        )
+
+    if state == "Today":
+
+        return (
+            f"{formatted_date} "
+            "(due today)"
+        )
+
+    if state == "Soon":
+
+        days = get_days_until_renewal(
+            contract
+        )
+
+        return (
+            f"{formatted_date} "
+            f"({days} days)"
+        )
+
+    return formatted_date
 
 
 def is_expired(contract):
+    """
+    Return True if the contract is expired
+    either by status or by end date.
+    """
+
     if contract.status == "Expired":
         return True
 
-    if contract.end_date:
-        return contract.end_date < date.today()
+    if (
+        contract.end_date
+        and contract.end_date < date.today()
+        and contract.status != "Terminated"
+    ):
+        return True
 
     return False
 
 
-def days_until_renewal(contract):
+def is_renewal_due(contract):
+    """
+    Return True when renewal is today or overdue.
+    """
+
     if not contract.renewal_date:
+        return False
+
+    if contract.status in [
+        "Expired",
+        "Terminated",
+    ]:
+        return False
+
+    return (
+        contract.renewal_date
+        <= date.today()
+    )
+
+
+def find_duplicate_contract_number(
+    session,
+    contract_number,
+    exclude_id=None,
+):
+    """
+    Find another contract with the same
+    normalized contract number.
+
+    This is intentionally checked in Python
+    so that values such as:
+
+        AV-001
+        av-001
+        AV 001
+
+    can be treated consistently.
+    """
+
+    normalized_number = normalize_text(
+        contract_number
+    )
+
+    if not normalized_number:
         return None
 
-    return (contract.renewal_date - date.today()).days
+    contracts = (
+        session.query(Contract)
+        .all()
+    )
+
+    for contract in contracts:
+
+        if (
+            exclude_id is not None
+            and contract.id == exclude_id
+        ):
+            continue
+
+        existing_number = normalize_text(
+            contract.contract_number
+        )
+
+        if (
+            existing_number
+            and existing_number
+            == normalized_number
+        ):
+            return contract
+
+    return None
+
+
+def get_client_placements(
+    placements,
+    client_id,
+):
+    """
+    Return placements belonging only to a client.
+    """
+
+    return [
+        placement
+        for placement in placements
+        if placement.client_id == client_id
+    ]
+
+
+def validate_contract_dates(
+    start_date,
+    end_date,
+    signed_date,
+    renewal_date,
+):
+    """
+    Return an error message if contract dates
+    are invalid.
+
+    Returns:
+        None = valid
+        str  = error message
+    """
+
+    today = date.today()
+
+    if (
+        end_date
+        and end_date < start_date
+    ):
+        return (
+            "End Date cannot be before "
+            "Start Date."
+        )
+
+    if (
+        signed_date
+        and signed_date > today
+    ):
+        return (
+            "Signed Date cannot be "
+            "in the future."
+        )
+
+    if (
+        signed_date
+        and signed_date < start_date
+    ):
+        return (
+            "Signed Date cannot be before "
+            "the contract Start Date."
+        )
+
+    if (
+        renewal_date
+        and renewal_date < start_date
+    ):
+        return (
+            "Renewal Date cannot be before "
+            "the contract Start Date."
+        )
+
+    if (
+        renewal_date
+        and end_date
+        and renewal_date < end_date
+    ):
+        return (
+            "Renewal Date should normally be "
+            "on or after the End Date."
+        )
+
+    return None
+
+
+def get_contract_search_text(contract):
+    """
+    Build searchable text for a contract.
+    """
+
+    parts = [
+        contract.contract_number,
+        contract.contract_type,
+        contract.status,
+        contract.currency,
+        contract.notes,
+        get_client_name(contract),
+    ]
+
+    if contract.placement:
+
+        parts.extend(
+            [
+                contract.placement.position,
+            ]
+        )
+
+    return normalize_text(
+        " ".join(
+            str(part or "")
+            for part in parts
+        )
+    )
 
 
 # ============================================================
@@ -92,8 +474,10 @@ def days_until_renewal(contract):
 def show_contracts():
 
     st.title("Contracts")
+
     st.caption(
-        "Manage client contracts, agreements, renewals and contract values."
+        "Manage client contracts, agreements, "
+        "renewals and contract values."
     )
 
     session = get_session()
@@ -101,12 +485,27 @@ def show_contracts():
     try:
 
         # ========================================================
+        # SESSION STATE
+        # ========================================================
+
+        if (
+            "editing_contract_id"
+            not in st.session_state
+        ):
+
+            st.session_state[
+                "editing_contract_id"
+            ] = None
+
+        # ========================================================
         # LOAD CLIENTS
         # ========================================================
 
         clients = (
             session.query(Client)
-            .order_by(Client.company_name.asc())
+            .order_by(
+                Client.company_name.asc()
+            )
             .all()
         )
 
@@ -118,7 +517,7 @@ def show_contracts():
             session.query(Placement)
             .order_by(
                 Placement.start_date.desc(),
-                Placement.id.desc()
+                Placement.id.desc(),
             )
             .all()
         )
@@ -131,16 +530,39 @@ def show_contracts():
             session.query(Contract)
             .order_by(
                 Contract.start_date.desc(),
-                Contract.id.desc()
+                Contract.id.desc(),
             )
             .all()
         )
 
         # ========================================================
-        # CONTRACT METRICS
+        # CLIENT OPTIONS
+        #
+        # IMPORTANT:
+        # IDs are used as selectbox values.
+        # Labels are generated separately.
+        #
+        # This avoids problems when two clients have
+        # similar or identical names.
         # ========================================================
 
-        total_contracts = len(all_contracts)
+        client_ids = [
+            client.id
+            for client in clients
+        ]
+
+        client_labels = {
+            client.id: get_client_label(client)
+            for client in clients
+        }
+
+        # ========================================================
+        # METRICS
+        # ========================================================
+
+        total_contracts = len(
+            all_contracts
+        )
 
         active_contracts = sum(
             1
@@ -176,45 +598,54 @@ def show_contracts():
         # OVERVIEW
         # ========================================================
 
-        st.subheader("Contract Overview")
+        st.subheader(
+            "Contract Overview"
+        )
 
-        col1, col2, col3, col4, col5 = st.columns(5)
+        col1, col2, col3, col4, col5 = (
+            st.columns(5)
+        )
 
         with col1:
+
             st.metric(
                 "Total Contracts",
-                total_contracts
+                total_contracts,
             )
 
         with col2:
+
             st.metric(
                 "Active",
-                active_contracts
+                active_contracts,
             )
 
         with col3:
+
             st.metric(
                 "Signed",
-                signed_contracts
+                signed_contracts,
             )
 
         with col4:
+
             st.metric(
                 "Draft",
-                draft_contracts
+                draft_contracts,
             )
 
         with col5:
+
             st.metric(
                 "Renewal Due",
-                renewal_due
+                renewal_due,
             )
 
-        if expired_contracts > 0:
+        if expired_contracts:
 
             st.warning(
-                f"{expired_contracts} contract(s) are expired "
-                "or past their end date."
+                f"{expired_contracts} contract(s) "
+                "are expired or past their end date."
             )
 
         # ========================================================
@@ -222,333 +653,456 @@ def show_contracts():
         # ========================================================
 
         st.divider()
-        st.header("Add Contract")
+
+        st.header(
+            "Add Contract"
+        )
 
         if not clients:
 
             st.warning(
-                "Please add a client before creating a contract."
+                "Please add a client before "
+                "creating a contract."
             )
 
-            return
+        else:
 
-        # ========================================================
-        # CLIENT OPTIONS
-        # ========================================================
+            with st.form(
+                "add_contract_form",
+                clear_on_submit=False,
+            ):
 
-        client_options = {}
+                # =================================================
+                # BASIC INFORMATION
+                # =================================================
 
-        for client in clients:
+                col1, col2 = st.columns(2)
 
-            label = (
-                f"{client.company_name} "
-                f"(ID {client.id})"
-            )
+                with col1:
 
-            client_options[label] = client.id
+                    selected_client_id = (
+                        st.selectbox(
+                            "Client *",
+                            client_ids,
+                            format_func=(
+                                lambda client_id:
+                                client_labels.get(
+                                    client_id,
+                                    f"Client {client_id}",
+                                )
+                            ),
+                        )
+                    )
 
-        # ========================================================
-        # ADD CONTRACT FORM
-        # ========================================================
+                    contract_number = (
+                        st.text_input(
+                            "Contract Number *",
+                            placeholder=(
+                                "e.g. AV-UK-2026-001"
+                            ),
+                        )
+                    )
 
-        with st.form("add_contract_form"):
+                    contract_type = (
+                        st.selectbox(
+                            "Contract Type",
+                            CONTRACT_TYPES,
+                        )
+                    )
 
-            col1, col2 = st.columns(2)
+                with col2:
 
-            # ----------------------------------------------------
-            # LEFT COLUMN
-            # ----------------------------------------------------
+                    status = st.selectbox(
+                        "Status",
+                        CONTRACT_STATUSES,
+                    )
 
-            with col1:
+                    currency = st.selectbox(
+                        "Currency",
+                        CURRENCIES,
+                    )
 
-                selected_client = st.selectbox(
-                    "Client *",
-                    list(client_options.keys())
+                    contract_value = (
+                        st.number_input(
+                            "Contract Value",
+                            min_value=0.0,
+                            step=100.0,
+                        )
+                    )
+
+                # =================================================
+                # PLACEMENT
+                # =================================================
+
+                client_placements = (
+                    get_client_placements(
+                        placements,
+                        selected_client_id,
+                    )
                 )
 
-                contract_number = st.text_input(
-                    "Contract Number *",
-                    placeholder="e.g. AV-UK-2026-001"
-                )
-
-                contract_type = st.selectbox(
-                    "Contract Type",
-                    CONTRACT_TYPES
-                )
-
-                # ------------------------------------------------
-                # Placement
-                # ------------------------------------------------
-
-                selected_client_id = client_options[
-                    selected_client
+                placement_ids = [
+                    placement.id
+                    for placement
+                    in client_placements
                 ]
 
-                client_placements = [
-                    placement
-                    for placement in placements
-                    if placement.client_id == selected_client_id
-                ]
-
-                placement_options = {
-                    get_placement_label(placement): placement.id
-                    for placement in client_placements
+                placement_labels = {
+                    placement.id:
+                    get_placement_label(
+                        placement
+                    )
+                    for placement
+                    in client_placements
                 }
 
-                selected_placement = st.selectbox(
-                    "Placement",
-                    ["No Placement"]
-                    + list(placement_options.keys())
+                placement_choices = [
+                    None
+                ] + placement_ids
+
+                selected_placement_id = (
+                    st.selectbox(
+                        "Placement",
+                        placement_choices,
+                        format_func=(
+                            lambda placement_id:
+                            (
+                                "No Placement"
+                                if placement_id is None
+                                else placement_labels.get(
+                                    placement_id,
+                                    f"Placement {placement_id}",
+                                )
+                            )
+                        ),
+                    )
                 )
 
-            # ----------------------------------------------------
-            # RIGHT COLUMN
-            # ----------------------------------------------------
+                # =================================================
+                # DATES
+                # =================================================
 
-            with col2:
-
-                start_date = st.date_input(
-                    "Start Date",
-                    value=date.today()
+                st.subheader(
+                    "Contract Dates"
                 )
 
-                has_end_date = st.checkbox(
-                    "Set End Date",
-                    value=False
+                col1, col2, col3 = (
+                    st.columns(3)
                 )
 
-                if has_end_date:
+                with col1:
 
-                    end_date = st.date_input(
-                        "End Date",
-                        value=date.today()
+                    start_date = st.date_input(
+                        "Start Date",
+                        value=date.today(),
                     )
 
-                else:
+                with col2:
 
-                    end_date = None
-
-                has_signed_date = st.checkbox(
-                    "Set Signed Date",
-                    value=False
-                )
-
-                if has_signed_date:
-
-                    signed_date = st.date_input(
-                        "Signed Date",
-                        value=date.today()
+                    has_end_date = st.checkbox(
+                        "Set End Date"
                     )
 
-                else:
+                    if has_end_date:
 
-                    signed_date = None
+                        end_date = (
+                            st.date_input(
+                                "End Date",
+                                value=date.today(),
+                            )
+                        )
 
-                has_renewal_date = st.checkbox(
-                    "Set Renewal Date",
-                    value=False
+                    else:
+
+                        end_date = None
+
+                with col3:
+
+                    has_signed_date = (
+                        st.checkbox(
+                            "Set Signed Date"
+                        )
+                    )
+
+                    if has_signed_date:
+
+                        signed_date = (
+                            st.date_input(
+                                "Signed Date",
+                                value=date.today(),
+                            )
+                        )
+
+                    else:
+
+                        signed_date = None
+
+                has_renewal_date = (
+                    st.checkbox(
+                        "Set Renewal Date"
+                    )
                 )
 
                 if has_renewal_date:
 
-                    renewal_date = st.date_input(
-                        "Renewal Date",
-                        value=date.today()
+                    renewal_date = (
+                        st.date_input(
+                            "Renewal Date",
+                            value=date.today(),
+                        )
                     )
 
                 else:
 
                     renewal_date = None
 
-            # ====================================================
-            # FINANCIAL DETAILS
-            # ====================================================
+                # =================================================
+                # DOCUMENT
+                # =================================================
 
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-
-                contract_value = st.number_input(
-                    "Contract Value",
-                    min_value=0.0,
-                    step=100.0
+                document_link = (
+                    st.text_input(
+                        "Document Link",
+                        placeholder=(
+                            "https://..."
+                        ),
+                    )
                 )
 
-            with col2:
-
-                currency = st.selectbox(
-                    "Currency",
-                    CURRENCIES
+                notes = st.text_area(
+                    "Notes",
+                    placeholder=(
+                        "Additional contract information..."
+                    ),
                 )
 
-            with col3:
-
-                status = st.selectbox(
-                    "Status",
-                    CONTRACT_STATUSES
+                submitted = (
+                    st.form_submit_button(
+                        "Create Contract",
+                        use_container_width=True,
+                    )
                 )
 
-            # ====================================================
-            # DOCUMENT / NOTES
-            # ====================================================
+                # =================================================
+                # CREATE
+                # =================================================
 
-            document_link = st.text_input(
-                "Document Link",
-                placeholder="https://..."
-            )
+                if submitted:
 
-            notes = st.text_area(
-                "Notes",
-                placeholder="Additional contract information..."
-            )
-
-            submitted = st.form_submit_button(
-                "Create Contract",
-                use_container_width=True
-            )
-
-            # ====================================================
-            # CREATE CONTRACT
-            # ====================================================
-
-            if submitted:
-
-                clean_contract_number = (
-                    contract_number.strip()
-                )
-
-                # ------------------------------------------------
-                # VALIDATION
-                # ------------------------------------------------
-
-                if not clean_contract_number:
-
-                    st.error(
-                        "Contract Number is required."
+                    clean_number = (
+                        contract_number.strip()
                     )
 
-                elif (
-                    end_date
-                    and end_date < start_date
-                ):
-
-                    st.error(
-                        "End Date cannot be before Start Date."
-                    )
-
-                elif (
-                    signed_date
-                    and signed_date > date.today()
-                ):
-
-                    st.error(
-                        "Signed Date cannot be in the future."
-                    )
-
-                elif (
-                    renewal_date
-                    and renewal_date < start_date
-                ):
-
-                    st.error(
-                        "Renewal Date cannot be before "
-                        "the contract Start Date."
-                    )
-
-                else:
-
-                    # --------------------------------------------
-                    # CHECK DUPLICATE CONTRACT NUMBER
-                    # --------------------------------------------
-
-                    duplicate = (
-                        session.query(Contract)
-                        .filter(
-                            Contract.contract_number.ilike(
-                                clean_contract_number
-                            )
+                    clean_document_link = (
+                        normalize_url(
+                            document_link
                         )
-                        .first()
                     )
 
-                    if duplicate:
+                    clean_notes = (
+                        notes.strip()
+                    )
+
+                    # =============================================
+                    # VALIDATION
+                    # =============================================
+
+                    if not clean_number:
 
                         st.error(
-                            "A contract with this "
-                            "Contract Number already exists."
+                            "Contract Number is required."
                         )
 
                     else:
 
-                        placement_id = None
+                        date_error = (
+                            validate_contract_dates(
+                                start_date,
+                                end_date,
+                                signed_date,
+                                renewal_date,
+                            )
+                        )
 
-                        if (
-                            selected_placement
-                            != "No Placement"
-                        ):
+                        if date_error:
 
-                            placement_id = (
-                                placement_options[
-                                    selected_placement
-                                ]
+                            st.error(
+                                date_error
                             )
 
-                        # ----------------------------------------
-                        # CREATE OBJECT
-                        # ----------------------------------------
+                        elif not is_valid_url(
+                            clean_document_link
+                        ):
 
-                        contract = Contract(
-                            client_id=selected_client_id,
-                            placement_id=placement_id,
-                            contract_number=clean_contract_number,
-                            contract_type=contract_type,
-                            start_date=start_date,
-                            end_date=end_date,
-                            contract_value=contract_value,
-                            currency=currency,
-                            status=status,
-                            signed_date=signed_date,
-                            renewal_date=renewal_date,
-                            document_link=document_link.strip(),
-                            notes=notes.strip()
-                        )
+                            st.error(
+                                "Please enter a valid "
+                                "document URL."
+                            )
 
-                        session.add(contract)
-                        session.commit()
+                        else:
 
-                        st.success(
-                            "Contract created successfully."
-                        )
+                            # =====================================
+                            # DUPLICATE NUMBER
+                            # =====================================
 
-                        st.rerun()
+                            duplicate = (
+                                find_duplicate_contract_number(
+                                    session,
+                                    clean_number,
+                                )
+                            )
+
+                            if duplicate:
+
+                                st.error(
+                                    "A contract with this "
+                                    "Contract Number already exists."
+                                )
+
+                            else:
+
+                                # ================================
+                                # PLACEMENT VALIDATION
+                                # ================================
+
+                                valid_placement = True
+
+                                if (
+                                    selected_placement_id
+                                    is not None
+                                ):
+
+                                    placement_obj = (
+                                        session.get(
+                                            Placement,
+                                            selected_placement_id,
+                                        )
+                                    )
+
+                                    if (
+                                        not placement_obj
+                                        or placement_obj.client_id
+                                        != selected_client_id
+                                    ):
+
+                                        valid_placement = False
+
+                                        st.error(
+                                            "The selected "
+                                            "Placement does not "
+                                            "belong to the "
+                                            "selected Client."
+                                        )
+
+                                # ================================
+                                # CREATE
+                                # ================================
+
+                                if valid_placement:
+
+                                    try:
+
+                                        contract = Contract(
+                                            client_id=(
+                                                selected_client_id
+                                            ),
+                                            placement_id=(
+                                                selected_placement_id
+                                            ),
+                                            contract_number=(
+                                                clean_number
+                                            ),
+                                            contract_type=(
+                                                contract_type
+                                            ),
+                                            start_date=(
+                                                start_date
+                                            ),
+                                            end_date=(
+                                                end_date
+                                            ),
+                                            contract_value=(
+                                                contract_value
+                                            ),
+                                            currency=(
+                                                currency
+                                            ),
+                                            status=(
+                                                status
+                                            ),
+                                            signed_date=(
+                                                signed_date
+                                            ),
+                                            renewal_date=(
+                                                renewal_date
+                                            ),
+                                            document_link=(
+                                                clean_document_link
+                                            ),
+                                            notes=(
+                                                clean_notes
+                                            ),
+                                        )
+
+                                        session.add(
+                                            contract
+                                        )
+
+                                        session.commit()
+
+                                        st.success(
+                                            "Contract created "
+                                            "successfully."
+                                        )
+
+                                        st.rerun()
+
+                                    except Exception as error:
+
+                                        session.rollback()
+
+                                        st.error(
+                                            "The contract "
+                                            "could not be created."
+                                        )
+
+                                        st.exception(
+                                            error
+                                        )
 
         # ========================================================
         # CONTRACT REGISTER
         # ========================================================
 
         st.divider()
-        st.header("Contract Register")
+
+        st.header(
+            "Contract Register"
+        )
 
         # ========================================================
         # FILTERS
         # ========================================================
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = (
+            st.columns(4)
+        )
 
         with col1:
 
             status_filter = st.selectbox(
-                "Filter by Status",
-                ["All"] + CONTRACT_STATUSES
+                "Status",
+                ["All"] + CONTRACT_STATUSES,
             )
 
         with col2:
 
             search = st.text_input(
-                "Search Contracts",
+                "Search",
                 placeholder=(
-                    "Contract number, client, type or notes..."
-                )
+                    "Contract number, client, "
+                    "type, placement or notes..."
+                ),
             )
 
         with col3:
@@ -559,79 +1113,110 @@ def show_contracts():
                     "All",
                     "Renewal Due",
                     "No Renewal Date",
-                    "Future Renewal"
-                ]
+                    "Future Renewal",
+                ],
+            )
+
+        with col4:
+
+            client_filter_options = (
+                [None]
+                + client_ids
+            )
+
+            client_filter = st.selectbox(
+                "Client",
+                client_filter_options,
+                format_func=(
+                    lambda client_id:
+                    (
+                        "All Clients"
+                        if client_id is None
+                        else client_labels.get(
+                            client_id,
+                            f"Client {client_id}",
+                        )
+                    )
+                ),
             )
 
         # ========================================================
-        # APPLY FILTERS
+        # FILTER CONTRACTS
         # ========================================================
 
-        filtered_contracts = all_contracts
+        filtered_contracts = list(
+            all_contracts
+        )
 
-        # --------------------------------------------------------
-        # Status
-        # --------------------------------------------------------
+        # ========================================================
+        # STATUS
+        # ========================================================
 
         if status_filter != "All":
 
             filtered_contracts = [
                 contract
-                for contract in filtered_contracts
-                if contract.status == status_filter
+                for contract
+                in filtered_contracts
+                if contract.status
+                == status_filter
             ]
 
-        # --------------------------------------------------------
-        # Search
-        # --------------------------------------------------------
+        # ========================================================
+        # CLIENT
+        # ========================================================
 
-        if search.strip():
-
-            search_text = search.lower().strip()
+        if client_filter is not None:
 
             filtered_contracts = [
                 contract
-                for contract in filtered_contracts
-                if (
-                    search_text
-                    in (
-                        contract.contract_number or ""
-                    ).lower()
+                for contract
+                in filtered_contracts
+                if contract.client_id
+                == client_filter
+            ]
 
-                    or search_text
-                    in get_client_name(
-                        contract
-                    ).lower()
+        # ========================================================
+        # SEARCH
+        # ========================================================
 
-                    or search_text
-                    in (
-                        contract.contract_type or ""
-                    ).lower()
+        if search.strip():
 
-                    or search_text
-                    in (
-                        contract.notes or ""
-                    ).lower()
+            search_text = normalize_text(
+                search
+            )
+
+            filtered_contracts = [
+                contract
+                for contract
+                in filtered_contracts
+                if search_text
+                in get_contract_search_text(
+                    contract
                 )
             ]
 
-        # --------------------------------------------------------
-        # Renewal filter
-        # --------------------------------------------------------
+        # ========================================================
+        # RENEWAL
+        # ========================================================
 
         if renewal_filter == "Renewal Due":
 
             filtered_contracts = [
                 contract
-                for contract in filtered_contracts
-                if is_renewal_due(contract)
+                for contract
+                in filtered_contracts
+                if is_renewal_due(
+                    contract
+                )
             ]
 
         elif renewal_filter == "No Renewal Date":
 
             filtered_contracts = [
                 contract
-                for contract in filtered_contracts
+                for contract
+                in filtered_contracts
                 if not contract.renewal_date
             ]
 
@@ -639,10 +1224,17 @@ def show_contracts():
 
             filtered_contracts = [
                 contract
-                for contract in filtered_contracts
+                for contract
+                in filtered_contracts
                 if (
                     contract.renewal_date
-                    and contract.renewal_date > date.today()
+                    and contract.renewal_date
+                    > date.today()
+                    and contract.status
+                    not in [
+                        "Expired",
+                        "Terminated",
+                    ]
                 )
             ]
 
@@ -650,8 +1242,12 @@ def show_contracts():
         # RESULT COUNT
         # ========================================================
 
-        st.write(
-            f"Showing **{len(filtered_contracts)}** contract(s)"
+        st.caption(
+            f"Showing "
+            f"{len(filtered_contracts)} "
+            f"of "
+            f"{len(all_contracts)} "
+            f"contracts"
         )
 
         # ========================================================
@@ -661,701 +1257,859 @@ def show_contracts():
         if not filtered_contracts:
 
             st.info(
-                "No contracts match the selected filters."
+                "No contracts match the "
+                "selected filters."
             )
 
-        for contract in filtered_contracts:
+        else:
 
-            with st.container(border=True):
+            for contract in (
+                filtered_contracts
+            ):
 
-                col1, col2, col3, col4 = st.columns(
-                    [3, 3, 2, 2]
-                )
+                with st.container(
+                    border=True
+                ):
 
-                # =================================================
-                # CONTRACT INFORMATION
-                # =================================================
-
-                with col1:
-
-                    st.subheader(
-                        contract.contract_number
-                        or "Unnamed Contract"
+                    col1, col2, col3, col4 = (
+                        st.columns(
+                            [3, 3, 2, 2]
+                        )
                     )
 
-                    st.write(
-                        get_client_name(contract)
-                    )
+                    # ============================================
+                    # CONTRACT INFORMATION
+                    # ============================================
 
-                    st.caption(
-                        contract.contract_type
-                        or "Contract type not specified"
-                    )
+                    with col1:
 
-                    if contract.placement:
+                        contract_title = (
+                            contract.contract_number
+                            or "Unnamed Contract"
+                        )
 
-                        st.caption(
-                            "Placement: "
-                            + (
-                                contract.placement.position
-                                or "Unnamed Position"
+                        st.markdown(
+                            f"### {contract_title}"
+                        )
+
+                        st.write(
+                            get_client_name(
+                                contract
                             )
                         )
 
-                # =================================================
-                # STATUS / DATES
-                # =================================================
-
-                with col2:
-
-                    st.write("**Status**")
-
-                    if contract.status == "Active":
-
-                        st.success(
-                            contract.status
-                        )
-
-                    elif contract.status == "Signed":
-
-                        st.info(
-                            contract.status
-                        )
-
-                    elif contract.status == "Expired":
-
-                        st.error(
-                            contract.status
-                        )
-
-                    elif contract.status == "Terminated":
-
-                        st.error(
-                            contract.status
-                        )
-
-                    else:
-
-                        st.warning(
-                            contract.status or "Draft"
-                        )
-
-                    if contract.start_date:
-
                         st.caption(
-                            f"Start: {contract.start_date}"
+                            contract.contract_type
+                            or "Contract type not specified"
                         )
 
-                    if contract.end_date:
+                        if contract.placement:
 
-                        st.caption(
-                            f"End: {contract.end_date}"
+                            st.caption(
+                                "Placement: "
+                                + (
+                                    contract.placement.position
+                                    or "Unnamed Position"
+                                )
+                            )
+
+                    # ============================================
+                    # STATUS / DATES
+                    # ============================================
+
+                    with col2:
+
+                        status = (
+                            get_status_display(
+                                contract.status
+                            )
                         )
 
-                        if (
-                            contract.end_date < date.today()
-                            and contract.status
-                            not in [
-                                "Expired",
-                                "Terminated"
-                            ]
-                        ):
+                        if status == "Active":
+
+                            st.success(
+                                status
+                            )
+
+                        elif status == "Signed":
+
+                            st.info(
+                                status
+                            )
+
+                        elif status in [
+                            "Expired",
+                            "Terminated",
+                        ]:
 
                             st.error(
-                                "End date has passed."
+                                status
                             )
 
-                # =================================================
-                # CONTRACT VALUE
-                # =================================================
+                        else:
 
-                with col3:
+                            st.warning(
+                                status
+                            )
 
-                    st.write("**Contract Value**")
+                        if contract.start_date:
 
-                    st.write(
-                        f"{contract.currency or 'GBP'} "
-                        f"{contract.contract_value or 0:,.2f}"
-                    )
+                            st.caption(
+                                f"Start: "
+                                f"{contract.start_date.strftime('%d %b %Y')}"
+                            )
 
-                    if contract.signed_date:
+                        if contract.end_date:
 
-                        st.caption(
-                            f"Signed: {contract.signed_date}"
-                        )
+                            st.caption(
+                                f"End: "
+                                f"{contract.end_date.strftime('%d %b %Y')}"
+                            )
 
-                    if contract.renewal_date:
-
-                        days = days_until_renewal(
-                            contract
-                        )
-
-                        st.caption(
-                            f"Renewal: {contract.renewal_date}"
-                        )
-
-                        if days is not None:
-
-                            if days < 0:
+                            if is_expired(
+                                contract
+                            ):
 
                                 st.error(
-                                    "Renewal overdue by "
-                                    f"{abs(days)} day(s)."
+                                    "Contract end date "
+                                    "has passed."
                                 )
 
-                            elif days == 0:
+                    # ============================================
+                    # VALUE / RENEWAL
+                    # ============================================
 
-                                st.warning(
-                                    "Renewal is due today."
+                    with col3:
+
+                        st.write(
+                            "**Contract Value**"
+                        )
+
+                        currency = (
+                            contract.currency
+                            or "GBP"
+                        )
+
+                        value = float(
+                            contract.contract_value
+                            or 0
+                        )
+
+                        st.write(
+                            f"{currency} "
+                            f"{value:,.2f}"
+                        )
+
+                        if contract.signed_date:
+
+                            st.caption(
+                                f"Signed: "
+                                f"{contract.signed_date.strftime('%d %b %Y')}"
+                            )
+
+                        if contract.renewal_date:
+
+                            renewal_state = (
+                                get_renewal_state(
+                                    contract
+                                )
+                            )
+
+                            renewal_label = (
+                                get_renewal_label(
+                                    contract
+                                )
+                            )
+
+                            if (
+                                renewal_state
+                                == "Overdue"
+                            ):
+
+                                st.error(
+                                    f"Renewal: "
+                                    f"{renewal_label}"
                                 )
 
-                            elif days <= 30:
+                            elif (
+                                renewal_state
+                                in [
+                                    "Today",
+                                    "Soon",
+                                ]
+                            ):
 
                                 st.warning(
-                                    f"Renewal in {days} day(s)."
+                                    f"Renewal: "
+                                    f"{renewal_label}"
                                 )
 
                             else:
 
                                 st.caption(
-                                    f"{days} day(s) until renewal."
+                                    f"Renewal: "
+                                    f"{renewal_label}"
                                 )
 
-                # =================================================
-                # ACTIONS
-                # =================================================
+                    # ============================================
+                    # ACTIONS
+                    # ============================================
 
-                with col4:
+                    with col4:
 
-                    if contract.document_link:
+                        if contract.document_link:
 
-                        st.link_button(
-                            "Open Document",
-                            contract.document_link,
-                            use_container_width=True
+                            st.link_button(
+                                "Open Document",
+                                contract.document_link,
+                                use_container_width=True,
+                            )
+
+                        if st.button(
+                            "Edit",
+                            key=(
+                                f"edit_contract_"
+                                f"{contract.id}"
+                            ),
+                            use_container_width=True,
+                        ):
+
+                            st.session_state[
+                                "editing_contract_id"
+                            ] = contract.id
+
+                            st.rerun()
+
+                    # ============================================
+                    # NOTES
+                    # ============================================
+
+                    if contract.notes:
+
+                        st.caption(
+                            f"Notes: "
+                            f"{contract.notes}"
                         )
-
-                    if st.button(
-                        "Edit",
-                        key=f"edit_contract_{contract.id}",
-                        use_container_width=True
-                    ):
-
-                        st.session_state[
-                            "editing_contract_id"
-                        ] = contract.id
-
-                        st.rerun()
-
-                # =================================================
-                # NOTES
-                # =================================================
-
-                if contract.notes:
-
-                    st.caption(
-                        f"Notes: {contract.notes}"
-                    )
 
         # ========================================================
         # EDIT CONTRACT
         # ========================================================
 
-        editing_id = st.session_state.get(
-            "editing_contract_id"
+        editing_id = (
+            st.session_state.get(
+                "editing_contract_id"
+            )
         )
 
-        if editing_id:
+        if editing_id is None:
 
-            contract = session.get(
-                Contract,
-                editing_id
+            return
+
+        contract = session.get(
+            Contract,
+            editing_id,
+        )
+
+        if not contract:
+
+            st.session_state[
+                "editing_contract_id"
+            ] = None
+
+            st.warning(
+                "The selected contract "
+                "could not be found."
             )
 
-            if not contract:
+            return
 
-                st.session_state.pop(
-                    "editing_contract_id",
-                    None
-                )
+        # ========================================================
+        # EDIT HEADER
+        # ========================================================
 
-                st.warning(
-                    "The selected contract could not be found."
-                )
+        st.divider()
 
-                return
+        st.header(
+            "Edit Contract"
+        )
 
-            st.divider()
-            st.header("Edit Contract")
+        # ========================================================
+        # EDIT CLIENT
+        # ========================================================
 
-            # ====================================================
-            # CLIENT OPTIONS
-            # ====================================================
+        if not clients:
 
-            client_names = list(
-                client_options.keys()
+            st.error(
+                "No clients are available."
             )
 
-            current_client_label = None
+            return
 
-            for label, client_id in client_options.items():
+        current_client_id = (
+            contract.client_id
+            if contract.client_id
+            in client_ids
+            else client_ids[0]
+        )
 
-                if client_id == contract.client_id:
+        # ========================================================
+        # EDIT FORM
+        # ========================================================
 
-                    current_client_label = label
-                    break
+        with st.form(
+            f"edit_contract_form_{contract.id}"
+        ):
 
-            if current_client_label is None:
+            # =====================================================
+            # BASIC INFORMATION
+            # =====================================================
 
-                current_client_label = client_names[0]
-
-            client_index = client_names.index(
-                current_client_label
-            )
-
-            # ====================================================
-            # EDIT FORM
-            # ====================================================
-
-            with st.form(
-                f"edit_contract_form_{contract.id}"
-            ):
-
-                edit_client = st.selectbox(
+            edit_client_id = (
+                st.selectbox(
                     "Client",
-                    client_names,
-                    index=client_index
+                    client_ids,
+                    index=client_ids.index(
+                        current_client_id
+                    ),
+                    format_func=(
+                        lambda client_id:
+                        client_labels.get(
+                            client_id,
+                            f"Client {client_id}",
+                        )
+                    ),
                 )
+            )
 
-                edit_contract_number = st.text_input(
+            edit_contract_number = (
+                st.text_input(
                     "Contract Number",
-                    value=contract.contract_number or ""
+                    value=(
+                        contract.contract_number
+                        or ""
+                    ),
                 )
+            )
 
-                current_type = (
-                    contract.contract_type
-                    if contract.contract_type
-                    in CONTRACT_TYPES
-                    else "Other"
-                )
+            current_type = (
+                contract.contract_type
+                if contract.contract_type
+                in CONTRACT_TYPES
+                else "Other"
+            )
 
-                edit_contract_type = st.selectbox(
+            edit_contract_type = (
+                st.selectbox(
                     "Contract Type",
                     CONTRACT_TYPES,
                     index=CONTRACT_TYPES.index(
                         current_type
-                    )
+                    ),
                 )
+            )
 
-                # =================================================
-                # PLACEMENTS FOR SELECTED CLIENT
-                # =================================================
+            # =====================================================
+            # PLACEMENT
+            # =====================================================
 
-                selected_edit_client_id = client_options[
-                    edit_client
-                ]
+            edit_client_placements = (
+                get_client_placements(
+                    placements,
+                    edit_client_id,
+                )
+            )
 
-                selected_client_placements = [
+            edit_placement_ids = [
+                placement.id
+                for placement
+                in edit_client_placements
+            ]
+
+            edit_placement_labels = {
+                placement.id:
+                get_placement_label(
                     placement
-                    for placement in placements
-                    if placement.client_id
-                    == selected_edit_client_id
-                ]
-
-                selected_placement_options = {
-                    get_placement_label(placement): placement.id
-                    for placement
-                    in selected_client_placements
-                }
-
-                selected_placement_names = (
-                    ["No Placement"]
-                    + list(
-                        selected_placement_options.keys()
-                    )
                 )
+                for placement
+                in edit_client_placements
+            }
 
-                current_edit_placement = (
-                    "No Placement"
-                )
+            edit_placement_choices = (
+                [None]
+                + edit_placement_ids
+            )
 
+            current_placement_id = (
+                contract.placement_id
                 if (
                     contract.placement_id
-                    and contract.client_id
-                    == selected_edit_client_id
-                ):
-
-                    for (
-                        label,
-                        placement_id
-                    ) in selected_placement_options.items():
-
-                        if (
-                            placement_id
-                            == contract.placement_id
-                        ):
-
-                            current_edit_placement = label
-                            break
-
-                edit_placement_index = (
-                    selected_placement_names.index(
-                        current_edit_placement
-                    )
+                    in edit_placement_ids
                 )
+                else None
+            )
 
-                edit_placement = st.selectbox(
+            edit_placement = (
+                st.selectbox(
                     "Placement",
-                    selected_placement_names,
-                    index=edit_placement_index
+                    edit_placement_choices,
+                    index=edit_placement_choices.index(
+                        current_placement_id
+                    ),
+                    format_func=(
+                        lambda placement_id:
+                        (
+                            "No Placement"
+                            if placement_id is None
+                            else edit_placement_labels.get(
+                                placement_id,
+                                f"Placement {placement_id}",
+                            )
+                        )
+                    ),
                 )
+            )
 
-                # =================================================
-                # DATES
-                # =================================================
+            # =====================================================
+            # DATES
+            # =====================================================
 
-                col1, col2 = st.columns(2)
+            st.subheader(
+                "Contract Dates"
+            )
 
-                with col1:
+            col1, col2, col3 = (
+                st.columns(3)
+            )
 
-                    edit_start_date = st.date_input(
+            with col1:
+
+                edit_start_date = (
+                    st.date_input(
                         "Start Date",
                         value=(
                             contract.start_date
                             or date.today()
-                        )
+                        ),
                     )
+                )
 
-                    edit_has_end_date = st.checkbox(
+            with col2:
+
+                edit_has_end_date = (
+                    st.checkbox(
                         "Set End Date",
                         value=(
-                            contract.end_date is not None
-                        )
+                            contract.end_date
+                            is not None
+                        ),
                     )
+                )
 
-                    if edit_has_end_date:
+                if edit_has_end_date:
 
-                        edit_end_date = st.date_input(
+                    edit_end_date = (
+                        st.date_input(
                             "End Date",
                             value=(
                                 contract.end_date
                                 or date.today()
-                            )
-                        )
-
-                    else:
-
-                        edit_end_date = None
-
-                with col2:
-
-                    edit_has_signed_date = st.checkbox(
-                        "Set Signed Date",
-                        value=(
-                            contract.signed_date is not None
+                            ),
                         )
                     )
 
-                    if edit_has_signed_date:
+                else:
 
-                        edit_signed_date = st.date_input(
+                    edit_end_date = None
+
+            with col3:
+
+                edit_has_signed_date = (
+                    st.checkbox(
+                        "Set Signed Date",
+                        value=(
+                            contract.signed_date
+                            is not None
+                        ),
+                    )
+                )
+
+                if edit_has_signed_date:
+
+                    edit_signed_date = (
+                        st.date_input(
                             "Signed Date",
                             value=(
                                 contract.signed_date
                                 or date.today()
-                            )
-                        )
-
-                    else:
-
-                        edit_signed_date = None
-
-                    edit_has_renewal_date = st.checkbox(
-                        "Set Renewal Date",
-                        value=(
-                            contract.renewal_date is not None
+                            ),
                         )
                     )
 
-                    if edit_has_renewal_date:
+                else:
 
-                        edit_renewal_date = st.date_input(
-                            "Renewal Date",
-                            value=(
-                                contract.renewal_date
-                                or date.today()
-                            )
-                        )
+                    edit_signed_date = None
 
-                    else:
+            edit_has_renewal_date = (
+                st.checkbox(
+                    "Set Renewal Date",
+                    value=(
+                        contract.renewal_date
+                        is not None
+                    ),
+                )
+            )
 
-                        edit_renewal_date = None
+            if edit_has_renewal_date:
 
-                # =================================================
-                # FINANCIAL INFORMATION
-                # =================================================
+                edit_renewal_date = (
+                    st.date_input(
+                        "Renewal Date",
+                        value=(
+                            contract.renewal_date
+                            or date.today()
+                        ),
+                    )
+                )
 
-                col1, col2, col3 = st.columns(3)
+            else:
 
-                with col1:
+                edit_renewal_date = None
 
-                    edit_value = st.number_input(
+            # =====================================================
+            # FINANCIAL INFORMATION
+            # =====================================================
+
+            col1, col2, col3 = (
+                st.columns(3)
+            )
+
+            with col1:
+
+                edit_value = (
+                    st.number_input(
                         "Contract Value",
                         min_value=0.0,
                         value=float(
-                            contract.contract_value or 0
+                            contract.contract_value
+                            or 0
                         ),
-                        step=100.0
+                        step=100.0,
                     )
+                )
 
-                with col2:
+            with col2:
 
-                    current_currency = (
-                        contract.currency
-                        if contract.currency
-                        in CURRENCIES
-                        else "GBP"
-                    )
+                current_currency = (
+                    contract.currency
+                    if contract.currency
+                    in CURRENCIES
+                    else "GBP"
+                )
 
-                    edit_currency = st.selectbox(
+                edit_currency = (
+                    st.selectbox(
                         "Currency",
                         CURRENCIES,
                         index=CURRENCIES.index(
                             current_currency
-                        )
+                        ),
                     )
+                )
 
-                with col3:
+            with col3:
 
-                    current_status = (
-                        contract.status
-                        if contract.status
-                        in CONTRACT_STATUSES
-                        else "Draft"
-                    )
+                current_status = (
+                    contract.status
+                    if contract.status
+                    in CONTRACT_STATUSES
+                    else "Draft"
+                )
 
-                    edit_status = st.selectbox(
+                edit_status = (
+                    st.selectbox(
                         "Status",
                         CONTRACT_STATUSES,
                         index=CONTRACT_STATUSES.index(
                             current_status
-                        )
+                        ),
                     )
+                )
 
-                # =================================================
-                # DOCUMENT / NOTES
-                # =================================================
+            # =====================================================
+            # DOCUMENT / NOTES
+            # =====================================================
 
-                edit_document_link = st.text_input(
+            edit_document_link = (
+                st.text_input(
                     "Document Link",
-                    value=contract.document_link or ""
+                    value=(
+                        contract.document_link
+                        or ""
+                    ),
                 )
+            )
 
-                edit_notes = st.text_area(
+            edit_notes = (
+                st.text_area(
                     "Notes",
-                    value=contract.notes or ""
+                    value=(
+                        contract.notes
+                        or ""
+                    ),
+                )
+            )
+
+            # =====================================================
+            # BUTTONS
+            # =====================================================
+
+            col1, col2 = (
+                st.columns(2)
+            )
+
+            with col1:
+
+                save = (
+                    st.form_submit_button(
+                        "Save Changes",
+                        use_container_width=True,
+                    )
                 )
 
-                # =================================================
-                # BUTTONS
-                # =================================================
+            with col2:
 
-                col1, col2 = st.columns(2)
-
-                with col1:
-
-                    save = st.form_submit_button(
-                        "Save Changes",
-                        use_container_width=True
-                    )
-
-                with col2:
-
-                    cancel = st.form_submit_button(
+                cancel = (
+                    st.form_submit_button(
                         "Cancel",
-                        use_container_width=True
+                        use_container_width=True,
+                    )
+                )
+
+            # =====================================================
+            # CANCEL
+            # =====================================================
+
+            if cancel:
+
+                st.session_state[
+                    "editing_contract_id"
+                ] = None
+
+                st.rerun()
+
+            # =====================================================
+            # SAVE
+            # =====================================================
+
+            if save:
+
+                clean_number = (
+                    edit_contract_number.strip()
+                )
+
+                clean_document_link = (
+                    normalize_url(
+                        edit_document_link
+                    )
+                )
+
+                clean_notes = (
+                    edit_notes.strip()
+                )
+
+                # ================================================
+                # BASIC VALIDATION
+                # ================================================
+
+                if not clean_number:
+
+                    st.error(
+                        "Contract Number is required."
                     )
 
-                # =================================================
-                # CANCEL
-                # =================================================
+                else:
 
-                if cancel:
-
-                    st.session_state.pop(
-                        "editing_contract_id",
-                        None
+                    date_error = (
+                        validate_contract_dates(
+                            edit_start_date,
+                            edit_end_date,
+                            edit_signed_date,
+                            edit_renewal_date,
+                        )
                     )
 
-                    st.rerun()
-
-                # =================================================
-                # SAVE
-                # =================================================
-
-                if save:
-
-                    clean_contract_number = (
-                        edit_contract_number.strip()
-                    )
-
-                    if not clean_contract_number:
+                    if date_error:
 
                         st.error(
-                            "Contract Number is required."
+                            date_error
                         )
 
-                    elif (
-                        edit_end_date
-                        and edit_end_date
-                        < edit_start_date
+                    elif not is_valid_url(
+                        clean_document_link
                     ):
 
                         st.error(
-                            "End Date cannot be before "
-                            "Start Date."
-                        )
-
-                    elif (
-                        edit_signed_date
-                        and edit_signed_date
-                        > date.today()
-                    ):
-
-                        st.error(
-                            "Signed Date cannot be in the future."
-                        )
-
-                    elif (
-                        edit_renewal_date
-                        and edit_renewal_date
-                        < edit_start_date
-                    ):
-
-                        st.error(
-                            "Renewal Date cannot be before "
-                            "the contract Start Date."
+                            "Please enter a valid "
+                            "document URL."
                         )
 
                     else:
 
-                        # ----------------------------------------
-                        # DUPLICATE NUMBER CHECK
-                        # ----------------------------------------
+                        # ==========================================
+                        # DUPLICATE CONTRACT NUMBER
+                        # ==========================================
 
                         duplicate = (
-                            session.query(Contract)
-                            .filter(
-                                Contract.contract_number.ilike(
-                                    clean_contract_number
-                                ),
-                                Contract.id != contract.id
+                            find_duplicate_contract_number(
+                                session,
+                                clean_number,
+                                exclude_id=contract.id,
                             )
-                            .first()
                         )
 
                         if duplicate:
 
                             st.error(
-                                "Another contract already uses "
-                                "this Contract Number."
+                                "Another contract "
+                                "already uses this "
+                                "Contract Number."
                             )
 
                         else:
 
-                            # ------------------------------------
-                            # UPDATE CLIENT
-                            # ------------------------------------
+                            # ======================================
+                            # PLACEMENT VALIDATION
+                            # ======================================
 
-                            contract.client_id = (
-                                selected_edit_client_id
-                            )
-
-                            # ------------------------------------
-                            # UPDATE PLACEMENT
-                            # ------------------------------------
+                            valid_placement = True
 
                             if (
                                 edit_placement
-                                == "No Placement"
+                                is not None
                             ):
 
-                                contract.placement_id = None
-
-                            else:
-
-                                contract.placement_id = (
-                                    selected_placement_options[
-                                        edit_placement
-                                    ]
+                                placement_obj = (
+                                    session.get(
+                                        Placement,
+                                        edit_placement,
+                                    )
                                 )
 
-                            # ------------------------------------
-                            # UPDATE CONTRACT
-                            # ------------------------------------
+                                if (
+                                    not placement_obj
+                                    or placement_obj.client_id
+                                    != edit_client_id
+                                ):
 
-                            contract.contract_number = (
-                                clean_contract_number
-                            )
+                                    valid_placement = False
 
-                            contract.contract_type = (
-                                edit_contract_type
-                            )
+                                    st.error(
+                                        "The selected "
+                                        "Placement does not "
+                                        "belong to the "
+                                        "selected Client."
+                                    )
 
-                            contract.start_date = (
-                                edit_start_date
-                            )
+                            # ======================================
+                            # UPDATE
+                            # ======================================
 
-                            contract.end_date = (
-                                edit_end_date
-                            )
+                            if valid_placement:
 
-                            contract.contract_value = (
-                                edit_value
-                            )
+                                try:
 
-                            contract.currency = (
-                                edit_currency
-                            )
+                                    contract.client_id = (
+                                        edit_client_id
+                                    )
 
-                            contract.status = (
-                                edit_status
-                            )
+                                    contract.placement_id = (
+                                        edit_placement
+                                    )
 
-                            contract.signed_date = (
-                                edit_signed_date
-                            )
+                                    contract.contract_number = (
+                                        clean_number
+                                    )
 
-                            contract.renewal_date = (
-                                edit_renewal_date
-                            )
+                                    contract.contract_type = (
+                                        edit_contract_type
+                                    )
 
-                            contract.document_link = (
-                                edit_document_link.strip()
-                            )
+                                    contract.start_date = (
+                                        edit_start_date
+                                    )
 
-                            contract.notes = (
-                                edit_notes.strip()
-                            )
+                                    contract.end_date = (
+                                        edit_end_date
+                                    )
 
-                            # ------------------------------------
-                            # SAVE
-                            # ------------------------------------
+                                    contract.contract_value = (
+                                        edit_value
+                                    )
 
-                            session.commit()
+                                    contract.currency = (
+                                        edit_currency
+                                    )
 
-                            st.session_state.pop(
-                                "editing_contract_id",
-                                None
-                            )
+                                    contract.status = (
+                                        edit_status
+                                    )
 
-                            st.success(
-                                "Contract updated successfully."
-                            )
+                                    contract.signed_date = (
+                                        edit_signed_date
+                                    )
 
-                            st.rerun()
+                                    contract.renewal_date = (
+                                        edit_renewal_date
+                                    )
+
+                                    contract.document_link = (
+                                        clean_document_link
+                                    )
+
+                                    contract.notes = (
+                                        clean_notes
+                                    )
+
+                                    session.commit()
+
+                                    st.session_state[
+                                        "editing_contract_id"
+                                    ] = None
+
+                                    st.success(
+                                        "Contract updated "
+                                        "successfully."
+                                    )
+
+                                    st.rerun()
+
+                                except Exception as error:
+
+                                    session.rollback()
+
+                                    st.error(
+                                        "The contract "
+                                        "could not be updated."
+                                    )
+
+                                    st.exception(
+                                        error
+
+                                    )
+
+    except Exception as error:
+
+        session.rollback()
+
+        st.error(
+            "An error occurred while loading "
+            "the Contracts screen."
+        )
+
+        st.exception(
+            error
+        )
 
     finally:
 
         session.close()
-

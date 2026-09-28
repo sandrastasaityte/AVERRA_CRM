@@ -31,7 +31,7 @@ st.set_page_config(
 
 
 # ============================================================
-# CREATE DATABASE
+# DATABASE INITIALISATION
 # ============================================================
 
 create_database()
@@ -42,7 +42,10 @@ create_database()
 # ============================================================
 
 st.sidebar.title("AVERRA CRM")
-st.sidebar.caption("Staffing & Outsourcing Management")
+
+st.sidebar.caption(
+    "Staffing & Outsourcing Management"
+)
 
 st.sidebar.divider()
 
@@ -51,28 +54,31 @@ st.sidebar.divider()
 # NAVIGATION
 # ============================================================
 
+NAVIGATION_OPTIONS = [
+    "Dashboard",
+    "Clients",
+    "Client Contacts",
+    "Activities",
+    "Employees",
+    "Employee Skills",
+    "Jobs",
+    "Candidates",
+    "Placements",
+    "Contracts",
+    "Invoices",
+    "Payments",
+    "Reports",
+]
+
+
 page = st.sidebar.radio(
     "Navigation",
-    [
-        "Dashboard",
-        "Clients",
-        "Client Contacts",
-        "Activities",
-        "Employees",
-        "Employee Skills",
-        "Jobs",
-        "Candidates",
-        "Placements",
-        "Contracts",
-        "Invoices",
-        "Payments",
-        "Reports",
-    ],
+    NAVIGATION_OPTIONS,
 )
 
 
 # ============================================================
-# DASHBOARD
+# PAGE ROUTING
 # ============================================================
 
 if page == "Dashboard":
@@ -80,109 +86,72 @@ if page == "Dashboard":
     show_dashboard()
 
 
-# ============================================================
-# CLIENTS
-# ============================================================
-
 elif page == "Clients":
 
     show_clients()
 
-
-# ============================================================
-# CLIENT CONTACTS
-# ============================================================
 
 elif page == "Client Contacts":
 
     show_client_contacts()
 
 
-# ============================================================
-# ACTIVITIES
-# ============================================================
-
 elif page == "Activities":
 
     show_activities()
 
-
-# ============================================================
-# EMPLOYEES
-# ============================================================
 
 elif page == "Employees":
 
     show_employees()
 
 
-# ============================================================
-# EMPLOYEE SKILLS
-# ============================================================
-
 elif page == "Employee Skills":
 
     show_employee_skills()
 
-
-# ============================================================
-# JOBS
-# ============================================================
 
 elif page == "Jobs":
 
     show_jobs()
 
 
-# ============================================================
-# CANDIDATES
-# ============================================================
-
 elif page == "Candidates":
 
     show_candidates()
 
-
-# ============================================================
-# PLACEMENTS
-# ============================================================
 
 elif page == "Placements":
 
     show_placements()
 
 
-# ============================================================
-# CONTRACTS
-# ============================================================
-
 elif page == "Contracts":
 
     show_contracts()
 
-
-# ============================================================
-# INVOICES
-# ============================================================
 
 elif page == "Invoices":
 
     show_invoices()
 
 
-# ============================================================
-# PAYMENTS
-# ============================================================
-
 elif page == "Payments":
 
     show_payments()
 
 
-# ============================================================
-# REPORTS
-# ============================================================
-
 elif page == "Reports":
 
     show_reports()
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.sidebar.divider()
+
+st.sidebar.caption(
+    "AVERRA CRM • Staffing & Outsourcing"
+)

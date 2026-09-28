@@ -1,6 +1,8 @@
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 import csv
+import io
 
 
 # ============================================================
@@ -24,13 +26,34 @@ EXPORT_DIR.mkdir(
 def clean_value(value):
     """
     Convert a value into a CSV-friendly format.
+
+    Handles:
+    - None
+    - dates
+    - datetimes
+    - Decimal values
+    - booleans
+    - normal Python values
     """
 
     if value is None:
         return ""
 
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
+        return value.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    if isinstance(value, date):
+        return value.strftime(
+            "%Y-%m-%d"
+        )
+
+    if isinstance(value, Decimal):
+        return str(value)
+
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
 
     return str(value)
 
@@ -47,6 +70,8 @@ def generate_filename(
         "%Y%m%d_%H%M%S"
     )
 
+    extension = extension.lstrip(".")
+
     return (
         f"{prefix}_{timestamp}.{extension}"
     )
@@ -57,9 +82,81 @@ def get_export_path(
 ):
     """
     Return the full path inside the exports folder.
+
+    Prevents an absolute path from escaping the
+    AVERRA CRM export directory.
     """
 
+    filename = Path(filename).name
+
     return EXPORT_DIR / filename
+
+
+def ensure_csv_extension(
+    filename,
+):
+    """
+    Ensure that a filename ends with .csv.
+    """
+
+    if not filename:
+        filename = generate_filename(
+            "averra_export"
+        )
+
+    if not filename.lower().endswith(".csv"):
+        filename += ".csv"
+
+    return filename
+
+
+def get_model_fields(
+    record,
+):
+    """
+    Return SQLAlchemy column names from a model object.
+
+    Returns an empty list if the object is not
+    a SQLAlchemy model.
+    """
+
+    table = getattr(
+        record,
+        "__table__",
+        None,
+    )
+
+    if table is None:
+        return []
+
+    return [
+        column.name
+        for column in table.columns
+    ]
+
+
+def infer_fieldnames(
+    records,
+):
+    """
+    Automatically determine CSV field names.
+
+    Supports:
+    - dictionaries
+    - SQLAlchemy model objects
+    """
+
+    records = list(records or [])
+
+    if not records:
+        return []
+
+    first = records[0]
+
+    if isinstance(first, dict):
+        return list(first.keys())
+
+    return get_model_fields(first)
 
 
 # ============================================================
@@ -77,90 +174,25 @@ def export_to_csv(
     records can be:
     - dictionaries
     - SQLAlchemy model objects
+
+    Returns:
+        pathlib.Path
     """
 
     records = list(records or [])
 
-    if filename is None:
-        filename = generate_filename(
-            "averra_export"
+    filename = ensure_csv_extension(
+        filename
+    )
+
+    output_path = get_export_path(
+        filename
+    )
+
+    if fieldnames is None:
+        fieldnames = infer_fieldnames(
+            records
         )
-
-    if not filename.lower().endswith(".csv"):
-        filename += ".csv"
-
-    output_path = get_export_path(filename)
-
-    # --------------------------------------------------------
-    # No records
-    # --------------------------------------------------------
-
-    if not records:
-
-        if fieldnames is None:
-            fieldnames = []
-
-        with open(
-            output_path,
-            "w",
-            newline="",
-            encoding="utf-8-sig",
-        ) as file:
-
-            writer = csv.DictWriter(
-                file,
-                fieldnames=fieldnames,
-            )
-
-            writer.writeheader()
-
-        return output_path
-
-    # --------------------------------------------------------
-    # Dictionary records
-    # --------------------------------------------------------
-
-    if isinstance(records[0], dict):
-
-        if fieldnames is None:
-            fieldnames = list(
-                records[0].keys()
-            )
-
-        rows = records
-
-    # --------------------------------------------------------
-    # SQLAlchemy / object records
-    # --------------------------------------------------------
-
-    else:
-
-        if fieldnames is None:
-
-            fieldnames = [
-                column.name
-                for column in records[0].__table__.columns
-            ]
-
-        rows = []
-
-        for record in records:
-
-            row = {}
-
-            for field in fieldnames:
-
-                row[field] = getattr(
-                    record,
-                    field,
-                    "",
-                )
-
-            rows.append(row)
-
-    # --------------------------------------------------------
-    # Write CSV
-    # --------------------------------------------------------
 
     with open(
         output_path,
@@ -172,6 +204,90 @@ def export_to_csv(
         writer = csv.DictWriter(
             file,
             fieldnames=fieldnames,
+            extrasaction="ignore",
+        )
+
+        writer.writeheader()
+
+        for record in records:
+
+            if isinstance(record, dict):
+
+                row = {
+                    field: clean_value(
+                        record.get(
+                            field,
+                            "",
+                        )
+                    )
+                    for field in fieldnames
+                }
+
+            else:
+
+                row = {
+                    field: clean_value(
+                        getattr(
+                            record,
+                            field,
+                            "",
+                        )
+                    )
+                    for field in fieldnames
+                }
+
+            writer.writerow(row)
+
+    return output_path
+
+
+# ============================================================
+# CSV BY DICTIONARY DATA
+# ============================================================
+
+def export_dicts_to_csv(
+    rows,
+    filename=None,
+    fieldnames=None,
+):
+    """
+    Export a list of dictionaries to CSV.
+
+    Returns:
+        pathlib.Path
+    """
+
+    rows = list(rows or [])
+
+    filename = ensure_csv_extension(
+        filename
+    )
+
+    output_path = get_export_path(
+        filename
+    )
+
+    if fieldnames is None:
+
+        if rows:
+            fieldnames = list(
+                rows[0].keys()
+            )
+
+        else:
+            fieldnames = []
+
+    with open(
+        output_path,
+        "w",
+        newline="",
+        encoding="utf-8-sig",
+    ) as file:
+
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
         )
 
         writer.writeheader()
@@ -180,7 +296,10 @@ def export_to_csv(
 
             cleaned_row = {
                 field: clean_value(
-                    row.get(field, "")
+                    row.get(
+                        field,
+                        "",
+                    )
                 )
                 for field in fieldnames
             }
@@ -193,99 +312,42 @@ def export_to_csv(
 
 
 # ============================================================
-# CSV BY DICTIONARY DATA
-# ============================================================
-
-def export_dicts_to_csv(
-    rows,
-    filename,
-):
-    """
-    Export a list of dictionaries to CSV.
-    """
-
-    rows = list(rows or [])
-
-    if not filename.lower().endswith(".csv"):
-        filename += ".csv"
-
-    output_path = get_export_path(filename)
-
-    if not rows:
-
-        with open(
-            output_path,
-            "w",
-            newline="",
-            encoding="utf-8-sig",
-        ):
-            pass
-
-        return output_path
-
-    fieldnames = list(
-        rows[0].keys()
-    )
-
-    with open(
-        output_path,
-        "w",
-        newline="",
-        encoding="utf-8-sig",
-    ) as file:
-
-        writer = csv.DictWriter(
-            file,
-            fieldnames=fieldnames,
-        )
-
-        writer.writeheader()
-
-        for row in rows:
-
-            writer.writerow(
-                {
-                    key: clean_value(
-                        row.get(key, "")
-                    )
-                    for key in fieldnames
-                }
-            )
-
-    return output_path
-
-
-# ============================================================
 # CSV BY SQLALCHEMY OBJECTS
 # ============================================================
 
 def export_models_to_csv(
     records,
-    filename,
+    filename=None,
     fields=None,
 ):
     """
     Export SQLAlchemy model records to CSV.
+
+    If fields are not supplied, all database columns
+    from the first record are exported.
+
+    Returns:
+        pathlib.Path
     """
 
     records = list(records or [])
 
-    if not filename.lower().endswith(".csv"):
-        filename += ".csv"
+    filename = ensure_csv_extension(
+        filename
+    )
 
-    output_path = get_export_path(filename)
+    output_path = get_export_path(
+        filename
+    )
 
     if fields is None:
 
         if records:
-
-            fields = [
-                column.name
-                for column in records[0].__table__.columns
-            ]
+            fields = get_model_fields(
+                records[0]
+            )
 
         else:
-
             fields = []
 
     with open(
@@ -298,23 +360,23 @@ def export_models_to_csv(
         writer = csv.DictWriter(
             file,
             fieldnames=fields,
+            extrasaction="ignore",
         )
 
         writer.writeheader()
 
         for record in records:
 
-            row = {}
-
-            for field in fields:
-
-                row[field] = clean_value(
+            row = {
+                field: clean_value(
                     getattr(
                         record,
                         field,
                         "",
                     )
                 )
+                for field in fields
+            }
 
             writer.writerow(row)
 
@@ -330,46 +392,32 @@ def csv_bytes(
     fieldnames=None,
 ):
     """
-    Return CSV content as bytes.
+    Return CSV content as UTF-8-SIG bytes.
 
-    Useful with Streamlit st.download_button().
+    Useful with:
+
+        st.download_button()
+
+    Supports:
+    - dictionaries
+    - SQLAlchemy model objects
     """
 
     rows = list(rows or [])
 
-    if not rows:
+    if fieldnames is None:
+        fieldnames = infer_fieldnames(
+            rows
+        )
 
-        if fieldnames is None:
-            fieldnames = []
-
-    elif isinstance(rows[0], dict):
-
-        if fieldnames is None:
-            fieldnames = list(
-                rows[0].keys()
-            )
-
-    else:
-
-        if fieldnames is None:
-            fieldnames = [
-                column.name
-                for column in rows[0].__table__.columns
-            ]
-
-    output = []
-
-    # --------------------------------------------------------
-    # Build CSV using an in-memory list
-    # --------------------------------------------------------
-
-    import io
-
-    buffer = io.StringIO()
+    buffer = io.StringIO(
+        newline=""
+    )
 
     writer = csv.DictWriter(
         buffer,
         fieldnames=fieldnames,
+        extrasaction="ignore",
     )
 
     writer.writeheader()
@@ -380,7 +428,10 @@ def csv_bytes(
 
             row = {
                 field: clean_value(
-                    record.get(field, "")
+                    record.get(
+                        field,
+                        "",
+                    )
                 )
                 for field in fieldnames
             }
@@ -420,13 +471,48 @@ def get_export_folder():
 def list_export_files():
     """
     Return all files currently in the export folder.
+
+    Files are returned newest first.
     """
 
     if not EXPORT_DIR.exists():
         return []
 
+    files = [
+        path
+        for path in EXPORT_DIR.iterdir()
+        if path.is_file()
+    ]
+
     return sorted(
-        EXPORT_DIR.iterdir(),
+        files,
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
+
+
+def delete_export_file(
+    filename,
+):
+    """
+    Delete an exported file from the
+    AVERRA CRM export folder.
+
+    Returns:
+        True if deleted.
+        False if the file did not exist.
+    """
+
+    path = get_export_path(
+        filename
+    )
+
+    if not path.exists():
+        return False
+
+    if not path.is_file():
+        return False
+
+    path.unlink()
+
+    return True
