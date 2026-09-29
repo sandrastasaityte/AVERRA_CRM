@@ -1,4 +1,3 @@
-
 import streamlit as st
 from datetime import date
 
@@ -20,8 +19,8 @@ CURRENCIES = [
 JOB_STATUSES = [
     "Open",
     "On Hold",
-    "Closed",
     "Filled",
+    "Closed",
     "Cancelled",
 ]
 
@@ -59,7 +58,9 @@ def get_client_name(job):
     if job.client:
 
         return (
-            clean_text(job.client.company_name)
+            clean_text(
+                job.client.company_name
+            )
             or "Unknown Client"
         )
 
@@ -67,7 +68,7 @@ def get_client_name(job):
 
 
 def get_candidate_count(job):
-    """Safely return candidate count."""
+    """Return the number of candidates linked to a job."""
 
     candidates = getattr(
         job,
@@ -86,7 +87,7 @@ def get_candidate_count(job):
 
 
 def get_placement_count(job):
-    """Safely return placement count."""
+    """Return the number of placements linked to a job."""
 
     placements = getattr(
         job,
@@ -104,8 +105,108 @@ def get_placement_count(job):
         return 0
 
 
+def get_active_placement_count(job):
+    """
+    Return active/scheduled placement count.
+
+    Completed and terminated placements are not counted
+    as current filled positions.
+    """
+
+    placements = getattr(
+        job,
+        "placements",
+        None,
+    )
+
+    if not placements:
+        return 0
+
+    active_statuses = {
+        "Active",
+        "Scheduled",
+    }
+
+    count = 0
+
+    for placement in placements:
+
+        status = clean_text(
+            getattr(
+                placement,
+                "status",
+                "",
+            )
+        )
+
+        if status in active_statuses:
+
+            count += 1
+
+    return count
+
+
+def get_total_openings(job):
+    """Return total number of openings."""
+
+    try:
+
+        return max(
+            int(job.openings or 0),
+            0,
+        )
+
+    except (TypeError, ValueError):
+
+        return 0
+
+
+def get_remaining_openings(job):
+    """
+    Return remaining openings.
+
+    Existing active/scheduled placements are treated
+    as filled positions.
+    """
+
+    total_openings = get_total_openings(
+        job
+    )
+
+    active_placements = (
+        get_active_placement_count(
+            job
+        )
+    )
+
+    return max(
+        total_openings - active_placements,
+        0,
+    )
+
+
+def get_job_fill_percentage(job):
+    """Return percentage of openings filled."""
+
+    total_openings = get_total_openings(
+        job
+    )
+
+    if total_openings <= 0:
+        return 0.0
+
+    filled = min(
+        get_active_placement_count(job),
+        total_openings,
+    )
+
+    return (
+        filled / total_openings
+    ) * 100
+
+
 def get_priority_icon(priority):
-    """Return a simple visual indicator for priority."""
+    """Return a visual indicator for priority."""
 
     icons = {
         "Low": "🟢",
@@ -124,7 +225,9 @@ def get_job_status(job):
     """Return a safe job status."""
 
     return (
-        clean_text(job.status)
+        clean_text(
+            job.status
+        )
         or "Open"
     )
 
@@ -133,6 +236,7 @@ def get_days_to_closing(job):
     """Return days remaining until closing date."""
 
     if not job.closing_date:
+
         return None
 
     return (
@@ -141,28 +245,186 @@ def get_days_to_closing(job):
     ).days
 
 
+def get_closing_state(job):
+    """
+    Return a simple closing state.
+
+    Possible values:
+    - no_date
+    - overdue
+    - today
+    - tomorrow
+    - upcoming
+    """
+
+    days = get_days_to_closing(job)
+
+    if days is None:
+
+        return "no_date"
+
+    if days < 0:
+
+        return "overdue"
+
+    if days == 0:
+
+        return "today"
+
+    if days == 1:
+
+        return "tomorrow"
+
+    return "upcoming"
+
+
 def get_closing_label(job):
     """Return readable closing-date information."""
 
     days = get_days_to_closing(job)
 
     if days is None:
+
         return "No closing date"
 
     if days < 0:
+
         return (
             f"Closed {abs(days)} day(s) ago"
         )
 
     if days == 0:
+
         return "Closes today"
 
     if days == 1:
+
         return "Closes tomorrow"
 
     return (
         f"{days} days remaining"
     )
+
+
+def get_status_display(job):
+    """
+    Return a more informative status.
+
+    If a job has all openings filled while still marked Open,
+    show the underlying status plus the fill information.
+    """
+
+    status = get_job_status(job)
+
+    remaining = get_remaining_openings(job)
+
+    if (
+        status == "Open"
+        and remaining == 0
+        and get_total_openings(job) > 0
+    ):
+
+        return "Filled"
+
+    return status
+
+
+def job_has_candidates(job):
+    """Return whether the job has candidates."""
+
+    return (
+        get_candidate_count(job) > 0
+    )
+
+
+def job_has_placements(job):
+    """Return whether the job has placements."""
+
+    return (
+        get_placement_count(job) > 0
+    )
+
+
+def job_has_history(job):
+    """
+    Return whether the job has recruitment/business history.
+    """
+
+    return (
+        job_has_candidates(job)
+        or job_has_placements(job)
+    )
+
+
+def get_search_text(job):
+    """Return combined searchable job text."""
+
+    values = [
+        job.position,
+        job.department,
+        job.skills_required,
+        job.experience_required,
+        job.remote_country,
+        job.work_pattern,
+        job.status,
+        job.priority,
+        get_client_name(job),
+        job.notes,
+    ]
+
+    return " ".join(
+        clean_text(value).lower()
+        for value in values
+        if clean_text(value)
+    )
+
+
+def validate_job_status(
+    status,
+    openings,
+    active_placements,
+):
+    """
+    Validate logical relationship between status,
+    openings and active placements.
+    """
+
+    if active_placements > openings:
+
+        return (
+            "The job has more active/scheduled placements "
+            "than the total number of openings."
+        )
+
+    if (
+        status == "Filled"
+        and active_placements < openings
+    ):
+
+        return (
+            "A job can only be marked Filled when all "
+            "openings have an active or scheduled placement."
+        )
+
+    if (
+        status == "Open"
+        and active_placements >= openings
+        and openings > 0
+    ):
+
+        return (
+            "All openings are already filled. "
+            "Please use Filled status."
+        )
+
+    return None
+
+
+def clear_job_state():
+    """Clear job editing/deletion state."""
+
+    st.session_state.editing_job_id = None
+    st.session_state.confirm_delete_job_id = None
 
 
 # ============================================================
@@ -200,7 +462,9 @@ def show_jobs():
 
         clients = (
             session.query(Client)
-            .order_by(Client.company_name)
+            .order_by(
+                Client.company_name
+            )
             .all()
         )
 
@@ -211,6 +475,19 @@ def show_jobs():
             )
 
             return
+
+        # ====================================================
+        # LOAD JOBS
+        # ====================================================
+
+        jobs = (
+            session.query(Job)
+            .order_by(
+                Job.date_opened.desc(),
+                Job.id.desc(),
+            )
+            .all()
+        )
 
         # ====================================================
         # LOAD EDITING JOB
@@ -239,13 +516,15 @@ def show_jobs():
         if editing_job:
 
             st.subheader(
-                f"Edit Job — "
+                "Edit Job — "
                 f"{clean_text(editing_job.position)}"
             )
 
         else:
 
-            st.subheader("Create Job")
+            st.subheader(
+                "Create Job"
+            )
 
         # ====================================================
         # CLIENT OPTIONS
@@ -269,7 +548,8 @@ def show_jobs():
 
         if (
             editing_job
-            and editing_job.client_id in client_ids
+            and editing_job.client_id
+            in client_ids
         ):
 
             client_index = client_ids.index(
@@ -284,7 +564,9 @@ def show_jobs():
         # JOB FORM
         # ====================================================
 
-        with st.form("job_form"):
+        with st.form(
+            "job_form"
+        ):
 
             # =================================================
             # CLIENT
@@ -296,11 +578,19 @@ def show_jobs():
                 index=client_index,
             )
 
+            selected_client_id = (
+                client_options[
+                    selected_client
+                ]
+            )
+
             # =================================================
             # JOB DETAILS
             # =================================================
 
-            st.subheader("Job Details")
+            st.subheader(
+                "Job Details"
+            )
 
             col1, col2 = st.columns(2)
 
@@ -332,7 +622,9 @@ def show_jobs():
                         if editing_job
                         else ""
                     ),
-                    placeholder="Example: Finance",
+                    placeholder=(
+                        "Example: Finance"
+                    ),
                 )
 
             skills_required = st.text_area(
@@ -369,9 +661,13 @@ def show_jobs():
             # CLIENT BUDGET
             # =================================================
 
-            st.subheader("Client Budget")
+            st.subheader(
+                "Client Budget"
+            )
 
-            budget_col1, budget_col2 = st.columns(2)
+            budget_col1, budget_col2 = (
+                st.columns(2)
+            )
 
             with budget_col1:
 
@@ -465,7 +761,7 @@ def show_jobs():
                 )
 
             # =================================================
-            # REMOTE LOCATION
+            # REMOTE COUNTRY
             # =================================================
 
             remote_country = st.text_input(
@@ -484,9 +780,13 @@ def show_jobs():
             # DATES
             # =================================================
 
-            st.subheader("Dates")
+            st.subheader(
+                "Dates"
+            )
 
-            date_col1, date_col2 = st.columns(2)
+            date_col1, date_col2 = (
+                st.columns(2)
+            )
 
             with date_col1:
 
@@ -512,7 +812,7 @@ def show_jobs():
                             editing_job
                             and editing_job.closing_date
                         )
-                        else date.today()
+                        else None
                     ),
                 )
 
@@ -597,9 +897,11 @@ def show_jobs():
             # =================================================
 
             submitted = st.form_submit_button(
-                "Save Changes"
-                if editing_job
-                else "Create Job",
+                (
+                    "Save Changes"
+                    if editing_job
+                    else "Create Job"
+                ),
                 use_container_width=True,
             )
 
@@ -629,54 +931,114 @@ def show_jobs():
                     notes.strip()
                 )
 
+                validation_error = None
+
                 # =============================================
-                # VALIDATION
+                # BASIC VALIDATION
                 # =============================================
 
                 if not position_clean:
 
-                    st.error(
+                    validation_error = (
                         "Position is required."
                     )
 
                 elif date_opened > date.today():
 
-                    st.error(
+                    validation_error = (
                         "Date opened cannot be "
                         "in the future."
                     )
 
-                elif closing_date < date_opened:
+                elif (
+                    closing_date
+                    and closing_date < date_opened
+                ):
 
-                    st.error(
+                    validation_error = (
                         "Closing date cannot be "
                         "before the opening date."
                     )
 
                 elif client_budget < 0:
 
-                    st.error(
+                    validation_error = (
                         "Client budget cannot "
                         "be negative."
                     )
 
                 elif openings < 1:
 
-                    st.error(
+                    validation_error = (
                         "There must be at least "
                         "one opening."
                     )
 
-                else:
+                elif not remote_country_clean:
 
-                    selected_client_id = (
-                        client_options[
-                            selected_client
-                        ]
+                    validation_error = (
+                        "Remote country is required."
                     )
 
+                # =============================================
+                # EXISTING PLACEMENTS
+                # =============================================
+
+                active_placements = 0
+
+                if editing_job:
+
+                    active_placements = (
+                        get_active_placement_count(
+                            editing_job
+                        )
+                    )
+
+                # =============================================
+                # OPENINGS VALIDATION
+                # =============================================
+
+                if validation_error is None:
+
+                    if (
+                        active_placements
+                        > openings
+                    ):
+
+                        validation_error = (
+                            "You cannot reduce the number "
+                            "of openings below the number "
+                            "of active or scheduled placements."
+                        )
+
+                # =============================================
+                # STATUS VALIDATION
+                # =============================================
+
+                if validation_error is None:
+
+                    validation_error = (
+                        validate_job_status(
+                            status,
+                            openings,
+                            active_placements,
+                        )
+                    )
+
+                # =============================================
+                # SAVE
+                # =============================================
+
+                if validation_error:
+
+                    st.error(
+                        validation_error
+                    )
+
+                else:
+
                     # =========================================
-                    # UPDATE EXISTING JOB
+                    # UPDATE
                     # =========================================
 
                     if editing_job:
@@ -710,7 +1072,7 @@ def show_jobs():
                         )
 
                         editing_job.openings = (
-                            openings
+                            int(openings)
                         )
 
                         editing_job.work_pattern = (
@@ -745,9 +1107,7 @@ def show_jobs():
 
                             session.commit()
 
-                            st.session_state.editing_job_id = (
-                                None
-                            )
+                            clear_job_state()
 
                             st.success(
                                 "Job updated successfully."
@@ -755,16 +1115,17 @@ def show_jobs():
 
                             st.rerun()
 
-                        except Exception as e:
+                        except Exception as error:
 
                             session.rollback()
 
                             st.error(
-                                f"Could not update job: {e}"
+                                "Could not update job: "
+                                f"{error}"
                             )
 
                     # =========================================
-                    # CREATE NEW JOB
+                    # CREATE
                     # =========================================
 
                     else:
@@ -779,7 +1140,7 @@ def show_jobs():
                             ),
                             client_budget=client_budget,
                             currency=currency,
-                            openings=openings,
+                            openings=int(openings),
                             work_pattern=work_pattern,
                             remote_country=(
                                 remote_country_clean
@@ -803,12 +1164,13 @@ def show_jobs():
 
                             st.rerun()
 
-                        except Exception as e:
+                        except Exception as error:
 
                             session.rollback()
 
                             st.error(
-                                f"Could not create job: {e}"
+                                "Could not create job: "
+                                f"{error}"
                             )
 
         # ====================================================
@@ -817,15 +1179,8 @@ def show_jobs():
 
         st.divider()
 
-        st.subheader("Job Register")
-
-        jobs = (
-            session.query(Job)
-            .order_by(
-                Job.date_opened.desc(),
-                Job.id.desc(),
-            )
-            .all()
+        st.subheader(
+            "Job Register"
         )
 
         if not jobs:
@@ -857,11 +1212,39 @@ def show_jobs():
         filled_jobs = sum(
             1
             for job in jobs
-            if get_job_status(job) == "Filled"
+            if (
+                get_status_display(job)
+                == "Filled"
+            )
+        )
+
+        closed_jobs = sum(
+            1
+            for job in jobs
+            if get_job_status(job) == "Closed"
+        )
+
+        cancelled_jobs = sum(
+            1
+            for job in jobs
+            if get_job_status(job) == "Cancelled"
         )
 
         total_openings = sum(
-            int(job.openings or 0)
+            get_total_openings(job)
+            for job in jobs
+        )
+
+        filled_openings = sum(
+            min(
+                get_active_placement_count(job),
+                get_total_openings(job),
+            )
+            for job in jobs
+        )
+
+        remaining_openings = sum(
+            get_remaining_openings(job)
             for job in jobs
         )
 
@@ -869,6 +1252,42 @@ def show_jobs():
             get_candidate_count(job)
             for job in jobs
         )
+
+        total_placements = sum(
+            get_placement_count(job)
+            for job in jobs
+        )
+
+        urgent_open_jobs = sum(
+            1
+            for job in jobs
+            if (
+                get_job_status(job)
+                == "Open"
+                and clean_text(
+                    job.priority
+                )
+                == "Urgent"
+            )
+        )
+
+        overdue_closing_jobs = sum(
+            1
+            for job in jobs
+            if (
+                get_job_status(job)
+                in [
+                    "Open",
+                    "On Hold",
+                ]
+                and get_closing_state(job)
+                == "overdue"
+            )
+        )
+
+        # ====================================================
+        # PRIMARY KPIs
+        # ====================================================
 
         k1, k2, k3, k4, k5 = (
             st.columns(5)
@@ -909,9 +1328,59 @@ def show_jobs():
                 total_openings,
             )
 
+        # ====================================================
+        # SECONDARY KPIs
+        # ====================================================
+
+        s1, s2, s3, s4, s5 = (
+            st.columns(5)
+        )
+
+        with s1:
+
+            st.metric(
+                "Filled Openings",
+                filled_openings,
+            )
+
+        with s2:
+
+            st.metric(
+                "Remaining",
+                remaining_openings,
+            )
+
+        with s3:
+
+            st.metric(
+                "Candidates",
+                total_candidates,
+            )
+
+        with s4:
+
+            st.metric(
+                "Placements",
+                total_placements,
+            )
+
+        with s5:
+
+            st.metric(
+                "Urgent Open",
+                urgent_open_jobs,
+            )
+
+        if overdue_closing_jobs > 0:
+
+            st.warning(
+                f"{overdue_closing_jobs} open/on-hold "
+                "job(s) have passed their closing date."
+            )
+
         st.caption(
-            "Total candidates linked to jobs: "
-            f"{total_candidates}"
+            f"Closed jobs: {closed_jobs} · "
+            f"Cancelled jobs: {cancelled_jobs}"
         )
 
         # ====================================================
@@ -927,8 +1396,8 @@ def show_jobs():
             search = st.text_input(
                 "Search",
                 placeholder=(
-                    "Position, client, "
-                    "department or skills..."
+                    "Position, client, department, "
+                    "skills or country..."
                 ),
             )
 
@@ -947,7 +1416,23 @@ def show_jobs():
             )
 
         # ====================================================
-        # APPLY FILTERS
+        # ADDITIONAL FILTER
+        # ====================================================
+
+        closing_filter = st.selectbox(
+            "Closing Date",
+            [
+                "All",
+                "No Closing Date",
+                "Closing Today",
+                "Closing Within 7 Days",
+                "Closing Within 30 Days",
+                "Past Closing Date",
+            ],
+        )
+
+        # ====================================================
+        # APPLY SEARCH
         # ====================================================
 
         filtered_jobs = jobs
@@ -961,43 +1446,13 @@ def show_jobs():
             filtered_jobs = [
                 job
                 for job in filtered_jobs
-                if (
-                    search_lower
-                    in clean_text(
-                        job.position
-                    ).lower()
-                )
-                or (
-                    search_lower
-                    in clean_text(
-                        job.department
-                    ).lower()
-                )
-                or (
-                    search_lower
-                    in clean_text(
-                        job.skills_required
-                    ).lower()
-                )
-                or (
-                    search_lower
-                    in clean_text(
-                        job.experience_required
-                    ).lower()
-                )
-                or (
-                    search_lower
-                    in clean_text(
-                        job.remote_country
-                    ).lower()
-                )
-                or (
-                    search_lower
-                    in get_client_name(
-                        job
-                    ).lower()
-                )
+                if search_lower
+                in get_search_text(job)
             ]
+
+        # ====================================================
+        # STATUS FILTER
+        # ====================================================
 
         if status_filter != "All":
 
@@ -1008,6 +1463,10 @@ def show_jobs():
                 == status_filter
             ]
 
+        # ====================================================
+        # PRIORITY FILTER
+        # ====================================================
+
         if priority_filter != "All":
 
             filtered_jobs = [
@@ -1015,8 +1474,75 @@ def show_jobs():
                 for job in filtered_jobs
                 if clean_text(
                     job.priority
-                ) == priority_filter
+                )
+                == priority_filter
             ]
+
+        # ====================================================
+        # CLOSING FILTER
+        # ====================================================
+
+        if closing_filter != "All":
+
+            if closing_filter == "No Closing Date":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if not job.closing_date
+                ]
+
+            elif closing_filter == "Closing Today":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if (
+                        get_closing_state(job)
+                        == "today"
+                    )
+                ]
+
+            elif closing_filter == "Closing Within 7 Days":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if (
+                        get_days_to_closing(job)
+                        is not None
+                        and 0
+                        <= get_days_to_closing(job)
+                        <= 7
+                    )
+                ]
+
+            elif closing_filter == "Closing Within 30 Days":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if (
+                        get_days_to_closing(job)
+                        is not None
+                        and 0
+                        <= get_days_to_closing(job)
+                        <= 30
+                    )
+                ]
+
+            elif closing_filter == "Past Closing Date":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if (
+                        get_days_to_closing(job)
+                        is not None
+                        and get_days_to_closing(job)
+                        < 0
+                    )
+                ]
 
         # ====================================================
         # RESULT COUNT
@@ -1041,7 +1567,9 @@ def show_jobs():
 
         for job in filtered_jobs:
 
-            client_name = get_client_name(job)
+            client_name = (
+                get_client_name(job)
+            )
 
             candidate_count = (
                 get_candidate_count(job)
@@ -1051,18 +1579,51 @@ def show_jobs():
                 get_placement_count(job)
             )
 
+            active_placements = (
+                get_active_placement_count(job)
+            )
+
+            total_openings_for_job = (
+                get_total_openings(job)
+            )
+
+            remaining = (
+                get_remaining_openings(job)
+            )
+
+            fill_percentage = (
+                get_job_fill_percentage(job)
+            )
+
             priority = (
-                clean_text(job.priority)
+                clean_text(
+                    job.priority
+                )
                 or "Medium"
             )
 
-            status = get_job_status(job)
+            status = get_status_display(
+                job
+            )
 
             closing_label = (
                 get_closing_label(job)
             )
 
-            with st.container(border=True):
+            budget = float(
+                job.client_budget or 0
+            )
+
+            currency = (
+                clean_text(
+                    job.currency
+                )
+                or "GBP"
+            )
+
+            with st.container(
+                border=True
+            ):
 
                 # ==========================================
                 # MAIN JOB ROW
@@ -1107,7 +1668,7 @@ def show_jobs():
                     )
 
                     st.caption(
-                        f"{int(job.openings or 0)} "
+                        f"{total_openings_for_job} "
                         f"opening(s)"
                     )
 
@@ -1124,22 +1685,11 @@ def show_jobs():
 
                 with col3:
 
-                    budget = float(
-                        job.client_budget or 0
-                    )
-
-                    currency = (
-                        clean_text(
-                            job.currency
-                        )
-                        or "GBP"
-                    )
-
                     st.write(
-                        f"Budget: **"
+                        "Budget: **"
                         f"{currency} "
                         f"{budget:,.2f}"
-                        f"**"
+                        "**"
                     )
 
                     st.caption(
@@ -1147,6 +1697,12 @@ def show_jobs():
                             job.work_pattern
                         )
                         or "No work pattern"
+                    )
+
+                    st.caption(
+                        f"{active_placements}/"
+                        f"{total_openings_for_job} "
+                        "filled"
                     )
 
                 # ------------------------------------------
@@ -1180,21 +1736,48 @@ def show_jobs():
                     )
 
                     st.write(
-                        f"Placements: "
-                        f"**{placement_count}**"
+                        f"Remaining: "
+                        f"**{remaining}**"
                     )
 
                     edit_btn = st.button(
                         "Edit",
-                        key=f"edit_job_{job.id}",
+                        key=(
+                            f"edit_job_"
+                            f"{job.id}"
+                        ),
                         use_container_width=True,
                     )
 
                     delete_btn = st.button(
                         "Delete",
-                        key=f"delete_job_{job.id}",
+                        key=(
+                            f"delete_job_"
+                            f"{job.id}"
+                        ),
                         use_container_width=True,
                     )
+
+                # ==========================================
+                # FILL PROGRESS
+                # ==========================================
+
+                st.progress(
+                    min(
+                        max(
+                            fill_percentage / 100,
+                            0.0,
+                        ),
+                        1.0,
+                    )
+                )
+
+                st.caption(
+                    f"Placement fill: "
+                    f"{fill_percentage:.0f}% "
+                    f"({active_placements} of "
+                    f"{total_openings_for_job} openings)"
+                )
 
                 # ==========================================
                 # EDIT
@@ -1238,13 +1821,11 @@ def show_jobs():
                 ):
 
                     has_candidates = (
-                        get_candidate_count(job)
-                        > 0
+                        job_has_candidates(job)
                     )
 
                     has_placements = (
-                        get_placement_count(job)
-                        > 0
+                        job_has_placements(job)
                     )
 
                     if (
@@ -1254,8 +1835,19 @@ def show_jobs():
 
                         st.warning(
                             "This job cannot be deleted "
-                            "because it has candidates "
-                            "or placements attached."
+                            "because it has recruitment "
+                            "or placement history."
+                        )
+
+                        st.caption(
+                            f"Candidates: {candidate_count} · "
+                            f"Placements: {placement_count}"
+                        )
+
+                        st.info(
+                            "Keep the job and change its "
+                            "status to Closed or Cancelled "
+                            "instead."
                         )
 
                         close_delete = st.button(
@@ -1278,8 +1870,8 @@ def show_jobs():
                     else:
 
                         st.warning(
-                            f"Are you sure you want "
-                            f"to delete job "
+                            "Are you sure you want to "
+                            "delete job "
                             f"**#{job.id} — "
                             f"{clean_text(job.position)}**?"
                         )
@@ -1323,7 +1915,9 @@ def show_jobs():
 
                             try:
 
-                                session.delete(job)
+                                session.delete(
+                                    job
+                                )
 
                                 session.commit()
 
@@ -1337,7 +1931,7 @@ def show_jobs():
 
                                 st.rerun()
 
-                            except Exception as e:
+                            except Exception as error:
 
                                 session.rollback()
 
@@ -1346,7 +1940,8 @@ def show_jobs():
                                 )
 
                                 st.error(
-                                    f"Could not delete job: {e}"
+                                    "Could not delete job: "
+                                    f"{error}"
                                 )
 
                 # ==========================================
@@ -1435,19 +2030,75 @@ def show_jobs():
                             f"{work_pattern_text}"
                         )
 
-                    if job.notes:
-
                         st.write(
-                            "**Notes:** "
-                            f"{clean_text(job.notes)}"
+                            "**Status:** "
+                            f"{status}"
                         )
 
-    except Exception as e:
+                        st.write(
+                            "**Priority:** "
+                            f"{priority}"
+                        )
+
+                    # --------------------------------------
+                    # RECRUITMENT SUMMARY
+                    # --------------------------------------
+
+                    st.markdown(
+                        "### Recruitment Summary"
+                    )
+
+                    summary_col1, summary_col2, summary_col3, summary_col4 = (
+                        st.columns(4)
+                    )
+
+                    with summary_col1:
+
+                        st.metric(
+                            "Candidates",
+                            candidate_count,
+                        )
+
+                    with summary_col2:
+
+                        st.metric(
+                            "Placements",
+                            placement_count,
+                        )
+
+                    with summary_col3:
+
+                        st.metric(
+                            "Filled",
+                            active_placements,
+                        )
+
+                    with summary_col4:
+
+                        st.metric(
+                            "Remaining",
+                            remaining,
+                        )
+
+                    if job.notes:
+
+                        st.markdown(
+                            "### Notes"
+                        )
+
+                        st.write(
+                            clean_text(
+                                job.notes
+                            )
+                        )
+
+    except Exception as error:
 
         session.rollback()
 
         st.error(
-            f"An error occurred while loading jobs: {e}"
+            "An error occurred while loading jobs: "
+            f"{error}"
         )
 
     finally:
