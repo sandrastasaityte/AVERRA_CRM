@@ -1,7 +1,11 @@
 import streamlit as st
 
 from database import get_session
-from models import Client, ClientContact
+from models import (
+    Client,
+    ClientContact,
+    Activity,
+)
 
 
 # ============================================================
@@ -40,20 +44,33 @@ def get_full_name(contact):
         f"{first_name} {last_name}"
     ).strip()
 
-    return full_name or f"Contact {contact.id}"
+    return (
+        full_name
+        or f"Contact {contact.id}"
+    )
 
 
 def get_client_label(client):
     """Return a consistent client label."""
 
+    company_name = (
+        client.company_name
+        or "Unnamed Client"
+    )
+
     return (
-        f"{client.company_name} "
+        f"{company_name} "
         f"(ID: {client.id})"
     )
 
 
 def is_valid_email(email):
-    """Basic email validation."""
+    """
+    Basic email validation.
+
+    Empty email is allowed because the model
+    does not require an email address.
+    """
 
     email = (
         email or ""
@@ -82,11 +99,18 @@ def is_valid_email(email):
     if domain.endswith("."):
         return False
 
+    if " " in email:
+        return False
+
     return True
 
 
 def is_valid_linkedin(linkedin):
-    """Basic LinkedIn URL validation."""
+    """
+    Basic LinkedIn URL validation.
+
+    Empty LinkedIn URL is allowed.
+    """
 
     linkedin = (
         linkedin or ""
@@ -114,19 +138,46 @@ def is_valid_linkedin(linkedin):
 
 
 def is_primary(contact):
-    """Check whether a contact is marked as primary."""
+    """Return True if the contact is marked as primary."""
 
     return (
         contact.primary_contact == "Yes"
     )
 
 
-def clear_delete_confirmation(contact_id):
+def get_activity_count(
+    session,
+    contact_id,
+):
+    """Return the number of activities linked to a contact."""
+
+    return (
+        session.query(Activity)
+        .filter(
+            Activity.contact_id
+            == contact_id
+        )
+        .count()
+    )
+
+
+def clear_delete_confirmation(
+    contact_id,
+):
     """Clear delete confirmation state."""
 
+    st.session_state.pop(
+        f"confirm_delete_contact_{contact_id}",
+        None,
+    )
+
+
+def clear_edit_state():
+    """Clear the current contact edit state."""
+
     st.session_state[
-        f"confirm_delete_contact_{contact_id}"
-    ] = False
+        "editing_contact_id"
+    ] = None
 
 
 # ============================================================
@@ -153,7 +204,8 @@ def show_client_contacts():
         clients = (
             session.query(Client)
             .order_by(
-                Client.company_name.asc()
+                Client.company_name.asc(),
+                Client.id.asc(),
             )
             .all()
         )
@@ -167,6 +219,7 @@ def show_client_contacts():
             .order_by(
                 ClientContact.first_name.asc(),
                 ClientContact.last_name.asc(),
+                ClientContact.id.asc(),
             )
             .all()
         )
@@ -175,23 +228,43 @@ def show_client_contacts():
         # SESSION STATE
         # ========================================================
 
-        if "editing_contact_id" not in st.session_state:
+        if (
+            "editing_contact_id"
+            not in st.session_state
+        ):
 
-            st.session_state.editing_contact_id = None
+            st.session_state[
+                "editing_contact_id"
+            ] = None
 
         # ========================================================
         # CLIENT OPTIONS
         # ========================================================
 
-        client_labels = [
-            get_client_label(client)
-            for client in clients
-        ]
+        client_labels = []
 
-        client_lookup = {
-            get_client_label(client): client
-            for client in clients
-        }
+        client_lookup = {}
+
+        for client in clients:
+
+            label = get_client_label(
+                client
+            )
+
+            if label in client_lookup:
+
+                label = (
+                    f"{label} "
+                    f"- Client #{client.id}"
+                )
+
+            client_labels.append(
+                label
+            )
+
+            client_lookup[
+                label
+            ] = client
 
         # ========================================================
         # OVERVIEW
@@ -199,12 +272,20 @@ def show_client_contacts():
 
         st.subheader("Overview")
 
-        total_contacts = len(contacts)
+        total_contacts = len(
+            contacts
+        )
 
         active_contacts = sum(
             1
             for contact in contacts
             if contact.status == "Active"
+        )
+
+        inactive_contacts = sum(
+            1
+            for contact in contacts
+            if contact.status == "Inactive"
         )
 
         primary_contacts = sum(
@@ -217,11 +298,23 @@ def show_client_contacts():
             {
                 contact.client_id
                 for contact in contacts
-                if contact.client_id is not None
+                if contact.client_id
+                is not None
             }
         )
 
-        col1, col2, col3, col4 = st.columns(4)
+        contacts_with_activities = sum(
+            1
+            for contact in contacts
+            if get_activity_count(
+                session,
+                contact.id,
+            ) > 0
+        )
+
+        col1, col2, col3, col4 = (
+            st.columns(4)
+        )
 
         with col1:
 
@@ -251,16 +344,34 @@ def show_client_contacts():
                 companies_with_contacts,
             )
 
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.metric(
+                "Inactive Contacts",
+                inactive_contacts,
+            )
+
+        with col2:
+
+            st.metric(
+                "Contacts With Activities",
+                contacts_with_activities,
+            )
+
         st.divider()
 
         # ========================================================
-        # ADD / EDIT CONTACT
+        # FIND EDITING CONTACT
         # ========================================================
 
         editing_contact = None
 
         editing_contact_id = (
-            st.session_state.editing_contact_id
+            st.session_state.get(
+                "editing_contact_id"
+            )
         )
 
         if editing_contact_id:
@@ -270,15 +381,14 @@ def show_client_contacts():
                 editing_contact_id,
             )
 
-            # Contact may have been deleted elsewhere.
             if not editing_contact:
 
-                st.session_state.editing_contact_id = None
+                clear_edit_state()
 
                 editing_contact_id = None
 
         # ========================================================
-        # DEFAULT VALUES
+        # ADD / EDIT CONTACT
         # ========================================================
 
         if editing_contact:
@@ -287,6 +397,10 @@ def show_client_contacts():
                 "Edit Client Contact"
             )
 
+            # ====================================================
+            # DEFAULT EDIT VALUES
+            # ====================================================
+
             if editing_contact.client:
 
                 selected_client_label = (
@@ -294,6 +408,27 @@ def show_client_contacts():
                         editing_contact.client
                     )
                 )
+
+                # If duplicate labels somehow exist,
+                # find the matching option by client ID.
+                if (
+                    selected_client_label
+                    not in client_labels
+                ):
+
+                    selected_client_label = (
+                        next(
+                            (
+                                label
+                                for label,
+                                client
+                                in client_lookup.items()
+                                if client.id
+                                == editing_contact.client_id
+                            ),
+                            None,
+                        )
+                    )
 
             else:
 
@@ -304,27 +439,33 @@ def show_client_contacts():
                 )
 
             default_first_name = (
-                editing_contact.first_name or ""
+                editing_contact.first_name
+                or ""
             )
 
             default_last_name = (
-                editing_contact.last_name or ""
+                editing_contact.last_name
+                or ""
             )
 
             default_job_title = (
-                editing_contact.job_title or ""
+                editing_contact.job_title
+                or ""
             )
 
             default_email = (
-                editing_contact.email or ""
+                editing_contact.email
+                or ""
             )
 
             default_phone = (
-                editing_contact.phone or ""
+                editing_contact.phone
+                or ""
             )
 
             default_linkedin = (
-                editing_contact.linkedin or ""
+                editing_contact.linkedin
+                or ""
             )
 
             default_preferred_contact = (
@@ -343,7 +484,8 @@ def show_client_contacts():
             )
 
             default_notes = (
-                editing_contact.notes or ""
+                editing_contact.notes
+                or ""
             )
 
         else:
@@ -392,14 +534,16 @@ def show_client_contacts():
             ):
 
                 client_choice = st.selectbox(
-                    "Client",
+                    "Client *",
                     client_labels,
                     index=(
                         client_labels.index(
                             selected_client_label
                         )
-                        if selected_client_label
-                        in client_labels
+                        if (
+                            selected_client_label
+                            in client_labels
+                        )
                         else 0
                     ),
                 )
@@ -413,13 +557,17 @@ def show_client_contacts():
                 with col1:
 
                     first_name = st.text_input(
-                        "First Name",
-                        value=default_first_name,
+                        "First Name *",
+                        value=(
+                            default_first_name
+                        ),
                     )
 
                     job_title = st.text_input(
                         "Job Title",
-                        value=default_job_title,
+                        value=(
+                            default_job_title
+                        ),
                         placeholder=(
                             "e.g. Finance Director"
                         ),
@@ -427,40 +575,52 @@ def show_client_contacts():
 
                     email = st.text_input(
                         "Email",
-                        value=default_email,
+                        value=(
+                            default_email
+                        ),
                     )
 
                     phone = st.text_input(
                         "Phone",
-                        value=default_phone,
+                        value=(
+                            default_phone
+                        ),
                     )
 
                 with col2:
 
                     last_name = st.text_input(
                         "Last Name",
-                        value=default_last_name,
+                        value=(
+                            default_last_name
+                        ),
                     )
 
                     linkedin = st.text_input(
                         "LinkedIn",
-                        value=default_linkedin,
+                        value=(
+                            default_linkedin
+                        ),
                         placeholder=(
                             "https://www.linkedin.com/in/..."
                         ),
                     )
 
-                    preferred_contact = st.selectbox(
-                        "Preferred Contact Method",
-                        CONTACT_METHODS,
-                        index=(
-                            CONTACT_METHODS.index(
-                                default_preferred_contact
-                            )
-                            if default_preferred_contact
-                            in CONTACT_METHODS
-                            else 0
-                        ),
+                    preferred_contact = (
+                        st.selectbox(
+                            "Preferred Contact Method",
+                            CONTACT_METHODS,
+                            index=(
+                                CONTACT_METHODS.index(
+                                    default_preferred_contact
+                                )
+                                if (
+                                    default_preferred_contact
+                                    in CONTACT_METHODS
+                                )
+                                else 0
+                            ),
+                        )
                     )
 
                     status = st.selectbox(
@@ -470,8 +630,10 @@ def show_client_contacts():
                             CONTACT_STATUSES.index(
                                 default_status
                             )
-                            if default_status
-                            in CONTACT_STATUSES
+                            if (
+                                default_status
+                                in CONTACT_STATUSES
+                            )
                             else 0
                         ),
                     )
@@ -483,6 +645,10 @@ def show_client_contacts():
                 primary_contact = st.checkbox(
                     "Primary Contact",
                     value=default_primary,
+                    help=(
+                        "Only one contact per client "
+                        "can be marked as the primary contact."
+                    ),
                 )
 
                 # ====================================================
@@ -492,6 +658,9 @@ def show_client_contacts():
                 notes = st.text_area(
                     "Notes",
                     value=default_notes,
+                    placeholder=(
+                        "Internal notes about this contact..."
+                    ),
                 )
 
                 # ====================================================
@@ -500,16 +669,20 @@ def show_client_contacts():
 
                 if editing_contact:
 
-                    submitted = st.form_submit_button(
-                        "Update Contact",
-                        use_container_width=True,
+                    submitted = (
+                        st.form_submit_button(
+                            "Update Contact",
+                            use_container_width=True,
+                        )
                     )
 
                 else:
 
-                    submitted = st.form_submit_button(
-                        "Add Contact",
-                        use_container_width=True,
+                    submitted = (
+                        st.form_submit_button(
+                            "Add Contact",
+                            use_container_width=True,
+                        )
                     )
 
                 # ====================================================
@@ -556,13 +729,17 @@ def show_client_contacts():
                             "First name is required."
                         )
 
-                    elif not is_valid_email(email):
+                    elif not is_valid_email(
+                        email
+                    ):
 
                         st.error(
                             "Please enter a valid email address."
                         )
 
-                    elif not is_valid_linkedin(linkedin):
+                    elif not is_valid_linkedin(
+                        linkedin
+                    ):
 
                         st.error(
                             "Please enter a valid LinkedIn URL."
@@ -571,225 +748,237 @@ def show_client_contacts():
                     else:
 
                         selected_client = (
-                            client_lookup[
+                            client_lookup.get(
                                 client_choice
-                            ]
-                        )
-
-                        # ============================================
-                        # DUPLICATE CHECK
-                        # ============================================
-
-                        duplicate_query = (
-                            session.query(
-                                ClientContact
-                            )
-                            .filter(
-                                ClientContact.client_id
-                                == selected_client.id,
-
-                                ClientContact.first_name.ilike(
-                                    first_name
-                                ),
-
-                                ClientContact.last_name.ilike(
-                                    last_name
-                                ),
                             )
                         )
 
-                        if editing_contact:
-
-                            duplicate_query = (
-                                duplicate_query.filter(
-                                    ClientContact.id
-                                    != editing_contact.id
-                                )
-                            )
-
-                        duplicate = (
-                            duplicate_query.first()
-                        )
-
-                        if duplicate:
+                        if not selected_client:
 
                             st.error(
-                                "A contact with this name "
-                                "already exists for this client."
+                                "Please select a valid client."
                             )
 
                         else:
 
                             # ========================================
-                            # PRIMARY CONTACT CONTROL
+                            # DUPLICATE NAME CHECK
                             # ========================================
 
-                            if primary_contact:
-
-                                existing_primary = (
-                                    session.query(
-                                        ClientContact
-                                    )
-                                    .filter(
-                                        ClientContact.client_id
-                                        == selected_client.id,
-
-                                        ClientContact.primary_contact
-                                        == "Yes",
-                                    )
-                                    .all()
+                            duplicate_query = (
+                                session.query(
+                                    ClientContact
                                 )
+                                .filter(
+                                    ClientContact.client_id
+                                    == selected_client.id,
 
-                                for contact in existing_primary:
+                                    ClientContact.first_name.ilike(
+                                        first_name
+                                    ),
 
-                                    if (
-                                        not editing_contact
-                                        or contact.id
-                                        != editing_contact.id
-                                    ):
-
-                                        contact.primary_contact = (
-                                            "No"
-                                        )
-
-                            # ========================================
-                            # UPDATE EXISTING CONTACT
-                            # ========================================
+                                    ClientContact.last_name.ilike(
+                                        last_name
+                                    ),
+                                )
+                            )
 
                             if editing_contact:
 
-                                editing_contact.client_id = (
-                                    selected_client.id
+                                duplicate_query = (
+                                    duplicate_query.filter(
+                                        ClientContact.id
+                                        != editing_contact.id
+                                    )
                                 )
 
-                                editing_contact.first_name = (
-                                    first_name
-                                )
+                            duplicate = (
+                                duplicate_query.first()
+                            )
 
-                                editing_contact.last_name = (
-                                    last_name
-                                )
+                            if duplicate:
 
-                                editing_contact.job_title = (
-                                    job_title
+                                st.error(
+                                    "A contact with this name "
+                                    "already exists for this client."
                                 )
-
-                                editing_contact.email = (
-                                    email
-                                )
-
-                                editing_contact.phone = (
-                                    phone
-                                )
-
-                                editing_contact.linkedin = (
-                                    linkedin
-                                )
-
-                                editing_contact.preferred_contact = (
-                                    preferred_contact
-                                )
-
-                                editing_contact.primary_contact = (
-                                    "Yes"
-                                    if primary_contact
-                                    else "No"
-                                )
-
-                                editing_contact.status = (
-                                    status
-                                )
-
-                                editing_contact.notes = (
-                                    notes
-                                )
-
-                                message = (
-                                    "Client contact updated "
-                                    "successfully."
-                                )
-
-                            # ========================================
-                            # CREATE NEW CONTACT
-                            # ========================================
 
                             else:
 
-                                new_contact = ClientContact(
-                                    client_id=(
-                                        selected_client.id
-                                    ),
-                                    first_name=(
-                                        first_name
-                                    ),
-                                    last_name=(
-                                        last_name
-                                    ),
-                                    job_title=(
-                                        job_title
-                                    ),
-                                    email=(
-                                        email
-                                    ),
-                                    phone=(
-                                        phone
-                                    ),
-                                    linkedin=(
-                                        linkedin
-                                    ),
-                                    preferred_contact=(
-                                        preferred_contact
-                                    ),
-                                    primary_contact=(
-                                        "Yes"
-                                        if primary_contact
-                                        else "No"
-                                    ),
-                                    status=(
-                                        status
-                                    ),
-                                    notes=(
-                                        notes
-                                    ),
-                                )
+                                try:
 
-                                session.add(
-                                    new_contact
-                                )
+                                    # ====================================
+                                    # PRIMARY CONTACT CONTROL
+                                    # ====================================
 
-                                message = (
-                                    "Client contact added "
-                                    "successfully."
-                                )
+                                    if primary_contact:
 
-                            # ========================================
-                            # SAVE
-                            # ========================================
+                                        existing_primary = (
+                                            session.query(
+                                                ClientContact
+                                            )
+                                            .filter(
+                                                ClientContact.client_id
+                                                == selected_client.id,
 
-                            try:
+                                                ClientContact.primary_contact
+                                                == "Yes",
+                                            )
+                                            .all()
+                                        )
 
-                                session.commit()
+                                        for contact in (
+                                            existing_primary
+                                        ):
 
-                                st.session_state[
-                                    "editing_contact_id"
-                                ] = None
+                                            if (
+                                                not editing_contact
+                                                or contact.id
+                                                != editing_contact.id
+                                            ):
 
-                                st.success(
-                                    message
-                                )
+                                                contact.primary_contact = (
+                                                    "No"
+                                                )
 
-                                st.rerun()
+                                    # ====================================
+                                    # UPDATE
+                                    # ====================================
 
-                            except Exception as error:
+                                    if editing_contact:
 
-                                session.rollback()
+                                        editing_contact.client_id = (
+                                            selected_client.id
+                                        )
 
-                                st.error(
-                                    "The contact could not be "
-                                    "saved."
-                                )
+                                        editing_contact.first_name = (
+                                            first_name
+                                        )
 
-                                st.exception(error)
+                                        editing_contact.last_name = (
+                                            last_name
+                                        )
+
+                                        editing_contact.job_title = (
+                                            job_title
+                                        )
+
+                                        editing_contact.email = (
+                                            email
+                                        )
+
+                                        editing_contact.phone = (
+                                            phone
+                                        )
+
+                                        editing_contact.linkedin = (
+                                            linkedin
+                                        )
+
+                                        editing_contact.preferred_contact = (
+                                            preferred_contact
+                                        )
+
+                                        editing_contact.primary_contact = (
+                                            "Yes"
+                                            if primary_contact
+                                            else "No"
+                                        )
+
+                                        editing_contact.status = (
+                                            status
+                                        )
+
+                                        editing_contact.notes = (
+                                            notes
+                                        )
+
+                                        message = (
+                                            "Client contact updated "
+                                            "successfully."
+                                        )
+
+                                    # ====================================
+                                    # CREATE
+                                    # ====================================
+
+                                    else:
+
+                                        new_contact = (
+                                            ClientContact(
+                                                client_id=(
+                                                    selected_client.id
+                                                ),
+                                                first_name=(
+                                                    first_name
+                                                ),
+                                                last_name=(
+                                                    last_name
+                                                ),
+                                                job_title=(
+                                                    job_title
+                                                ),
+                                                email=(
+                                                    email
+                                                ),
+                                                phone=(
+                                                    phone
+                                                ),
+                                                linkedin=(
+                                                    linkedin
+                                                ),
+                                                preferred_contact=(
+                                                    preferred_contact
+                                                ),
+                                                primary_contact=(
+                                                    "Yes"
+                                                    if primary_contact
+                                                    else "No"
+                                                ),
+                                                status=(
+                                                    status
+                                                ),
+                                                notes=(
+                                                    notes
+                                                ),
+                                            )
+                                        )
+
+                                        session.add(
+                                            new_contact
+                                        )
+
+                                        message = (
+                                            "Client contact added "
+                                            "successfully."
+                                        )
+
+                                    # ====================================
+                                    # SAVE
+                                    # ====================================
+
+                                    session.commit()
+
+                                    clear_edit_state()
+
+                                    st.success(
+                                        message
+                                    )
+
+                                    st.rerun()
+
+                                except Exception as error:
+
+                                    session.rollback()
+
+                                    st.error(
+                                        "The contact could not "
+                                        "be saved."
+                                    )
+
+                                    st.exception(
+                                        error
+                                    )
 
             # ====================================================
             # CANCEL EDITING
@@ -802,9 +991,7 @@ def show_client_contacts():
                     use_container_width=True,
                 ):
 
-                    st.session_state[
-                        "editing_contact_id"
-                    ] = None
+                    clear_edit_state()
 
                     st.rerun()
 
@@ -822,7 +1009,7 @@ def show_client_contacts():
             "Search Contacts",
             placeholder=(
                 "Search name, company, job title, "
-                "email, phone or notes..."
+                "email, phone, LinkedIn or notes..."
             ),
         )
 
@@ -838,13 +1025,15 @@ def show_client_contacts():
 
         with col2:
 
-            contact_type_filter = st.selectbox(
-                "Contact Type",
-                [
-                    "All Contacts",
-                    "Primary Contacts",
-                    "Non-Primary Contacts",
-                ],
+            contact_type_filter = (
+                st.selectbox(
+                    "Contact Type",
+                    [
+                        "All Contacts",
+                        "Primary Contacts",
+                        "Non-Primary Contacts",
+                    ],
+                )
             )
 
         with col3:
@@ -865,6 +1054,19 @@ def show_client_contacts():
             search_text.strip().lower()
         )
 
+        selected_filter_client = None
+
+        if (
+            client_filter
+            != "All Clients"
+        ):
+
+            selected_filter_client = (
+                client_lookup.get(
+                    client_filter
+                )
+            )
+
         for contact in contacts:
 
             client = contact.client
@@ -880,7 +1082,7 @@ def show_client_contacts():
             )
 
             # ====================================================
-            # SEARCH FILTER
+            # SEARCH
             # ====================================================
 
             if search_lower:
@@ -893,20 +1095,27 @@ def show_client_contacts():
                         contact.email or "",
                         contact.phone or "",
                         contact.linkedin or "",
+                        contact.preferred_contact
+                        or "",
+                        contact.status or "",
                         contact.notes or "",
                     ]
                 ).lower()
 
-                if search_lower not in combined_text:
+                if (
+                    search_lower
+                    not in combined_text
+                ):
 
                     continue
 
             # ====================================================
-            # STATUS FILTER
+            # STATUS
             # ====================================================
 
             if (
-                status_filter != "All Statuses"
+                status_filter
+                != "All Statuses"
                 and contact.status
                 != status_filter
             ):
@@ -914,7 +1123,7 @@ def show_client_contacts():
                 continue
 
             # ====================================================
-            # CONTACT TYPE FILTER
+            # CONTACT TYPE
             # ====================================================
 
             if (
@@ -934,30 +1143,16 @@ def show_client_contacts():
                 continue
 
             # ====================================================
-            # CLIENT FILTER
+            # CLIENT
             # ====================================================
 
             if (
-                client_filter
-                != "All Clients"
+                selected_filter_client
+                and contact.client_id
+                != selected_filter_client.id
             ):
 
-                selected_client = (
-                    client_lookup.get(
-                        client_filter
-                    )
-                )
-
-                if not selected_client:
-
-                    continue
-
-                if (
-                    contact.client_id
-                    != selected_client.id
-                ):
-
-                    continue
+                continue
 
             filtered_contacts.append(
                 contact
@@ -968,8 +1163,11 @@ def show_client_contacts():
         # ========================================================
 
         st.caption(
-            f"Showing {len(filtered_contacts)} "
-            f"of {len(contacts)} contacts"
+            f"Showing "
+            f"{len(filtered_contacts)} "
+            f"of "
+            f"{len(contacts)} "
+            f"contacts"
         )
 
         # ========================================================
@@ -988,14 +1186,18 @@ def show_client_contacts():
 
         else:
 
-            for contact in filtered_contacts:
+            for contact in (
+                filtered_contacts
+            ):
 
                 with st.container(
                     border=True
                 ):
 
-                    col1, col2, col3 = st.columns(
-                        [3, 2, 1]
+                    col1, col2, col3 = (
+                        st.columns(
+                            [3, 2, 1]
+                        )
                     )
 
                     # ================================================
@@ -1069,6 +1271,18 @@ def show_client_contacts():
                             f"{contact.status or 'Not specified'}"
                         )
 
+                        activity_count = (
+                            get_activity_count(
+                                session,
+                                contact.id,
+                            )
+                        )
+
+                        st.caption(
+                            f"CRM Activities: "
+                            f"{activity_count}"
+                        )
+
                     # ================================================
                     # ACTIONS
                     # ================================================
@@ -1088,6 +1302,11 @@ def show_client_contacts():
                                 "editing_contact_id"
                             ] = contact.id
 
+                            # Clear any delete state.
+                            clear_delete_confirmation(
+                                contact.id
+                            )
+
                             st.rerun()
 
                         if st.button(
@@ -1103,6 +1322,10 @@ def show_client_contacts():
                                 f"confirm_delete_contact_"
                                 f"{contact.id}"
                             ] = True
+
+                            st.session_state[
+                                "editing_contact_id"
+                            ] = None
 
                             st.rerun()
 
@@ -1140,67 +1363,33 @@ def show_client_contacts():
                         False,
                     ):
 
-                        st.warning(
-                            "Are you sure you want to "
-                            "delete this contact?"
+                        activity_count = (
+                            get_activity_count(
+                                session,
+                                contact.id,
+                            )
                         )
 
-                        confirm_col1, confirm_col2 = (
-                            st.columns(2)
-                        )
+                        if activity_count > 0:
 
-                        with confirm_col1:
+                            st.warning(
+                                "This contact has "
+                                f"**{activity_count} linked CRM "
+                                "activity record(s)**."
+                            )
 
-                            if st.button(
-                                "Yes, Delete",
-                                key=(
-                                    f"confirm_yes_contact_"
-                                    f"{contact.id}"
-                                ),
-                                use_container_width=True,
-                            ):
-
-                                try:
-
-                                    session.delete(
-                                        contact
-                                    )
-
-                                    session.commit()
-
-                                    clear_delete_confirmation(
-                                        contact.id
-                                    )
-
-                                    st.success(
-                                        "Contact deleted "
-                                        "successfully."
-                                    )
-
-                                    st.rerun()
-
-                                except Exception as error:
-
-                                    session.rollback()
-
-                                    clear_delete_confirmation(
-                                        contact.id
-                                    )
-
-                                    st.error(
-                                        "This contact could not "
-                                        "be deleted. It may be "
-                                        "linked to other CRM records."
-                                    )
-
-                                    st.exception(error)
-
-                        with confirm_col2:
+                            st.info(
+                                "Deletion is blocked because "
+                                "this contact has CRM history. "
+                                "Change the contact to Inactive "
+                                "instead if the person is no "
+                                "longer active."
+                            )
 
                             if st.button(
                                 "Cancel",
                                 key=(
-                                    f"confirm_no_contact_"
+                                    f"cancel_blocked_delete_"
                                     f"{contact.id}"
                                 ),
                                 use_container_width=True,
@@ -1211,6 +1400,81 @@ def show_client_contacts():
                                 )
 
                                 st.rerun()
+
+                        else:
+
+                            st.warning(
+                                "Are you sure you want to "
+                                "permanently delete this contact?"
+                            )
+
+                            confirm_col1, confirm_col2 = (
+                                st.columns(2)
+                            )
+
+                            with confirm_col1:
+
+                                if st.button(
+                                    "Yes, Delete",
+                                    key=(
+                                        f"confirm_yes_contact_"
+                                        f"{contact.id}"
+                                    ),
+                                    use_container_width=True,
+                                ):
+
+                                    try:
+
+                                        session.delete(
+                                            contact
+                                        )
+
+                                        session.commit()
+
+                                        clear_delete_confirmation(
+                                            contact.id
+                                        )
+
+                                        st.success(
+                                            "Contact deleted "
+                                            "successfully."
+                                        )
+
+                                        st.rerun()
+
+                                    except Exception as error:
+
+                                        session.rollback()
+
+                                        clear_delete_confirmation(
+                                            contact.id
+                                        )
+
+                                        st.error(
+                                            "This contact could "
+                                            "not be deleted."
+                                        )
+
+                                        st.exception(
+                                            error
+                                        )
+
+                            with confirm_col2:
+
+                                if st.button(
+                                    "Cancel",
+                                    key=(
+                                        f"confirm_no_contact_"
+                                        f"{contact.id}"
+                                    ),
+                                    use_container_width=True,
+                                ):
+
+                                    clear_delete_confirmation(
+                                        contact.id
+                                    )
+
+                                    st.rerun()
 
     except Exception as error:
 
