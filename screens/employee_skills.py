@@ -35,19 +35,42 @@ SKILL_LEVELS = [
 # HELPERS
 # ============================================================
 
+def clean_text(value):
+    """Return a safely cleaned text value."""
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def normalize_text(value):
+    """
+    Normalize text for searching and duplicate checks.
+
+    Converts to lowercase and removes repeated whitespace.
+    """
+
+    return " ".join(
+        clean_text(value)
+        .lower()
+        .split()
+    )
+
+
 def employee_name(employee):
-    """Return the employee's full name safely."""
+    """Return an employee's full name safely."""
 
     if employee is None:
         return "Unknown Employee"
 
-    first_name = (
-        employee.first_name or ""
-    ).strip()
+    first_name = clean_text(
+        employee.first_name
+    )
 
-    last_name = (
-        employee.last_name or ""
-    ).strip()
+    last_name = clean_text(
+        employee.last_name
+    )
 
     full_name = (
         f"{first_name} {last_name}"
@@ -56,7 +79,16 @@ def employee_name(employee):
     if full_name:
         return full_name
 
-    return f"Employee {employee.id}"
+    employee_id = getattr(
+        employee,
+        "id",
+        None,
+    )
+
+    if employee_id is not None:
+        return f"Employee {employee_id}"
+
+    return "Unknown Employee"
 
 
 def employee_label(employee):
@@ -68,30 +100,8 @@ def employee_label(employee):
     )
 
 
-def clean_text(value):
-    """Clean a text value."""
-
-    if value is None:
-        return ""
-
-    return str(value).strip()
-
-
-def normalize_text(value):
-    """
-    Normalize text for duplicate checks
-    and searching.
-    """
-
-    return " ".join(
-        clean_text(value)
-        .lower()
-        .split()
-    )
-
-
 def level_icon(level):
-    """Return an icon for the skill level."""
+    """Return an icon for a skill level."""
 
     icons = {
         "Beginner": "🟢",
@@ -101,13 +111,43 @@ def level_icon(level):
     }
 
     return icons.get(
-        level,
+        clean_text(level),
         "⚪",
     )
 
 
-def skill_search_text(skill, employee):
-    """Build searchable text for a skill."""
+def safe_years_used(skill):
+    """
+    Safely return years_used as a non-negative float.
+
+    Protects the screen from malformed or NULL
+    database values.
+    """
+
+    try:
+
+        value = float(
+            skill.years_used or 0
+        )
+
+        if value < 0:
+            return 0.0
+
+        return value
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return 0.0
+
+
+def skill_search_text(
+    skill,
+    employee,
+):
+    """Build searchable text for a skill record."""
 
     values = [
         skill.skill,
@@ -115,9 +155,15 @@ def skill_search_text(skill, employee):
         skill.level,
         skill.qualification,
         skill.notes,
-        employee.first_name if employee else "",
-        employee.last_name if employee else "",
-        employee.role if employee else "",
+        employee.first_name
+        if employee
+        else "",
+        employee.last_name
+        if employee
+        else "",
+        employee.role
+        if employee
+        else "",
     ]
 
     return normalize_text(
@@ -138,8 +184,9 @@ def find_duplicate_skill(
     """
     Find an existing skill for the same employee.
 
-    Comparison is case-insensitive and ignores
-    repeated/leading/trailing spaces.
+    Duplicate comparison is:
+    - case-insensitive
+    - whitespace-normalized
     """
 
     normalized_skill = normalize_text(
@@ -162,7 +209,8 @@ def find_duplicate_skill(
 
         if (
             exclude_id is not None
-            and existing_skill.id == exclude_id
+            and existing_skill.id
+            == exclude_id
         ):
             continue
 
@@ -180,21 +228,41 @@ def find_duplicate_skill(
 
 
 def get_average_years(skills):
-    """
-    Calculate average years only across
-    skill records with positive experience.
-    """
+    """Calculate average experience across populated skill records."""
 
     years = [
-        float(skill.years_used or 0)
+        safe_years_used(skill)
         for skill in skills
-        if float(skill.years_used or 0) > 0
+        if safe_years_used(skill) > 0
     ]
 
     if not years:
-        return 0
+        return 0.0
 
     return sum(years) / len(years)
+
+
+def clear_edit_state():
+    """Clear the current edit state."""
+
+    st.session_state[
+        "editing_skill_id"
+    ] = None
+
+
+def clear_delete_state():
+    """Clear the current delete confirmation."""
+
+    st.session_state[
+        "confirm_delete_skill_id"
+    ] = None
+
+
+def reset_skill_states():
+    """Clear both edit and delete states."""
+
+    clear_edit_state()
+    clear_delete_state()
 
 
 # ============================================================
@@ -223,14 +291,18 @@ def show_employee_skills():
             not in st.session_state
         ):
 
-            st.session_state.editing_skill_id = None
+            st.session_state[
+                "editing_skill_id"
+            ] = None
 
         if (
             "confirm_delete_skill_id"
             not in st.session_state
         ):
 
-            st.session_state.confirm_delete_skill_id = None
+            st.session_state[
+                "confirm_delete_skill_id"
+            ] = None
 
         # ========================================================
         # LOAD EMPLOYEES
@@ -241,6 +313,7 @@ def show_employee_skills():
             .order_by(
                 Employee.first_name.asc(),
                 Employee.last_name.asc(),
+                Employee.id.asc(),
             )
             .all()
         )
@@ -268,13 +341,15 @@ def show_employee_skills():
         }
 
         # ========================================================
-        # FIND EDITING SKILL
+        # CURRENT EDITING SKILL
         # ========================================================
 
         editing_skill = None
 
         editing_skill_id = (
-            st.session_state.editing_skill_id
+            st.session_state[
+                "editing_skill_id"
+            ]
         )
 
         if editing_skill_id is not None:
@@ -286,7 +361,28 @@ def show_employee_skills():
 
             if editing_skill is None:
 
-                st.session_state.editing_skill_id = None
+                clear_edit_state()
+
+        # ========================================================
+        # CURRENT DELETE TARGET
+        # ========================================================
+
+        delete_skill_id = (
+            st.session_state[
+                "confirm_delete_skill_id"
+            ]
+        )
+
+        if delete_skill_id is not None:
+
+            delete_target = session.get(
+                EmployeeSkill,
+                delete_skill_id,
+            )
+
+            if delete_target is None:
+
+                clear_delete_state()
 
         # ========================================================
         # KPI CALCULATIONS
@@ -313,15 +409,15 @@ def show_employee_skills():
         advanced_expert = sum(
             1
             for skill in skills
-            if skill.level
-            in [
+            if clean_text(skill.level)
+            in {
                 "Advanced",
                 "Expert",
-            ]
+            }
         )
 
-        average_years = get_average_years(
-            skills
+        average_years = (
+            get_average_years(skills)
         )
 
         employees_without_skills = max(
@@ -478,41 +574,40 @@ def show_employee_skills():
                     "**Skills by Level**"
                 )
 
-                for level in SKILL_LEVELS:
+                level_columns = (
+                    st.columns(4)
+                )
 
-                    count = (
-                        level_counts.get(
-                            level,
-                            0,
+                for index, level in enumerate(
+                    SKILL_LEVELS
+                ):
+
+                    with level_columns[
+                        index % 4
+                    ]:
+
+                        count = (
+                            level_counts.get(
+                                level,
+                                0,
+                            )
                         )
-                    )
 
-                    st.write(
-                        f"{level_icon(level)} "
-                        f"**{level}:** {count}"
-                    )
-
-        # ========================================================
-        # FORM
-        # ========================================================
-
-        if editing_skill:
-
-            st.subheader(
-                "Edit Employee Skill"
-            )
-
-        else:
-
-            st.subheader(
-                "Add Employee Skill"
-            )
+                        st.metric(
+                            level,
+                            count,
+                            label_visibility="visible",
+                        )
 
         # ========================================================
         # EMPLOYEE CHECK
         # ========================================================
 
         if not employees:
+
+            st.subheader(
+                "Add Employee Skill"
+            )
 
             st.warning(
                 "You need to add employees "
@@ -522,11 +617,33 @@ def show_employee_skills():
             return
 
         # ========================================================
+        # FORM HEADING
+        # ========================================================
+
+        if editing_skill:
+
+            st.subheader(
+                "Edit Employee Skill"
+            )
+
+            st.caption(
+                f"Editing skill ID "
+                f"{editing_skill.id}"
+            )
+
+        else:
+
+            st.subheader(
+                "Add Employee Skill"
+            )
+
+        # ========================================================
         # SKILL FORM
         # ========================================================
 
         with st.form(
-            "employee_skill_form"
+            "employee_skill_form",
+            clear_on_submit=False,
         ):
 
             # ====================================================
@@ -577,11 +694,16 @@ def show_employee_skills():
             skill_name = st.text_input(
                 "Skill",
                 value=(
-                    editing_skill.skill
+                    clean_text(
+                        editing_skill.skill
+                    )
                     if editing_skill
                     else ""
                 ),
-                placeholder="Example: Excel",
+                placeholder=(
+                    "Example: Excel, SQL, "
+                    "Financial Analysis"
+                ),
             )
 
             # ====================================================
@@ -593,72 +715,76 @@ def show_employee_skills():
             with col1:
 
                 current_category = (
-                    editing_skill.category
-                    if (
-                        editing_skill
-                        and editing_skill.category
-                        in SKILL_CATEGORIES
+                    clean_text(
+                        editing_skill.category
                     )
-                    else "Other"
+                    if editing_skill
+                    else ""
                 )
 
-                category = (
-                    st.selectbox(
-                        "Category",
-                        SKILL_CATEGORIES,
-                        index=(
-                            SKILL_CATEGORIES.index(
-                                current_category
-                            )
-                        ),
-                    )
+                if (
+                    current_category
+                    not in SKILL_CATEGORIES
+                ):
+
+                    current_category = "Other"
+
+                category = st.selectbox(
+                    "Category",
+                    SKILL_CATEGORIES,
+                    index=(
+                        SKILL_CATEGORIES.index(
+                            current_category
+                        )
+                    ),
                 )
 
             with col2:
 
                 current_level = (
-                    editing_skill.level
-                    if (
-                        editing_skill
-                        and editing_skill.level
-                        in SKILL_LEVELS
+                    clean_text(
+                        editing_skill.level
                     )
-                    else "Beginner"
+                    if editing_skill
+                    else ""
                 )
 
-                level = (
-                    st.selectbox(
-                        "Skill Level",
-                        SKILL_LEVELS,
-                        index=(
-                            SKILL_LEVELS.index(
-                                current_level
-                            )
-                        ),
-                    )
+                if (
+                    current_level
+                    not in SKILL_LEVELS
+                ):
+
+                    current_level = "Beginner"
+
+                level = st.selectbox(
+                    "Skill Level",
+                    SKILL_LEVELS,
+                    index=(
+                        SKILL_LEVELS.index(
+                            current_level
+                        )
+                    ),
                 )
 
             # ====================================================
             # YEARS
             # ====================================================
 
-            current_years = 0.0
-
-            if editing_skill:
-
-                current_years = float(
-                    editing_skill.years_used
-                    or 0
+            current_years = (
+                safe_years_used(
+                    editing_skill
                 )
+                if editing_skill
+                else 0.0
+            )
 
-            years_used = (
-                st.number_input(
-                    "Years Used",
-                    min_value=0.0,
-                    step=0.5,
-                    format="%.1f",
-                    value=current_years,
-                )
+            years_used = st.number_input(
+                "Years Used",
+                min_value=0.0,
+                max_value=100.0,
+                step=0.5,
+                format="%.1f",
+                value=current_years,
             )
 
             # ====================================================
@@ -669,7 +795,9 @@ def show_employee_skills():
                 st.text_input(
                     "Qualification / Certification",
                     value=(
-                        editing_skill.qualification
+                        clean_text(
+                            editing_skill.qualification
+                        )
                         if editing_skill
                         else ""
                     ),
@@ -687,7 +815,9 @@ def show_employee_skills():
             notes = st.text_area(
                 "Notes",
                 value=(
-                    editing_skill.notes
+                    clean_text(
+                        editing_skill.notes
+                    )
                     if editing_skill
                     else ""
                 ),
@@ -698,17 +828,45 @@ def show_employee_skills():
             )
 
             # ====================================================
-            # SUBMIT
+            # FORM BUTTONS
             # ====================================================
 
-            submitted = (
-                st.form_submit_button(
-                    "Save Changes"
-                    if editing_skill
-                    else "Add Skill",
-                    use_container_width=True,
+            col1, col2 = st.columns(2)
+
+            with col1:
+
+                submitted = (
+                    st.form_submit_button(
+                        "Save Changes"
+                        if editing_skill
+                        else "Add Skill",
+                        type="primary",
+                        use_container_width=True,
+                    )
                 )
-            )
+
+            with col2:
+
+                cancel_edit = False
+
+                if editing_skill:
+
+                    cancel_edit = (
+                        st.form_submit_button(
+                            "Cancel",
+                            use_container_width=True,
+                        )
+                    )
+
+            # ====================================================
+            # CANCEL EDIT
+            # ====================================================
+
+            if cancel_edit:
+
+                reset_skill_states()
+
+                st.rerun()
 
             # ====================================================
             # SAVE
@@ -730,9 +888,9 @@ def show_employee_skills():
                     notes
                 )
 
-                # =================================================
+                # ===============================================
                 # VALIDATION
-                # =================================================
+                # ===============================================
 
                 if not skill_clean:
 
@@ -740,10 +898,23 @@ def show_employee_skills():
                         "Skill name is required."
                     )
 
+                elif len(skill_clean) > 150:
+
+                    st.error(
+                        "Skill name is too long. "
+                        "Please use 150 characters or fewer."
+                    )
+
                 elif years_used < 0:
 
                     st.error(
                         "Years used cannot be negative."
+                    )
+
+                elif years_used > 100:
+
+                    st.error(
+                        "Years used cannot exceed 100 years."
                     )
 
                 elif (
@@ -820,7 +991,7 @@ def show_employee_skills():
                                 )
 
                                 editing_skill.years_used = (
-                                    years_used
+                                    float(years_used)
                                 )
 
                                 editing_skill.qualification = (
@@ -833,9 +1004,8 @@ def show_employee_skills():
 
                                 session.commit()
 
-                                st.session_state[
-                                    "editing_skill_id"
-                                ] = None
+                                clear_edit_state()
+                                clear_delete_state()
 
                                 st.success(
                                     "Employee skill "
@@ -863,7 +1033,7 @@ def show_employee_skills():
                                             level
                                         ),
                                         years_used=(
-                                            years_used
+                                            float(years_used)
                                         ),
                                         qualification=(
                                             qualification_clean
@@ -880,6 +1050,8 @@ def show_employee_skills():
 
                                 session.commit()
 
+                                clear_delete_state()
+
                                 st.success(
                                     "Employee skill "
                                     "added successfully."
@@ -887,17 +1059,15 @@ def show_employee_skills():
 
                             st.rerun()
 
-                        except Exception as error:
+                        except Exception:
 
                             session.rollback()
 
                             st.error(
                                 "The employee skill "
-                                "could not be saved."
-                            )
-
-                            st.exception(
-                                error
+                                "could not be saved. "
+                                "Please check the information "
+                                "and try again."
                             )
 
         # ========================================================
@@ -941,7 +1111,7 @@ def show_employee_skills():
 
             employee_filter_options = [
                 (
-                    "All",
+                    "All Employees",
                     None,
                 )
             ]
@@ -998,7 +1168,7 @@ def show_employee_skills():
         )
 
         # ========================================================
-        # SEARCH
+        # SEARCH FILTER
         # ========================================================
 
         if search.strip():
@@ -1051,7 +1221,9 @@ def show_employee_skills():
                 skill
                 for skill
                 in filtered_skills
-                if skill.category
+                if clean_text(
+                    skill.category
+                )
                 == category_filter
             ]
 
@@ -1065,7 +1237,9 @@ def show_employee_skills():
                 skill
                 for skill
                 in filtered_skills
-                if skill.level
+                if clean_text(
+                    skill.level
+                )
                 == level_filter
             ]
 
@@ -1129,8 +1303,22 @@ def show_employee_skills():
                 )
             )
 
-            years_display = float(
-                skill.years_used or 0
+            years_display = (
+                safe_years_used(skill)
+            )
+
+            is_currently_editing = (
+                st.session_state[
+                    "editing_skill_id"
+                ]
+                == skill.id
+            )
+
+            is_delete_pending = (
+                st.session_state[
+                    "confirm_delete_skill_id"
+                ]
+                == skill.id
             )
 
             with st.container(
@@ -1187,7 +1375,9 @@ def show_employee_skills():
                             f"{qualification_display}"
                         )
 
-                    if skill.notes:
+                    if clean_text(
+                        skill.notes
+                    ):
 
                         st.caption(
                             f"Notes: "
@@ -1207,6 +1397,9 @@ def show_employee_skills():
                             f"{skill.id}"
                         ),
                         use_container_width=True,
+                        disabled=(
+                            is_currently_editing
+                        ),
                     )
 
                     delete_button = st.button(
@@ -1216,6 +1409,9 @@ def show_employee_skills():
                             f"{skill.id}"
                         ),
                         use_container_width=True,
+                        disabled=(
+                            is_currently_editing
+                        ),
                     )
 
                 # =================================================
@@ -1228,9 +1424,7 @@ def show_employee_skills():
                         "editing_skill_id"
                     ] = skill.id
 
-                    st.session_state[
-                        "confirm_delete_skill_id"
-                    ] = None
+                    clear_delete_state()
 
                     st.rerun()
 
@@ -1239,6 +1433,8 @@ def show_employee_skills():
                 # =================================================
 
                 if delete_button:
+
+                    clear_edit_state()
 
                     st.session_state[
                         "confirm_delete_skill_id"
@@ -1250,12 +1446,7 @@ def show_employee_skills():
                 # DELETE CONFIRMATION
                 # =================================================
 
-                if (
-                    st.session_state[
-                        "confirm_delete_skill_id"
-                    ]
-                    == skill.id
-                ):
+                if is_delete_pending:
 
                     st.warning(
                         f"Are you sure you want to "
@@ -1302,9 +1493,7 @@ def show_employee_skills():
 
                     if cancel_delete:
 
-                        st.session_state[
-                            "confirm_delete_skill_id"
-                        ] = None
+                        clear_delete_state()
 
                         st.rerun()
 
@@ -1322,9 +1511,7 @@ def show_employee_skills():
 
                             session.commit()
 
-                            st.session_state[
-                                "confirm_delete_skill_id"
-                            ] = None
+                            clear_delete_state()
 
                             if (
                                 st.session_state[
@@ -1333,9 +1520,7 @@ def show_employee_skills():
                                 == skill.id
                             ):
 
-                                st.session_state[
-                                    "editing_skill_id"
-                                ] = None
+                                clear_edit_state()
 
                             st.success(
                                 "Employee skill "
@@ -1344,30 +1529,27 @@ def show_employee_skills():
 
                             st.rerun()
 
-                        except Exception as error:
+                        except Exception:
 
                             session.rollback()
 
+                            clear_delete_state()
+
                             st.error(
                                 "The skill could "
-                                "not be deleted."
+                                "not be deleted. "
+                                "The record may be "
+                                "used by another "
+                                "database record."
                             )
 
-                            st.exception(
-                                error
-                            )
-
-    except Exception as error:
+    except Exception:
 
         session.rollback()
 
         st.error(
             "An error occurred while loading "
             "the Employee Skills screen."
-        )
-
-        st.exception(
-            error
         )
 
     finally:
