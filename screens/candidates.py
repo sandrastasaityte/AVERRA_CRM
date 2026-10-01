@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import date
+from datetime import date, timedelta
 
 from database import get_session
 from models import (
@@ -25,6 +25,15 @@ CANDIDATE_STATUSES = [
 ]
 
 
+INTERVIEW_FILTERS = [
+    "All",
+    "Today",
+    "Upcoming",
+    "Past",
+    "No Interview",
+]
+
+
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
@@ -38,12 +47,12 @@ def get_employee_name(employee):
         return "Unknown Employee"
 
     full_name = " ".join(
-        part
+        str(part).strip()
         for part in [
             employee.first_name,
             employee.last_name,
         ]
-        if part
+        if part and str(part).strip()
     ).strip()
 
     return full_name or f"Employee #{employee.id}"
@@ -125,8 +134,13 @@ def get_candidate_search_text(candidate):
         candidate
     )
 
+    candidate_id = str(
+        getattr(candidate, "id", "")
+    )
+
     return " ".join(
         [
+            candidate_id,
             employee_name,
             employee_role,
             job_name,
@@ -148,6 +162,9 @@ def interview_status(candidate):
     - Today
     - Upcoming
     """
+
+    if not candidate:
+        return None
 
     if not candidate.interview_date:
         return None
@@ -196,8 +213,7 @@ def candidate_has_activities(session, candidate_id):
     """
     Check whether the candidate is referenced by Activities.
 
-    We do not automatically delete a candidate that has
-    historical activities because that could destroy CRM history.
+    Candidates with CRM history should not be casually deleted.
     """
 
     return (
@@ -230,24 +246,146 @@ def validate_candidate_dates(
 ):
     """
     Validate candidate date relationships.
-
-    Returns:
-        None if valid
-        Error message if invalid
     """
+
+    if not date_submitted:
+        return "Date submitted is required."
 
     if (
         interview_date
-        and date_submitted
         and interview_date < date_submitted
     ):
-
         return (
             "Interview date cannot be earlier "
             "than the candidate submission date."
         )
 
     return None
+
+
+def validate_candidate_status(
+    status,
+    interview_date,
+):
+    """
+    Validate relationship between status and interview date.
+    """
+
+    if status == "Interview" and not interview_date:
+        return (
+            "Candidates with status 'Interview' "
+            "should have an interview date."
+        )
+
+    return None
+
+
+def get_status_counts(candidates):
+    """
+    Return candidate counts by status.
+    """
+
+    return {
+        status: sum(
+            1
+            for candidate in candidates
+            if candidate.status == status
+        )
+        for status in CANDIDATE_STATUSES
+    }
+
+
+def get_current_job_label(
+    job_options,
+    job_id,
+):
+    """
+    Find the dropdown label for a job ID.
+    """
+
+    for label, record_id in job_options.items():
+
+        if record_id == job_id:
+            return label
+
+    return None
+
+
+def get_current_employee_label(
+    employee_options,
+    employee_id,
+):
+    """
+    Find the dropdown label for an employee ID.
+    """
+
+    for label, record_id in employee_options.items():
+
+        if record_id == employee_id:
+            return label
+
+    return None
+
+
+def build_job_options(jobs):
+    """
+    Build unique job dropdown options.
+    """
+
+    options = {}
+
+    for job in jobs:
+
+        base_label = get_job_name(job)
+
+        label = (
+            f"{base_label} "
+            f"(Job #{job.id})"
+        )
+
+        options[label] = job.id
+
+    return options
+
+
+def build_employee_options(employees):
+    """
+    Build unique employee dropdown options.
+    """
+
+    options = {}
+
+    for employee in employees:
+
+        employee_name = get_employee_name(
+            employee
+        )
+
+        role = (
+            employee.role
+            or "No role"
+        )
+
+        country = (
+            employee.country
+            or ""
+        )
+
+        label = (
+            f"{employee_name} - "
+            f"{role}"
+        )
+
+        if country:
+            label += f" - {country}"
+
+        label += (
+            f" (Employee #{employee.id})"
+        )
+
+        options[label] = employee.id
+
+    return options
 
 
 # ============================================================
@@ -294,51 +432,16 @@ def show_candidates():
         )
 
         # ========================================================
-        # CREATE JOB OPTIONS
+        # CREATE OPTIONS
         # ========================================================
 
-        job_options = {}
+        job_options = build_job_options(
+            jobs
+        )
 
-        for job in jobs:
-
-            label = get_job_name(job)
-
-            # Avoid dictionary collisions if two jobs have
-            # identical position/client labels.
-            if label in job_options:
-                label = f"{label} - Job #{job.id}"
-
-            job_options[label] = job.id
-
-        # ========================================================
-        # CREATE EMPLOYEE OPTIONS
-        # ========================================================
-
-        employee_options = {}
-
-        for employee in employees:
-
-            employee_name = get_employee_name(
-                employee
-            )
-
-            role = (
-                employee.role
-                or "No role"
-            )
-
-            label = (
-                f"{employee_name} - "
-                f"{role}"
-            )
-
-            if label in employee_options:
-                label = (
-                    f"{label} - "
-                    f"Employee #{employee.id}"
-                )
-
-            employee_options[label] = employee.id
+        employee_options = build_employee_options(
+            employees
+        )
 
         # ========================================================
         # SUBMIT CANDIDATE
@@ -360,11 +463,13 @@ def show_candidates():
 
         else:
 
-            with st.form("add_candidate_form"):
+            with st.form(
+                "add_candidate_form"
+            ):
 
-                # ====================================================
-                # BASIC INFORMATION
-                # ====================================================
+                st.markdown(
+                    "### Candidate Submission"
+                )
 
                 col1, col2 = st.columns(2)
 
@@ -372,7 +477,9 @@ def show_candidates():
 
                     selected_job = st.selectbox(
                         "Job *",
-                        list(job_options.keys()),
+                        list(
+                            job_options.keys()
+                        ),
                     )
 
                     date_submitted = st.date_input(
@@ -389,7 +496,9 @@ def show_candidates():
 
                     selected_employee = st.selectbox(
                         "Employee *",
-                        list(employee_options.keys()),
+                        list(
+                            employee_options.keys()
+                        ),
                     )
 
                     interview_scheduled = st.checkbox(
@@ -405,20 +514,21 @@ def show_candidates():
                             value=date.today(),
                         )
 
-                # ====================================================
-                # CLIENT FEEDBACK
-                # ====================================================
+                st.markdown(
+                    "### Client Feedback"
+                )
 
                 client_feedback = st.text_area(
                     "Client Feedback",
                     placeholder=(
-                        "Enter feedback received from the client..."
+                        "Enter feedback received "
+                        "from the client..."
                     ),
                 )
 
-                # ====================================================
-                # INTERNAL NOTES
-                # ====================================================
+                st.markdown(
+                    "### Internal Notes"
+                )
 
                 notes = st.text_area(
                     "Notes",
@@ -426,10 +536,6 @@ def show_candidates():
                         "Internal recruitment notes..."
                     ),
                 )
-
-                # ====================================================
-                # SUBMIT BUTTON
-                # ====================================================
 
                 submitted = st.form_submit_button(
                     "Submit Candidate",
@@ -459,22 +565,40 @@ def show_candidates():
                         )
                     )
 
+                    # ================================================
+                    # STATUS VALIDATION
+                    # ================================================
+
+                    status_error = (
+                        validate_candidate_status(
+                            status,
+                            interview_date,
+                        )
+                    )
+
                     if date_error:
 
                         st.error(
                             date_error
                         )
 
+                    elif status_error:
+
+                        st.warning(
+                            status_error
+                        )
+
                     else:
 
-                        # ================================================
+                        # ============================================
                         # DUPLICATE CHECK
-                        # ================================================
+                        # ============================================
 
                         existing_candidate = (
                             session.query(Candidate)
                             .filter(
-                                Candidate.job_id == job_id,
+                                Candidate.job_id
+                                == job_id,
                                 Candidate.employee_id
                                 == employee_id,
                             )
@@ -484,8 +608,14 @@ def show_candidates():
                         if existing_candidate:
 
                             st.warning(
-                                "This employee has already been "
-                                "submitted for this job."
+                                "This employee has already "
+                                "been submitted for this job."
+                            )
+
+                            st.info(
+                                "You can update the existing "
+                                "candidate record instead of "
+                                "creating a duplicate."
                             )
 
                         else:
@@ -508,14 +638,32 @@ def show_candidates():
                                 ),
                             )
 
-                            session.add(candidate)
-                            session.commit()
+                            try:
 
-                            st.success(
-                                "Candidate submitted successfully."
-                            )
+                                session.add(
+                                    candidate
+                                )
 
-                            st.rerun()
+                                session.commit()
+
+                                st.success(
+                                    "Candidate submitted successfully."
+                                )
+
+                                st.rerun()
+
+                            except Exception as error:
+
+                                session.rollback()
+
+                                st.error(
+                                    "The candidate could "
+                                    "not be created."
+                                )
+
+                                st.exception(
+                                    error
+                                )
 
         # ========================================================
         # CANDIDATE REGISTER
@@ -550,48 +698,12 @@ def show_candidates():
         # SUMMARY COUNTS
         # ========================================================
 
-        total_candidates = len(candidates)
-
-        submitted_count = sum(
-            1
-            for candidate in candidates
-            if candidate.status == "Submitted"
+        status_counts = get_status_counts(
+            candidates
         )
 
-        shortlisted_count = sum(
-            1
-            for candidate in candidates
-            if candidate.status == "Shortlisted"
-        )
-
-        interview_count = sum(
-            1
-            for candidate in candidates
-            if candidate.status == "Interview"
-        )
-
-        offer_count = sum(
-            1
-            for candidate in candidates
-            if candidate.status == "Offer"
-        )
-
-        placed_count = sum(
-            1
-            for candidate in candidates
-            if candidate.status == "Placed"
-        )
-
-        rejected_count = sum(
-            1
-            for candidate in candidates
-            if candidate.status == "Rejected"
-        )
-
-        withdrawn_count = sum(
-            1
-            for candidate in candidates
-            if candidate.status == "Withdrawn"
+        total_candidates = len(
+            candidates
         )
 
         interviews_today = sum(
@@ -608,9 +720,26 @@ def show_candidates():
             == "Upcoming"
         )
 
+        past_interviews = sum(
+            1
+            for candidate in candidates
+            if interview_status(candidate)
+            == "Past"
+        )
+
+        no_interview = sum(
+            1
+            for candidate in candidates
+            if not candidate.interview_date
+        )
+
         # ========================================================
         # SUMMARY DISPLAY
         # ========================================================
+
+        st.subheader(
+            "Recruitment Pipeline"
+        )
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -625,21 +754,21 @@ def show_candidates():
 
             st.metric(
                 "Submitted",
-                submitted_count,
+                status_counts["Submitted"],
             )
 
         with col3:
 
             st.metric(
                 "Shortlisted",
-                shortlisted_count,
+                status_counts["Shortlisted"],
             )
 
         with col4:
 
             st.metric(
                 "Interview",
-                interview_count,
+                status_counts["Interview"],
             )
 
         col1, col2, col3, col4 = st.columns(4)
@@ -648,31 +777,31 @@ def show_candidates():
 
             st.metric(
                 "Offer",
-                offer_count,
+                status_counts["Offer"],
             )
 
         with col2:
 
             st.metric(
                 "Placed",
-                placed_count,
+                status_counts["Placed"],
             )
 
         with col3:
 
             st.metric(
                 "Rejected",
-                rejected_count,
+                status_counts["Rejected"],
             )
 
         with col4:
 
             st.metric(
                 "Withdrawn",
-                withdrawn_count,
+                status_counts["Withdrawn"],
             )
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3, col4 = st.columns(4)
 
         with col1:
 
@@ -688,11 +817,27 @@ def show_candidates():
                 upcoming_interviews,
             )
 
+        with col3:
+
+            st.metric(
+                "Past Interviews",
+                past_interviews,
+            )
+
+        with col4:
+
+            st.metric(
+                "No Interview",
+                no_interview,
+            )
+
         # ========================================================
         # FILTERS
         # ========================================================
 
-        st.subheader("Filters")
+        st.subheader(
+            "Filters"
+        )
 
         col1, col2, col3 = st.columns(3)
 
@@ -701,7 +846,8 @@ def show_candidates():
             search = st.text_input(
                 "Search",
                 placeholder=(
-                    "Employee, role, job, company, notes..."
+                    "Employee, job, company, "
+                    "role, status, notes or ID..."
                 ),
             )
 
@@ -716,20 +862,91 @@ def show_candidates():
 
             interview_filter = st.selectbox(
                 "Interview",
-                [
-                    "All",
-                    "Today",
-                    "Upcoming",
-                    "Past",
-                    "No Interview",
-                ],
+                INTERVIEW_FILTERS,
+            )
+
+        # ========================================================
+        # ADDITIONAL FILTERS
+        # ========================================================
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            company_filter_options = [
+                "All"
+            ]
+
+            company_names = sorted(
+                {
+                    get_company_name(candidate)
+                    for candidate in candidates
+                    if get_company_name(candidate)
+                }
+            )
+
+            company_filter_options.extend(
+                company_names
+            )
+
+            company_filter = st.selectbox(
+                "Client",
+                company_filter_options,
+            )
+
+        with col2:
+
+            role_options = [
+                "All"
+            ]
+
+            role_names = sorted(
+                {
+                    candidate.employee.role
+                    for candidate in candidates
+                    if (
+                        candidate.employee
+                        and candidate.employee.role
+                    )
+                }
+            )
+
+            role_options.extend(
+                role_names
+            )
+
+            role_filter = st.selectbox(
+                "Employee Role",
+                role_options,
+            )
+
+        # ========================================================
+        # DATE FILTERS
+        # ========================================================
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            submitted_from = st.date_input(
+                "Submitted From",
+                value=None,
+            )
+
+        with col2:
+
+            submitted_to = st.date_input(
+                "Submitted To",
+                value=None,
             )
 
         # ========================================================
         # APPLY SEARCH FILTER
         # ========================================================
 
-        filtered_candidates = candidates
+        filtered_candidates = list(
+            candidates
+        )
 
         if search:
 
@@ -789,6 +1006,80 @@ def show_candidates():
                 ]
 
         # ========================================================
+        # APPLY CLIENT FILTER
+        # ========================================================
+
+        if company_filter != "All":
+
+            filtered_candidates = [
+                candidate
+                for candidate
+                in filtered_candidates
+                if get_company_name(candidate)
+                == company_filter
+            ]
+
+        # ========================================================
+        # APPLY ROLE FILTER
+        # ========================================================
+
+        if role_filter != "All":
+
+            filtered_candidates = [
+                candidate
+                for candidate
+                in filtered_candidates
+                if (
+                    candidate.employee
+                    and candidate.employee.role
+                    == role_filter
+                )
+            ]
+
+        # ========================================================
+        # APPLY SUBMITTED DATE FILTER
+        # ========================================================
+
+        if submitted_from:
+
+            filtered_candidates = [
+                candidate
+                for candidate
+                in filtered_candidates
+                if (
+                    candidate.date_submitted
+                    and candidate.date_submitted
+                    >= submitted_from
+                )
+            ]
+
+        if submitted_to:
+
+            filtered_candidates = [
+                candidate
+                for candidate
+                in filtered_candidates
+                if (
+                    candidate.date_submitted
+                    and candidate.date_submitted
+                    <= submitted_to
+                )
+            ]
+
+        if (
+            submitted_from
+            and submitted_to
+            and submitted_from > submitted_to
+        ):
+
+            st.warning(
+                "Submitted From cannot be later "
+                "than Submitted To."
+            )
+
+            filtered_candidates = []
+
+        # ========================================================
         # FILTER RESULT
         # ========================================================
 
@@ -828,20 +1119,26 @@ def show_candidates():
                 )
             )
 
-            with st.container(border=True):
+            with st.container(
+                border=True
+            ):
 
-                col1, col2, col3, col4 = st.columns(
-                    [3, 3, 2, 1]
+                # ====================================================
+                # HEADER
+                # ====================================================
+
+                col1, col2, col3 = st.columns(
+                    [4, 4, 2]
                 )
-
-                # ====================================================
-                # CANDIDATE
-                # ====================================================
 
                 with col1:
 
                     st.subheader(
                         employee_name
+                    )
+
+                    st.caption(
+                        f"Candidate #{candidate.id}"
                     )
 
                     if candidate.employee:
@@ -858,13 +1155,11 @@ def show_candidates():
                                 candidate.employee.country
                             )
 
-                # ====================================================
-                # JOB
-                # ====================================================
-
                 with col2:
 
-                    st.write("**Job**")
+                    st.write(
+                        "**Job**"
+                    )
 
                     st.write(
                         job_name
@@ -876,13 +1171,11 @@ def show_candidates():
                             company_name
                         )
 
-                # ====================================================
-                # STATUS
-                # ====================================================
-
                 with col3:
 
-                    st.write("**Status**")
+                    st.write(
+                        "**Status**"
+                    )
 
                     st.write(
                         candidate.status
@@ -896,17 +1189,36 @@ def show_candidates():
                             f"{candidate.date_submitted}"
                         )
 
-                    if candidate.interview_date:
+                # ====================================================
+                # INTERVIEW INFORMATION
+                # ====================================================
 
-                        st.caption(
-                            "Interview: "
-                            f"{candidate.interview_date}"
+                if candidate.interview_date:
+
+                    st.divider()
+
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+
+                        st.write(
+                            "**Interview Date**"
                         )
+
+                        st.write(
+                            candidate.interview_date
+                        )
+
+                    with col2:
 
                         interview_state = (
                             interview_status(
                                 candidate
                             )
+                        )
+
+                        st.write(
+                            "**Interview Status**"
                         )
 
                         if interview_state == "Today":
@@ -927,11 +1239,78 @@ def show_candidates():
                                 "Interview date passed"
                             )
 
+                        else:
+
+                            st.caption(
+                                "No active interview"
+                            )
+
+                    with col3:
+
+                        st.write(
+                            "**Interview Label**"
+                        )
+
+                        st.write(
+                            get_interview_label(
+                                candidate
+                            )
+                        )
+
+                # ====================================================
+                # FEEDBACK / NOTES
+                # ====================================================
+
+                if candidate.client_feedback:
+
+                    st.divider()
+
+                    st.write(
+                        "**Client Feedback**"
+                    )
+
+                    st.write(
+                        candidate.client_feedback
+                    )
+
+                if candidate.notes:
+
+                    st.write(
+                        "**Internal Notes**"
+                    )
+
+                    st.write(
+                        candidate.notes
+                    )
+
+                # ====================================================
+                # ACTIVITY INFORMATION
+                # ====================================================
+
+                st.divider()
+
+                if linked_activity_count > 0:
+
+                    st.info(
+                        f"CRM Activities linked: "
+                        f"{linked_activity_count}"
+                    )
+
+                else:
+
+                    st.caption(
+                        "No CRM activities linked."
+                    )
+
                 # ====================================================
                 # ACTIONS
                 # ====================================================
 
-                with col4:
+                action_col1, action_col2, action_col3 = (
+                    st.columns(3)
+                )
+
+                with action_col1:
 
                     if st.button(
                         "Edit",
@@ -953,6 +1332,59 @@ def show_candidates():
 
                         st.rerun()
 
+                with action_col2:
+
+                    if (
+                        candidate.status
+                        not in [
+                            "Placed",
+                            "Rejected",
+                            "Withdrawn",
+                        ]
+                        and st.button(
+                            "Mark Interview",
+                            key=(
+                                f"interview_candidate_"
+                                f"{candidate.id}"
+                            ),
+                            use_container_width=True,
+                        )
+                    ):
+
+                        if not candidate.interview_date:
+
+                            candidate.interview_date = (
+                                date.today()
+                            )
+
+                        candidate.status = (
+                            "Interview"
+                        )
+
+                        try:
+
+                            session.commit()
+
+                            st.success(
+                                "Candidate moved to Interview."
+                            )
+
+                            st.rerun()
+
+                        except Exception as error:
+
+                            session.rollback()
+
+                            st.error(
+                                "Unable to update candidate."
+                            )
+
+                            st.exception(
+                                error
+                            )
+
+                with action_col3:
+
                     if st.button(
                         "Delete",
                         key=(
@@ -973,34 +1405,6 @@ def show_candidates():
 
                         st.rerun()
 
-                # ====================================================
-                # ACTIVITY INFORMATION
-                # ====================================================
-
-                if linked_activity_count > 0:
-
-                    st.caption(
-                        f"CRM Activities linked: "
-                        f"{linked_activity_count}"
-                    )
-
-                # ====================================================
-                # DETAILS
-                # ====================================================
-
-                if candidate.client_feedback:
-
-                    st.caption(
-                        "Client Feedback: "
-                        f"{candidate.client_feedback}"
-                    )
-
-                if candidate.notes:
-
-                    st.caption(
-                        f"Notes: {candidate.notes}"
-                    )
-
         # ========================================================
         # DELETE CANDIDATE
         # ========================================================
@@ -1020,7 +1424,9 @@ def show_candidates():
 
                 st.divider()
 
-                st.header("Delete Candidate")
+                st.header(
+                    "Delete Candidate"
+                )
 
                 employee_name = get_employee_name(
                     candidate.employee
@@ -1049,22 +1455,22 @@ def show_candidates():
 
                     st.warning(
                         "This candidate has "
-                        f"**{linked_activity_count}** linked CRM "
-                        "activity record(s). "
-                        "Deleting the candidate could break "
-                        "your recruitment history."
+                        f"**{linked_activity_count}** linked "
+                        "CRM activity record(s)."
                     )
 
                     st.info(
-                        "Deletion is blocked while CRM "
-                        "activities are linked to this candidate. "
-                        "Keep the candidate record and change "
-                        "its status to Rejected or Withdrawn instead."
+                        "Deletion is blocked because the "
+                        "candidate has CRM history. "
+                        "Use Rejected or Withdrawn to retain "
+                        "the recruitment history."
                     )
 
                     if st.button(
                         "Cancel",
-                        key="cancel_delete_candidate_blocked",
+                        key=(
+                            "cancel_delete_candidate_blocked"
+                        ),
                         use_container_width=True,
                     ):
 
@@ -1088,7 +1494,9 @@ def show_candidates():
 
                         if st.button(
                             "Yes, Delete Candidate",
-                            key="confirm_delete_candidate",
+                            key=(
+                                "confirm_delete_candidate"
+                            ),
                             use_container_width=True,
                         ):
 
@@ -1116,7 +1524,8 @@ def show_candidates():
                                 session.rollback()
 
                                 st.error(
-                                    "The candidate could not be deleted."
+                                    "The candidate could "
+                                    "not be deleted."
                                 )
 
                                 st.exception(
@@ -1127,7 +1536,9 @@ def show_candidates():
 
                         if st.button(
                             "Cancel",
-                            key="cancel_delete_candidate",
+                            key=(
+                                "cancel_delete_candidate"
+                            ),
                             use_container_width=True,
                         ):
 
@@ -1157,11 +1568,9 @@ def show_candidates():
 
                 st.divider()
 
-                st.header("Edit Candidate")
-
-                # ====================================================
-                # JOB OPTIONS
-                # ====================================================
+                st.header(
+                    "Edit Candidate"
+                )
 
                 job_names = list(
                     job_options.keys()
@@ -1171,29 +1580,21 @@ def show_candidates():
                     employee_options.keys()
                 )
 
-                # ====================================================
-                # CURRENT JOB
-                # ====================================================
+                current_job_name = (
+                    get_current_job_label(
+                        job_options,
+                        candidate.job_id,
+                    )
+                )
 
-                current_job_name = None
+                current_employee_name = (
+                    get_current_employee_label(
+                        employee_options,
+                        candidate.employee_id,
+                    )
+                )
 
-                for (
-                    name,
-                    job_id,
-                ) in job_options.items():
-
-                    if (
-                        job_id
-                        == candidate.job_id
-                    ):
-
-                        current_job_name = name
-                        break
-
-                if (
-                    current_job_name
-                    in job_names
-                ):
+                if current_job_name in job_names:
 
                     job_index = (
                         job_names.index(
@@ -1204,25 +1605,6 @@ def show_candidates():
                 else:
 
                     job_index = 0
-
-                # ====================================================
-                # CURRENT EMPLOYEE
-                # ====================================================
-
-                current_employee_name = None
-
-                for (
-                    name,
-                    employee_id,
-                ) in employee_options.items():
-
-                    if (
-                        employee_id
-                        == candidate.employee_id
-                    ):
-
-                        current_employee_name = name
-                        break
 
                 if (
                     current_employee_name
@@ -1239,13 +1621,13 @@ def show_candidates():
 
                     employee_index = 0
 
-                # ====================================================
-                # EDIT FORM
-                # ====================================================
-
                 with st.form(
                     f"edit_candidate_form_{candidate.id}"
                 ):
+
+                    st.markdown(
+                        f"Editing Candidate #{candidate.id}"
+                    )
 
                     edit_job = st.selectbox(
                         "Job",
@@ -1276,12 +1658,14 @@ def show_candidates():
                         ),
                     )
 
-                    edit_date_submitted = st.date_input(
-                        "Date Submitted",
-                        value=(
-                            candidate.date_submitted
-                            or date.today()
-                        ),
+                    edit_date_submitted = (
+                        st.date_input(
+                            "Date Submitted",
+                            value=(
+                                candidate.date_submitted
+                                or date.today()
+                            ),
+                        )
                     )
 
                     edit_interview_scheduled = (
@@ -1341,7 +1725,7 @@ def show_candidates():
                         )
 
                     # ====================================================
-                    # SAVE CHANGES
+                    # SAVE
                     # ====================================================
 
                     if save:
@@ -1358,13 +1742,16 @@ def show_candidates():
                             ]
                         )
 
-                        # ================================================
-                        # DATE VALIDATION
-                        # ================================================
-
                         date_error = (
                             validate_candidate_dates(
                                 edit_date_submitted,
+                                edit_interview_date,
+                            )
+                        )
+
+                        status_error = (
+                            validate_candidate_status(
+                                edit_status,
                                 edit_interview_date,
                             )
                         )
@@ -1375,11 +1762,13 @@ def show_candidates():
                                 date_error
                             )
 
-                        else:
+                        elif status_error:
 
-                            # ============================================
-                            # DUPLICATE CHECK
-                            # ============================================
+                            st.warning(
+                                status_error
+                            )
+
+                        else:
 
                             duplicate = (
                                 session.query(
@@ -1436,21 +1825,36 @@ def show_candidates():
                                     edit_notes.strip()
                                 )
 
-                                session.commit()
+                                try:
 
-                                st.session_state.pop(
-                                    "editing_candidate_id",
-                                    None,
-                                )
+                                    session.commit()
 
-                                st.success(
-                                    "Candidate updated successfully."
-                                )
+                                    st.session_state.pop(
+                                        "editing_candidate_id",
+                                        None,
+                                    )
 
-                                st.rerun()
+                                    st.success(
+                                        "Candidate updated successfully."
+                                    )
+
+                                    st.rerun()
+
+                                except Exception as error:
+
+                                    session.rollback()
+
+                                    st.error(
+                                        "The candidate could "
+                                        "not be updated."
+                                    )
+
+                                    st.exception(
+                                        error
+                                    )
 
                     # ====================================================
-                    # CANCEL EDIT
+                    # CANCEL
                     # ====================================================
 
                     if cancel:
@@ -1467,11 +1871,13 @@ def show_candidates():
         session.rollback()
 
         st.error(
-            "An error occurred while loading the "
-            "Candidates screen."
+            "An error occurred while loading "
+            "the Candidates screen."
         )
 
-        st.exception(error)
+        st.exception(
+            error
+        )
 
     finally:
 

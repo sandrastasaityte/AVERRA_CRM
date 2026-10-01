@@ -1,8 +1,10 @@
 import base64
 import re
 from pathlib import Path
+from uuid import uuid4
 
 import streamlit as st
+from sqlalchemy.exc import IntegrityError
 
 from database import get_session
 from models import Employee
@@ -64,8 +66,33 @@ CV_FOLDER = (
 
 
 # ============================================================
-# HELPERS
+# BASIC HELPERS
 # ============================================================
+
+def clean_text(value):
+    """Convert a value into cleaned text."""
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def normalize_text(value):
+    """Normalize text for searching and comparisons."""
+
+    return " ".join(
+        clean_text(value)
+        .lower()
+        .split()
+    )
+
+
+def normalize_email(email):
+    """Normalize an email address."""
+
+    return clean_text(email).lower()
+
 
 def employee_name(employee):
     """Return an employee's full name safely."""
@@ -108,42 +135,10 @@ def employee_name(employee):
     return "Unknown Employee"
 
 
-def clean_text(value):
-    """Convert a value into cleaned text."""
-
-    if value is None:
-        return ""
-
-    return str(value).strip()
-
-
-def normalize_text(value):
-    """
-    Normalize text for searching and
-    duplicate comparisons.
-    """
-
-    return " ".join(
-        clean_text(value)
-        .lower()
-        .split()
-    )
-
-
-def normalize_email(email):
-    """Normalize an email address."""
-
-    return clean_text(
-        email
-    ).lower()
-
-
 def valid_email(email):
     """Perform basic email validation."""
 
-    email = normalize_email(
-        email
-    )
+    email = normalize_email(email)
 
     if not email:
         return True
@@ -154,9 +149,7 @@ def valid_email(email):
     if email.count("@") != 1:
         return False
 
-    local_part, domain = (
-        email.split("@")
-    )
+    local_part, domain = email.split("@")
 
     if not local_part or not domain:
         return False
@@ -185,11 +178,102 @@ def valid_url(url):
         return True
 
     return (
-        url.lower().startswith(
-            "http://"
-        )
-        or url.lower().startswith(
-            "https://"
+        url.lower().startswith("http://")
+        or url.lower().startswith("https://")
+    )
+
+
+# ============================================================
+# EMPLOYEE SEARCH
+# ============================================================
+
+def get_employee_skill_text(employee):
+    """
+    Build searchable text from employee skills.
+
+    Supports both:
+        employee.skills
+    and:
+        employee.employee_skills
+    """
+
+    values = []
+
+    relationship_names = [
+        "skills",
+        "employee_skills",
+    ]
+
+    seen_ids = set()
+
+    for relationship_name in relationship_names:
+
+        try:
+
+            records = getattr(
+                employee,
+                relationship_name,
+                None,
+            )
+
+            if not records:
+                continue
+
+            for record in records:
+
+                record_id = getattr(
+                    record,
+                    "id",
+                    None,
+                )
+
+                if (
+                    record_id is not None
+                    and record_id in seen_ids
+                ):
+                    continue
+
+                if record_id is not None:
+                    seen_ids.add(record_id)
+
+                values.extend(
+                    [
+                        getattr(
+                            record,
+                            "skill",
+                            "",
+                        ),
+                        getattr(
+                            record,
+                            "category",
+                            "",
+                        ),
+                        getattr(
+                            record,
+                            "level",
+                            "",
+                        ),
+                        getattr(
+                            record,
+                            "qualification",
+                            "",
+                        ),
+                        getattr(
+                            record,
+                            "notes",
+                            "",
+                        ),
+                    ]
+                )
+
+        except Exception:
+            continue
+
+    return normalize_text(
+        " ".join(
+            clean_text(value)
+            for value in values
+            if value
         )
     )
 
@@ -253,10 +337,27 @@ def employee_search_text(employee):
         ),
         getattr(
             employee,
+            "currency",
+            "",
+        ),
+        getattr(
+            employee,
+            "cv_link",
+            "",
+        ),
+        getattr(
+            employee,
             "notes",
             "",
         ),
     ]
+
+    skill_text = get_employee_skill_text(
+        employee
+    )
+
+    if skill_text:
+        values.append(skill_text)
 
     return normalize_text(
         " ".join(
@@ -266,6 +367,10 @@ def employee_search_text(employee):
         )
     )
 
+
+# ============================================================
+# SESSION STATE
+# ============================================================
 
 def clear_employee_editing():
     """Clear employee editing state."""
@@ -284,11 +389,43 @@ def clear_employee_delete_confirmation():
 
 
 def reset_employee_states():
-    """Clear all employee UI states."""
+    """Clear employee UI states."""
 
     clear_employee_editing()
     clear_employee_delete_confirmation()
 
+
+def initialize_employee_state():
+    """Initialize Employees screen session state."""
+
+    if (
+        "editing_employee_id"
+        not in st.session_state
+    ):
+        st.session_state[
+            "editing_employee_id"
+        ] = None
+
+    if (
+        "confirm_delete_employee_id"
+        not in st.session_state
+    ):
+        st.session_state[
+            "confirm_delete_employee_id"
+        ] = None
+
+    if (
+        "employee_filter_version"
+        not in st.session_state
+    ):
+        st.session_state[
+            "employee_filter_version"
+        ] = 0
+
+
+# ============================================================
+# CV HELPERS
+# ============================================================
 
 def ensure_cv_folder():
     """Create the CV folder when required."""
@@ -322,7 +459,7 @@ def get_uploaded_cv_path(employee):
     """
     Return a validated local CV path.
 
-    Only paths under data/cvs/ are accepted.
+    Only files under data/cvs/ are accepted.
     """
 
     if employee is None:
@@ -375,7 +512,7 @@ def delete_local_cv(employee):
     """
     Delete an employee's locally stored CV.
 
-    Returns True if a file was deleted.
+    Returns True when a file was deleted.
     """
 
     cv_path = get_uploaded_cv_path(
@@ -402,6 +539,44 @@ def delete_local_cv(employee):
         return False
 
 
+def delete_cv_path(cv_path):
+    """Safely delete a known local CV path."""
+
+    if not cv_path:
+        return False
+
+    try:
+
+        resolved = cv_path.resolve()
+
+        resolved.relative_to(
+            CV_FOLDER.resolve()
+        )
+
+    except (
+        ValueError,
+        OSError,
+    ):
+
+        return False
+
+    if not resolved.exists():
+        return False
+
+    if not resolved.is_file():
+        return False
+
+    try:
+
+        resolved.unlink()
+
+        return True
+
+    except OSError:
+
+        return False
+
+
 def save_uploaded_cv(
     uploaded_file,
     employee_id,
@@ -409,7 +584,7 @@ def save_uploaded_cv(
     last_name,
 ):
     """
-    Save an uploaded CV.
+    Save an uploaded CV using a unique filename.
 
     Returns a portable database path.
     """
@@ -457,6 +632,12 @@ def save_uploaded_cv(
             f"{MAX_CV_SIZE_MB} MB."
         )
 
+    if file_size == 0:
+
+        raise ValueError(
+            "The uploaded CV file is empty."
+        )
+
     ensure_cv_folder()
 
     first = safe_filename(
@@ -467,9 +648,12 @@ def save_uploaded_cv(
         last_name
     )
 
+    unique_id = uuid4().hex[:12]
+
     filename = (
         f"employee_{employee_id}_"
-        f"{first}_{last}.{extension}"
+        f"{first}_{last}_"
+        f"{unique_id}.{extension}"
     )
 
     destination = (
@@ -531,7 +715,6 @@ def display_local_cv(employee):
         or not cv_path.exists()
         or not cv_path.is_file()
     ):
-
         return False
 
     try:
@@ -613,6 +796,52 @@ def display_local_cv(employee):
         return False
 
 
+def get_cv_status(employee):
+    """
+    Return a human-readable CV status.
+
+    Possible values:
+        Local CV
+        External Link
+        Missing File
+        No CV
+    """
+
+    cv_link = clean_text(
+        getattr(
+            employee,
+            "cv_link",
+            "",
+        )
+    )
+
+    if not cv_link:
+        return "No CV"
+
+    local_path = get_uploaded_cv_path(
+        employee
+    )
+
+    if local_path:
+
+        if (
+            local_path.exists()
+            and local_path.is_file()
+        ):
+            return "Local CV"
+
+        return "Missing File"
+
+    if valid_url(cv_link):
+        return "External Link"
+
+    return "Missing File"
+
+
+# ============================================================
+# EMPLOYEE DATA HELPERS
+# ============================================================
+
 def get_employee_experience(employee):
     """Safely return years of experience."""
 
@@ -667,6 +896,173 @@ def get_employee_rate(employee):
         return 0.0
 
 
+def get_related_counts(employee):
+    """Return counts of related CRM records."""
+
+    counts = {
+        "Candidates": 0,
+        "Placements": 0,
+        "Activities": 0,
+        "Skills": 0,
+    }
+
+    relationship_map = {
+        "candidates": "Candidates",
+        "placements": "Placements",
+        "activities": "Activities",
+        "skills": "Skills",
+        "employee_skills": "Skills",
+    }
+
+    seen_skill_ids = set()
+
+    for attribute, label in (
+        relationship_map.items()
+    ):
+
+        try:
+
+            records = getattr(
+                employee,
+                attribute,
+                None,
+            )
+
+            if not records:
+                continue
+
+            if label == "Skills":
+
+                for record in records:
+
+                    record_id = getattr(
+                        record,
+                        "id",
+                        None,
+                    )
+
+                    if (
+                        record_id is not None
+                        and record_id in seen_skill_ids
+                    ):
+                        continue
+
+                    if record_id is not None:
+                        seen_skill_ids.add(
+                            record_id
+                        )
+
+                    counts["Skills"] += 1
+
+            else:
+
+                counts[label] = len(
+                    records
+                )
+
+        except Exception:
+
+            continue
+
+    return counts
+
+
+def get_related_records(employee):
+    """
+    Safely identify related CRM records.
+    """
+
+    counts = get_related_counts(
+        employee
+    )
+
+    return [
+        label
+        for label, count in counts.items()
+        if count > 0
+    ]
+
+
+def get_employee_warnings(employee):
+    """
+    Identify obvious data inconsistencies.
+
+    These are warnings only and do not block saving.
+    """
+
+    warnings = []
+
+    status = clean_text(
+        getattr(
+            employee,
+            "employment_status",
+            "",
+        )
+    )
+
+    availability = clean_text(
+        getattr(
+            employee,
+            "availability",
+            "",
+        )
+    )
+
+    if (
+        status == "Former Employee"
+        and availability
+        in [
+            "Available Now",
+            "Available Soon",
+            "Currently Working",
+        ]
+    ):
+
+        warnings.append(
+            "Former Employee has an active "
+            "availability status."
+        )
+
+    if (
+        status == "Placed"
+        and availability
+        == "Available Now"
+    ):
+
+        warnings.append(
+            "Placed employee is marked "
+            "Available Now."
+        )
+
+    if (
+        status == "On Leave"
+        and availability
+        == "Available Now"
+    ):
+
+        warnings.append(
+            "Employee is On Leave but "
+            "marked Available Now."
+        )
+
+    if (
+        status == "Interviewing"
+        and availability
+        == "Unavailable"
+    ):
+
+        warnings.append(
+            "Employee is Interviewing but "
+            "marked Unavailable."
+        )
+
+    return warnings
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
 def validate_employee_form(
     first_name,
     role,
@@ -702,20 +1098,18 @@ def validate_employee_form(
             "First name is too long.",
         )
 
-    if len(
-        clean_text(role)
-    ) > 150:
-
-        return (
-            False,
-            "Role / Position is too long.",
-        )
-
     if not role:
 
         return (
             False,
             "Role / Position is required.",
+        )
+
+    if len(role) > 150:
+
+        return (
+            False,
+            "Role / Position is too long.",
         )
 
     if not valid_email(email):
@@ -783,11 +1177,23 @@ def validate_employee_form(
             "be negative.",
         )
 
+    if rate > 100000000:
+
+        return (
+            False,
+            "Expected monthly rate is "
+            "outside the allowed range.",
+        )
+
     return (
         True,
         "",
     )
 
+
+# ============================================================
+# DUPLICATE CHECKS
+# ============================================================
 
 def find_duplicate_email(
     session,
@@ -816,8 +1222,7 @@ def find_duplicate_email(
 
         if (
             exclude_id is not None
-            and employee.id
-            == exclude_id
+            and employee.id == exclude_id
         ):
             continue
 
@@ -833,8 +1238,7 @@ def find_duplicate_email(
 
         if (
             existing_email
-            and existing_email
-            == email
+            and existing_email == email
         ):
 
             return employee
@@ -842,68 +1246,182 @@ def find_duplicate_email(
     return None
 
 
-def get_related_records(employee):
-    """
-    Safely identify related CRM records.
+# ============================================================
+# FILTER HELPERS
+# ============================================================
 
-    Supports the relationship names currently
-    used by the CRM.
-    """
+def reset_employee_filters():
+    """Reset filter widgets by creating a new widget namespace."""
 
-    related = []
+    st.session_state[
+        "employee_filter_version"
+    ] = (
+        st.session_state.get(
+            "employee_filter_version",
+            0,
+        )
+        + 1
+    )
 
-    relationship_names = [
-        (
-            "candidates",
-            "Candidates",
-        ),
-        (
-            "placements",
-            "Placements",
-        ),
-        (
-            "activities",
-            "Activities",
-        ),
-        (
-            "skills",
-            "Skills",
-        ),
-        (
-            "employee_skills",
-            "Skills",
-        ),
-    ]
+    st.rerun()
 
-    seen_labels = set()
 
-    for attribute, label in (
-        relationship_names
+def apply_experience_filter(
+    employees,
+    experience_filter,
+):
+    """Apply experience filter."""
+
+    if experience_filter == "All":
+        return employees
+
+    if experience_filter == "Under 2 Years":
+
+        return [
+            employee
+            for employee in employees
+            if get_employee_experience(
+                employee
+            ) < 2
+        ]
+
+    if experience_filter == "2+ Years":
+
+        return [
+            employee
+            for employee in employees
+            if get_employee_experience(
+                employee
+            ) >= 2
+        ]
+
+    if experience_filter == "5+ Years":
+
+        return [
+            employee
+            for employee in employees
+            if get_employee_experience(
+                employee
+            ) >= 5
+        ]
+
+    if experience_filter == "10+ Years":
+
+        return [
+            employee
+            for employee in employees
+            if get_employee_experience(
+                employee
+            ) >= 10
+        ]
+
+    if experience_filter == "15+ Years":
+
+        return [
+            employee
+            for employee in employees
+            if get_employee_experience(
+                employee
+            ) >= 15
+        ]
+
+    return employees
+
+
+def sort_employees(
+    employees,
+    sort_option,
+):
+    """Sort employees according to the selected option."""
+
+    employees = list(
+        employees
+    )
+
+    if sort_option == "Name A-Z":
+
+        employees.sort(
+            key=lambda employee:
+            employee_name(
+                employee
+            ).lower()
+        )
+
+    elif sort_option == "Name Z-A":
+
+        employees.sort(
+            key=lambda employee:
+            employee_name(
+                employee
+            ).lower(),
+            reverse=True,
+        )
+
+    elif (
+        sort_option
+        == "Experience High-Low"
     ):
 
-        try:
+        employees.sort(
+            key=get_employee_experience,
+            reverse=True,
+        )
 
-            records = getattr(
-                employee,
-                attribute,
-                None,
+    elif (
+        sort_option
+        == "Experience Low-High"
+    ):
+
+        employees.sort(
+            key=get_employee_experience
+        )
+
+    elif (
+        sort_option
+        == "Rate High-Low"
+    ):
+
+        employees.sort(
+            key=get_employee_rate,
+            reverse=True,
+        )
+
+    elif (
+        sort_option
+        == "Rate Low-High"
+    ):
+
+        employees.sort(
+            key=get_employee_rate
+        )
+
+    elif sort_option == "Status":
+
+        employees.sort(
+            key=lambda employee:
+            normalize_text(
+                getattr(
+                    employee,
+                    "employment_status",
+                    "",
+                )
             )
+        )
 
-            if records and label not in seen_labels:
+    elif sort_option == "Availability":
 
-                related.append(
-                    label
+        employees.sort(
+            key=lambda employee:
+            normalize_text(
+                getattr(
+                    employee,
+                    "availability",
+                    "",
                 )
+            )
+        )
 
-                seen_labels.add(
-                    label
-                )
-
-        except Exception:
-
-            continue
-
-    return related
+    return employees
 
 
 # ============================================================
@@ -916,7 +1434,7 @@ def show_employees():
 
     st.caption(
         "Manage remote workers, availability, "
-        "experience and cost information."
+        "experience, skills and cost information."
     )
 
     session = get_session()
@@ -927,23 +1445,7 @@ def show_employees():
         # SESSION STATE
         # ========================================================
 
-        if (
-            "editing_employee_id"
-            not in st.session_state
-        ):
-
-            st.session_state[
-                "editing_employee_id"
-            ] = None
-
-        if (
-            "confirm_delete_employee_id"
-            not in st.session_state
-        ):
-
-            st.session_state[
-                "confirm_delete_employee_id"
-            ] = None
+        initialize_employee_state()
 
         # ========================================================
         # LOAD EMPLOYEES
@@ -994,7 +1496,11 @@ def show_employees():
             1
             for employee in employees
             if clean_text(
-                employee.employment_status
+                getattr(
+                    employee,
+                    "employment_status",
+                    "",
+                )
             )
             != "Former Employee"
         )
@@ -1003,7 +1509,11 @@ def show_employees():
             1
             for employee in employees
             if clean_text(
-                employee.availability
+                getattr(
+                    employee,
+                    "availability",
+                    "",
+                )
             )
             == "Available Now"
         )
@@ -1012,7 +1522,11 @@ def show_employees():
             1
             for employee in employees
             if clean_text(
-                employee.availability
+                getattr(
+                    employee,
+                    "availability",
+                    "",
+                )
             )
             == "Available Soon"
         )
@@ -1026,7 +1540,11 @@ def show_employees():
             1
             for employee in employees
             if clean_text(
-                employee.employment_status
+                getattr(
+                    employee,
+                    "employment_status",
+                    "",
+                )
             )
             == "Placed"
         )
@@ -1035,7 +1553,11 @@ def show_employees():
             1
             for employee in employees
             if clean_text(
-                employee.employment_status
+                getattr(
+                    employee,
+                    "employment_status",
+                    "",
+                )
             )
             == "Interviewing"
         )
@@ -1044,7 +1566,11 @@ def show_employees():
             1
             for employee in employees
             if clean_text(
-                employee.employment_status
+                getattr(
+                    employee,
+                    "employment_status",
+                    "",
+                )
             )
             == "Former Employee"
         )
@@ -1052,10 +1578,22 @@ def show_employees():
         cv_count = sum(
             1
             for employee in employees
-            if clean_text(
+            if get_cv_status(
+                employee
+            )
+            in [
+                "Local CV",
+                "External Link",
+            ]
+        )
+
+        missing_email_count = sum(
+            1
+            for employee in employees
+            if not clean_text(
                 getattr(
                     employee,
-                    "cv_link",
+                    "email",
                     "",
                 )
             )
@@ -1118,14 +1656,12 @@ def show_employees():
                 former_employees,
             )
 
-        # ========================================================
-        # SECONDARY METRICS
-        # ========================================================
-
         if employees:
 
-            metric_col1, metric_col2, metric_col3, metric_col4 = (
-                st.columns(4)
+            st.divider()
+
+            metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = (
+                st.columns(5)
             )
 
             with metric_col1:
@@ -1152,8 +1688,15 @@ def show_employees():
             with metric_col4:
 
                 st.caption(
-                    f"CVs recorded: "
+                    f"CVs available: "
                     f"**{cv_count}**"
+                )
+
+            with metric_col5:
+
+                st.caption(
+                    f"Missing email: "
+                    f"**{missing_email_count}**"
                 )
 
             st.caption(
@@ -1360,20 +1903,14 @@ def show_employees():
                     else ""
                 )
 
-                if (
-                    current_english
-                    in ENGLISH_LEVELS
-                ):
-
-                    english_index = (
-                        ENGLISH_LEVELS.index(
-                            current_english
-                        )
+                english_index = (
+                    ENGLISH_LEVELS.index(
+                        current_english
                     )
-
-                else:
-
-                    english_index = 0
+                    if current_english
+                    in ENGLISH_LEVELS
+                    else 0
+                )
 
                 english_level = (
                     st.selectbox(
@@ -1384,72 +1921,66 @@ def show_employees():
                 )
 
             # ====================================================
-            # AVAILABILITY
+            # AVAILABILITY / STATUS
             # ====================================================
 
-            current_availability = (
-                clean_text(
-                    editing_employee.availability
-                )
-                if editing_employee
-                else ""
+            col1, col2 = (
+                st.columns(2)
             )
 
-            if (
-                current_availability
-                in AVAILABILITY_OPTIONS
-            ):
+            with col1:
+
+                current_availability = (
+                    clean_text(
+                        editing_employee.availability
+                    )
+                    if editing_employee
+                    else ""
+                )
 
                 availability_index = (
                     AVAILABILITY_OPTIONS.index(
                         current_availability
                     )
+                    if current_availability
+                    in AVAILABILITY_OPTIONS
+                    else 0
                 )
 
-            else:
-
-                availability_index = 0
-
-            availability = st.selectbox(
-                "Availability",
-                AVAILABILITY_OPTIONS,
-                index=availability_index,
-            )
-
-            # ====================================================
-            # EMPLOYMENT STATUS
-            # ====================================================
-
-            current_status = (
-                clean_text(
-                    editing_employee.employment_status
+                availability = (
+                    st.selectbox(
+                        "Availability",
+                        AVAILABILITY_OPTIONS,
+                        index=availability_index,
+                    )
                 )
-                if editing_employee
-                else ""
-            )
 
-            if (
-                current_status
-                in EMPLOYEE_STATUSES
-            ):
+            with col2:
+
+                current_status = (
+                    clean_text(
+                        editing_employee.employment_status
+                    )
+                    if editing_employee
+                    else ""
+                )
 
                 status_index = (
                     EMPLOYEE_STATUSES.index(
                         current_status
                     )
+                    if current_status
+                    in EMPLOYEE_STATUSES
+                    else 0
                 )
 
-            else:
-
-                status_index = 0
-
-            employment_status = (
-                st.selectbox(
-                    "Employment Status",
-                    EMPLOYEE_STATUSES,
-                    index=status_index,
+                employment_status = (
+                    st.selectbox(
+                        "Employment Status",
+                        EMPLOYEE_STATUSES,
+                        index=status_index,
+                    )
                 )
-            )
 
             # ====================================================
             # MONTHLY RATE
@@ -1490,20 +2021,14 @@ def show_employees():
                     else ""
                 )
 
-                if (
-                    current_currency
-                    in CURRENCIES
-                ):
-
-                    currency_index = (
-                        CURRENCIES.index(
-                            current_currency
-                        )
+                currency_index = (
+                    CURRENCIES.index(
+                        current_currency
                     )
-
-                else:
-
-                    currency_index = 0
+                    if current_currency
+                    in CURRENCIES
+                    else 0
+                )
 
                 currency = st.selectbox(
                     "Currency",
@@ -1519,6 +2044,8 @@ def show_employees():
                 "### CV / Resume"
             )
 
+            existing_local_cv = None
+
             if editing_employee:
 
                 existing_local_cv = (
@@ -1527,23 +2054,32 @@ def show_employees():
                     )
                 )
 
-                if (
-                    existing_local_cv
-                    and existing_local_cv.exists()
-                ):
+                current_cv_status = (
+                    get_cv_status(
+                        editing_employee
+                    )
+                )
+
+                if current_cv_status == "Local CV":
 
                     st.info(
                         f"Current uploaded CV: "
                         f"{existing_local_cv.name}"
                     )
 
-                elif clean_text(
-                    editing_employee.cv_link
-                ):
+                elif current_cv_status == "External Link":
 
                     st.info(
                         "An external CV link is "
                         "currently stored."
+                    )
+
+                elif current_cv_status == "Missing File":
+
+                    st.warning(
+                        "A CV path is stored in "
+                        "the database, but the "
+                        "file could not be found."
                     )
 
             uploaded_cv = (
@@ -1591,6 +2127,31 @@ def show_employees():
                 ),
             )
 
+            remove_existing_cv = False
+
+            if editing_employee:
+
+                existing_cv_link = clean_text(
+                    getattr(
+                        editing_employee,
+                        "cv_link",
+                        "",
+                    )
+                )
+
+                if existing_cv_link:
+
+                    remove_existing_cv = (
+                        st.checkbox(
+                            "Remove existing CV / Resume",
+                            value=False,
+                            help=(
+                                "Remove the current CV "
+                                "without replacing it."
+                            ),
+                        )
+                    )
+
             if uploaded_cv:
 
                 st.caption(
@@ -1618,7 +2179,7 @@ def show_employees():
             )
 
             # ====================================================
-            # BUTTONS
+            # FORM BUTTONS
             # ====================================================
 
             button_col1, button_col2 = (
@@ -1668,62 +2229,44 @@ def show_employees():
 
             if submitted:
 
-                first_name_clean = (
-                    clean_text(
-                        first_name
-                    )
+                first_name_clean = clean_text(
+                    first_name
                 )
 
-                last_name_clean = (
-                    clean_text(
-                        last_name
-                    )
+                last_name_clean = clean_text(
+                    last_name
                 )
 
-                country_clean = (
-                    clean_text(
-                        country
-                    )
+                country_clean = clean_text(
+                    country
                 )
 
-                city_clean = (
-                    clean_text(
-                        city
-                    )
+                city_clean = clean_text(
+                    city
                 )
 
-                email_clean = (
-                    normalize_email(
-                        email
-                    )
+                email_clean = normalize_email(
+                    email
                 )
 
-                phone_clean = (
-                    clean_text(
-                        phone
-                    )
+                phone_clean = clean_text(
+                    phone
                 )
 
-                role_clean = (
-                    clean_text(
-                        role
-                    )
+                role_clean = clean_text(
+                    role
                 )
 
-                cv_link_clean = (
-                    clean_text(
-                        cv_link
-                    )
+                cv_link_clean = clean_text(
+                    cv_link
                 )
 
-                notes_clean = (
-                    clean_text(
-                        notes
-                    )
+                notes_clean = clean_text(
+                    notes
                 )
 
                 # ===============================================
-                # FORM VALIDATION
+                # VALIDATION
                 # ===============================================
 
                 form_valid, form_error = (
@@ -1744,8 +2287,7 @@ def show_employees():
 
                 elif (
                     last_name_clean
-                    and len(last_name_clean)
-                    > 100
+                    and len(last_name_clean) > 100
                 ):
 
                     st.error(
@@ -1754,8 +2296,7 @@ def show_employees():
 
                 elif (
                     country_clean
-                    and len(country_clean)
-                    > 100
+                    and len(country_clean) > 100
                 ):
 
                     st.error(
@@ -1764,8 +2305,7 @@ def show_employees():
 
                 elif (
                     city_clean
-                    and len(city_clean)
-                    > 100
+                    and len(city_clean) > 100
                 ):
 
                     st.error(
@@ -1773,19 +2313,8 @@ def show_employees():
                     )
 
                 elif (
-                    email_clean
-                    and len(email_clean)
-                    > 254
-                ):
-
-                    st.error(
-                        "Email address is too long."
-                    )
-
-                elif (
                     phone_clean
-                    and len(phone_clean)
-                    > 50
+                    and len(phone_clean) > 50
                 ):
 
                     st.error(
@@ -1807,8 +2336,7 @@ def show_employees():
                     )
 
                 elif (
-                    len(notes_clean)
-                    > 5000
+                    len(notes_clean) > 5000
                 ):
 
                     st.error(
@@ -1819,9 +2347,7 @@ def show_employees():
 
                 elif (
                     uploaded_cv
-                    and clean_text(
-                        cv_link_clean
-                    )
+                    and cv_link_clean
                 ):
 
                     st.error(
@@ -1830,11 +2356,25 @@ def show_employees():
                         "not both."
                     )
 
+                elif (
+                    remove_existing_cv
+                    and (
+                        uploaded_cv
+                        or cv_link_clean
+                    )
+                ):
+
+                    st.error(
+                        "Do not select 'Remove existing "
+                        "CV' when replacing it with a "
+                        "new CV or external link."
+                    )
+
                 else:
 
-                    # ===========================================
-                    # DUPLICATE EMAIL CHECK
-                    # ===========================================
+                    # =========================================
+                    # DUPLICATE EMAIL
+                    # =========================================
 
                     duplicate = (
                         find_duplicate_email(
@@ -1852,16 +2392,20 @@ def show_employees():
 
                         st.error(
                             "Another employee already "
-                            "uses this email address."
+                            "uses this email address: "
+                            f"**{employee_name(duplicate)}**."
                         )
 
                     else:
 
+                        new_cv_path = None
+                        old_cv_path = None
+
                         try:
 
-                            # ===================================
+                            # =================================
                             # UPDATE
-                            # ===================================
+                            # =================================
 
                             if editing_employee:
 
@@ -1913,6 +2457,10 @@ def show_employees():
                                     availability
                                 )
 
+                                editing_employee.employment_status = (
+                                    employment_status
+                                )
+
                                 editing_employee.expected_monthly_rate = (
                                     float(
                                         expected_monthly_rate
@@ -1923,17 +2471,13 @@ def show_employees():
                                     currency
                                 )
 
-                                editing_employee.employment_status = (
-                                    employment_status
-                                )
-
                                 editing_employee.notes = (
                                     notes_clean
                                 )
 
-                                # -------------------------------
-                                # CV REPLACEMENT
-                                # -------------------------------
+                                # -----------------------------
+                                # NEW CV
+                                # -----------------------------
 
                                 if uploaded_cv:
 
@@ -1946,9 +2490,18 @@ def show_employees():
                                         )
                                     )
 
+                                    new_cv_path = (
+                                        PROJECT_ROOT
+                                        / new_cv_link
+                                    ).resolve()
+
                                     editing_employee.cv_link = (
                                         new_cv_link
                                     )
+
+                                # -----------------------------
+                                # EXTERNAL LINK
+                                # -----------------------------
 
                                 elif cv_link_clean:
 
@@ -1956,51 +2509,55 @@ def show_employees():
                                         cv_link_clean
                                     )
 
-                                elif (
-                                    old_cv_path
-                                    and old_cv_path.exists()
-                                ):
+                                # -----------------------------
+                                # REMOVE CV
+                                # -----------------------------
 
-                                    # Keep existing local CV.
-                                    editing_employee.cv_link = (
-                                        editing_employee.cv_link
-                                    )
-
-                                else:
+                                elif remove_existing_cv:
 
                                     editing_employee.cv_link = ""
 
-                                session.commit()
+                                # -----------------------------
+                                # KEEP EXISTING CV
+                                # -----------------------------
 
-                                # --------------------------------
-                                # Remove obsolete local CV
-                                # --------------------------------
+                                else:
 
-                                if (
-                                    uploaded_cv
-                                    and old_cv_path
-                                    and old_cv_path.exists()
-                                ):
-
-                                    new_cv_path = (
-                                        get_uploaded_cv_path(
-                                            editing_employee
+                                    editing_employee.cv_link = (
+                                        clean_text(
+                                            editing_employee.cv_link
                                         )
                                     )
 
-                                    try:
+                                session.commit()
 
-                                        if (
-                                            new_cv_path
-                                            and old_cv_path.resolve()
-                                            != new_cv_path.resolve()
-                                        ):
+                                # -----------------------------
+                                # DELETE OLD CV AFTER COMMIT
+                                # -----------------------------
 
-                                            old_cv_path.unlink()
+                                if (
+                                    old_cv_path
+                                    and uploaded_cv
+                                    and new_cv_path
+                                ):
 
-                                    except OSError:
+                                    if (
+                                        old_cv_path.resolve()
+                                        != new_cv_path.resolve()
+                                    ):
 
-                                        pass
+                                        delete_cv_path(
+                                            old_cv_path
+                                        )
+
+                                elif (
+                                    old_cv_path
+                                    and remove_existing_cv
+                                ):
+
+                                    delete_cv_path(
+                                        old_cv_path
+                                    )
 
                                 clear_employee_editing()
 
@@ -2011,9 +2568,9 @@ def show_employees():
 
                                 st.rerun()
 
-                            # ===================================
+                            # =================================
                             # CREATE
-                            # ===================================
+                            # =================================
 
                             else:
 
@@ -2075,9 +2632,9 @@ def show_employees():
 
                                 session.flush()
 
-                                # -------------------------------
+                                # -----------------------------
                                 # SAVE CV
-                                # -------------------------------
+                                # -----------------------------
 
                                 if uploaded_cv:
 
@@ -2089,6 +2646,11 @@ def show_employees():
                                             last_name_clean,
                                         )
                                     )
+
+                                    new_cv_path = (
+                                        PROJECT_ROOT
+                                        / new_cv_link
+                                    ).resolve()
 
                                     new_employee.cv_link = (
                                         new_cv_link
@@ -2113,13 +2675,38 @@ def show_employees():
 
                             session.rollback()
 
+                            if new_cv_path:
+                                delete_cv_path(
+                                    new_cv_path
+                                )
+
                             st.error(
                                 str(error)
+                            )
+
+                        except IntegrityError:
+
+                            session.rollback()
+
+                            if new_cv_path:
+                                delete_cv_path(
+                                    new_cv_path
+                                )
+
+                            st.error(
+                                "The employee could "
+                                "not be saved because "
+                                "of a database constraint."
                             )
 
                         except Exception:
 
                             session.rollback()
+
+                            if new_cv_path:
+                                delete_cv_path(
+                                    new_cv_path
+                                )
 
                             st.error(
                                 "The employee could "
@@ -2148,6 +2735,70 @@ def show_employees():
             return
 
         # ========================================================
+        # FILTER VERSION
+        # ========================================================
+
+        filter_version = (
+            st.session_state[
+                "employee_filter_version"
+            ]
+        )
+
+        # ========================================================
+        # FILTER HEADER
+        # ========================================================
+
+        filter_header_col1, filter_header_col2 = (
+            st.columns([4, 1])
+        )
+
+        with filter_header_col1:
+
+            st.caption(
+                "Use the filters below to find "
+                "workers by profile, skills, "
+                "availability and CV status."
+            )
+
+        with filter_header_col2:
+
+            if st.button(
+                "Reset Filters",
+                key=(
+                    f"reset_employee_filters_"
+                    f"{filter_version}"
+                ),
+                use_container_width=True,
+            ):
+
+                reset_employee_filters()
+
+        # ========================================================
+        # DISTINCT COUNTRIES
+        # ========================================================
+
+        countries = sorted(
+            {
+                clean_text(
+                    getattr(
+                        employee,
+                        "country",
+                        "",
+                    )
+                )
+                for employee in employees
+                if clean_text(
+                    getattr(
+                        employee,
+                        "country",
+                        "",
+                    )
+                )
+            },
+            key=str.lower,
+        )
+
+        # ========================================================
         # FILTERS
         # ========================================================
 
@@ -2160,19 +2811,25 @@ def show_employees():
             search = st.text_input(
                 "Search Employees",
                 placeholder=(
-                    "Name, role, email, "
-                    "city or country..."
+                    "Name, role, skills, "
+                    "email, city..."
+                ),
+                key=(
+                    f"employee_search_"
+                    f"{filter_version}"
                 ),
             )
 
         with col2:
 
-            status_filter = (
-                st.selectbox(
-                    "Employment Status",
-                    ["All"]
-                    + EMPLOYEE_STATUSES,
-                )
+            status_filter = st.selectbox(
+                "Employment Status",
+                ["All"]
+                + EMPLOYEE_STATUSES,
+                key=(
+                    f"employee_status_filter_"
+                    f"{filter_version}"
+                ),
             )
 
         with col3:
@@ -2182,25 +2839,47 @@ def show_employees():
                     "Availability",
                     ["All"]
                     + AVAILABILITY_OPTIONS,
+                    key=(
+                        f"employee_availability_filter_"
+                        f"{filter_version}"
+                    ),
                 )
             )
 
         with col4:
 
-            english_filter = (
-                st.selectbox(
-                    "English Level",
-                    ["All"]
-                    + ENGLISH_LEVELS,
-                )
+            country_filter = st.selectbox(
+                "Country",
+                ["All"] + countries,
+                key=(
+                    f"employee_country_filter_"
+                    f"{filter_version}"
+                ),
             )
 
         # ========================================================
-        # EXPERIENCE FILTER
+        # SECOND FILTER ROW
         # ========================================================
 
-        experience_filter = (
-            st.selectbox(
+        col1, col2, col3, col4 = (
+            st.columns(4)
+        )
+
+        with col1:
+
+            english_filter = st.selectbox(
+                "English Level",
+                ["All"]
+                + ENGLISH_LEVELS,
+                key=(
+                    f"employee_english_filter_"
+                    f"{filter_version}"
+                ),
+            )
+
+        with col2:
+
+            experience_filter = st.selectbox(
                 "Experience",
                 [
                     "All",
@@ -2210,30 +2889,31 @@ def show_employees():
                     "10+ Years",
                     "15+ Years",
                 ],
+                key=(
+                    f"employee_experience_filter_"
+                    f"{filter_version}"
+                ),
             )
-        )
 
-        # ========================================================
-        # CV FILTER
-        # ========================================================
+        with col3:
 
-        cv_filter = (
-            st.selectbox(
+            cv_filter = st.selectbox(
                 "CV / Resume",
                 [
                     "All",
                     "CV Available",
                     "No CV",
+                    "Missing File",
                 ],
+                key=(
+                    f"employee_cv_filter_"
+                    f"{filter_version}"
+                ),
             )
-        )
 
-        # ========================================================
-        # SORT
-        # ========================================================
+        with col4:
 
-        sort_option = (
-            st.selectbox(
+            sort_option = st.selectbox(
                 "Sort Employees",
                 [
                     "Name A-Z",
@@ -2242,9 +2922,14 @@ def show_employees():
                     "Experience Low-High",
                     "Rate High-Low",
                     "Rate Low-High",
+                    "Status",
+                    "Availability",
                 ],
+                key=(
+                    f"employee_sort_"
+                    f"{filter_version}"
+                ),
             )
-        )
 
         # ========================================================
         # FILTER DATA
@@ -2260,10 +2945,8 @@ def show_employees():
 
         if search.strip():
 
-            search_text = (
-                normalize_text(
-                    search
-                )
+            search_text = normalize_text(
+                search
             )
 
             filtered = [
@@ -2285,7 +2968,11 @@ def show_employees():
                 employee
                 for employee in filtered
                 if clean_text(
-                    employee.employment_status
+                    getattr(
+                        employee,
+                        "employment_status",
+                        "",
+                    )
                 )
                 == status_filter
             ]
@@ -2300,9 +2987,32 @@ def show_employees():
                 employee
                 for employee in filtered
                 if clean_text(
-                    employee.availability
+                    getattr(
+                        employee,
+                        "availability",
+                        "",
+                    )
                 )
                 == availability_filter
+            ]
+
+        # ========================================================
+        # COUNTRY
+        # ========================================================
+
+        if country_filter != "All":
+
+            filtered = [
+                employee
+                for employee in filtered
+                if clean_text(
+                    getattr(
+                        employee,
+                        "country",
+                        "",
+                    )
+                )
+                == country_filter
             ]
 
         # ========================================================
@@ -2315,7 +3025,11 @@ def show_employees():
                 employee
                 for employee in filtered
                 if clean_text(
-                    employee.english_level
+                    getattr(
+                        employee,
+                        "english_level",
+                        "",
+                    )
                 )
                 == english_filter
             ]
@@ -2324,80 +3038,10 @@ def show_employees():
         # EXPERIENCE
         # ========================================================
 
-        if (
-            experience_filter
-            != "All"
-        ):
-
-            if (
-                experience_filter
-                == "Under 2 Years"
-            ):
-
-                filtered = [
-                    employee
-                    for employee in filtered
-                    if get_employee_experience(
-                        employee
-                    )
-                    < 2
-                ]
-
-            elif (
-                experience_filter
-                == "2+ Years"
-            ):
-
-                filtered = [
-                    employee
-                    for employee in filtered
-                    if get_employee_experience(
-                        employee
-                    )
-                    >= 2
-                ]
-
-            elif (
-                experience_filter
-                == "5+ Years"
-            ):
-
-                filtered = [
-                    employee
-                    for employee in filtered
-                    if get_employee_experience(
-                        employee
-                    )
-                    >= 5
-                ]
-
-            elif (
-                experience_filter
-                == "10+ Years"
-            ):
-
-                filtered = [
-                    employee
-                    for employee in filtered
-                    if get_employee_experience(
-                        employee
-                    )
-                    >= 10
-                ]
-
-            elif (
-                experience_filter
-                == "15+ Years"
-            ):
-
-                filtered = [
-                    employee
-                    for employee in filtered
-                    if get_employee_experience(
-                        employee
-                    )
-                    >= 15
-                ]
+        filtered = apply_experience_filter(
+            filtered,
+            experience_filter,
+        )
 
         # ========================================================
         # CV FILTER
@@ -2408,13 +3052,13 @@ def show_employees():
             filtered = [
                 employee
                 for employee in filtered
-                if clean_text(
-                    getattr(
-                        employee,
-                        "cv_link",
-                        "",
-                    )
+                if get_cv_status(
+                    employee
                 )
+                in [
+                    "Local CV",
+                    "External Link",
+                ]
             ]
 
         elif cv_filter == "No CV":
@@ -2422,75 +3066,31 @@ def show_employees():
             filtered = [
                 employee
                 for employee in filtered
-                if not clean_text(
-                    getattr(
-                        employee,
-                        "cv_link",
-                        "",
-                    )
+                if get_cv_status(
+                    employee
                 )
+                == "No CV"
+            ]
+
+        elif cv_filter == "Missing File":
+
+            filtered = [
+                employee
+                for employee in filtered
+                if get_cv_status(
+                    employee
+                )
+                == "Missing File"
             ]
 
         # ========================================================
         # SORT
         # ========================================================
 
-        if sort_option == "Name A-Z":
-
-            filtered.sort(
-                key=lambda employee:
-                employee_name(
-                    employee
-                ).lower()
-            )
-
-        elif sort_option == "Name Z-A":
-
-            filtered.sort(
-                key=lambda employee:
-                employee_name(
-                    employee
-                ).lower(),
-                reverse=True,
-            )
-
-        elif (
-            sort_option
-            == "Experience High-Low"
-        ):
-
-            filtered.sort(
-                key=get_employee_experience,
-                reverse=True,
-            )
-
-        elif (
-            sort_option
-            == "Experience Low-High"
-        ):
-
-            filtered.sort(
-                key=get_employee_experience
-            )
-
-        elif (
-            sort_option
-            == "Rate High-Low"
-        ):
-
-            filtered.sort(
-                key=get_employee_rate,
-                reverse=True,
-            )
-
-        elif (
-            sort_option
-            == "Rate Low-High"
-        ):
-
-            filtered.sort(
-                key=get_employee_rate
-            )
+        filtered = sort_employees(
+            filtered,
+            sort_option,
+        )
 
         # ========================================================
         # RESULT SUMMARY
@@ -2503,22 +3103,37 @@ def show_employees():
 
         if filtered:
 
-            filtered_experience = (
+            filtered_average = (
                 sum(
                     get_employee_experience(
                         employee
                     )
                     for employee in filtered
                 )
-            )
-
-            filtered_average = (
-                filtered_experience
                 / len(filtered)
             )
 
-            summary_col1, summary_col2, summary_col3 = (
-                st.columns(3)
+            filtered_cv_count = sum(
+                1
+                for employee in filtered
+                if get_cv_status(
+                    employee
+                )
+                in [
+                    "Local CV",
+                    "External Link",
+                ]
+            )
+
+            filtered_placement_count = sum(
+                get_related_counts(
+                    employee
+                )["Placements"]
+                for employee in filtered
+            )
+
+            summary_col1, summary_col2, summary_col3, summary_col4 = (
+                st.columns(4)
             )
 
             with summary_col1:
@@ -2537,21 +3152,16 @@ def show_employees():
 
             with summary_col3:
 
-                filtered_cv_count = sum(
-                    1
-                    for employee in filtered
-                    if clean_text(
-                        getattr(
-                            employee,
-                            "cv_link",
-                            "",
-                        )
-                    )
-                )
-
                 st.metric(
                     "CVs Available",
                     filtered_cv_count,
+                )
+
+            with summary_col4:
+
+                st.metric(
+                    "Placements",
+                    filtered_placement_count,
                 )
 
         else:
@@ -2573,21 +3183,33 @@ def show_employees():
 
             current_status = (
                 clean_text(
-                    employee.employment_status
+                    getattr(
+                        employee,
+                        "employment_status",
+                        "",
+                    )
                 )
                 or "Not specified"
             )
 
             current_availability = (
                 clean_text(
-                    employee.availability
+                    getattr(
+                        employee,
+                        "availability",
+                        "",
+                    )
                 )
                 or "Not specified"
             )
 
             current_english = (
                 clean_text(
-                    employee.english_level
+                    getattr(
+                        employee,
+                        "english_level",
+                        "",
+                    )
                 )
                 or "Not specified"
             )
@@ -2606,9 +3228,29 @@ def show_employees():
 
             currency_display = (
                 clean_text(
-                    employee.currency
+                    getattr(
+                        employee,
+                        "currency",
+                        "",
+                    )
                 )
                 or "GBP"
+            )
+
+            cv_status = get_cv_status(
+                employee
+            )
+
+            related_counts = (
+                get_related_counts(
+                    employee
+                )
+            )
+
+            warnings = (
+                get_employee_warnings(
+                    employee
+                )
             )
 
             is_editing = (
@@ -2645,9 +3287,11 @@ def show_employees():
                         full_name
                     )
 
-                    role_display = (
-                        clean_text(
-                            employee.role
+                    role_display = clean_text(
+                        getattr(
+                            employee,
+                            "role",
+                            "",
                         )
                     )
 
@@ -2657,36 +3301,64 @@ def show_employees():
                             role_display
                         )
 
-                    if employee.email:
+                    email_display = clean_text(
+                        getattr(
+                            employee,
+                            "email",
+                            "",
+                        )
+                    )
+
+                    if email_display:
 
                         st.write(
                             f"Email: "
-                            f"{employee.email}"
+                            f"{email_display}"
                         )
 
-                    if employee.phone:
+                    phone_display = clean_text(
+                        getattr(
+                            employee,
+                            "phone",
+                            "",
+                        )
+                    )
+
+                    if phone_display:
 
                         st.write(
                             f"Phone: "
-                            f"{employee.phone}"
+                            f"{phone_display}"
                         )
 
                     location_parts = []
 
-                    if employee.city:
+                    city_display = clean_text(
+                        getattr(
+                            employee,
+                            "city",
+                            "",
+                        )
+                    )
+
+                    country_display = clean_text(
+                        getattr(
+                            employee,
+                            "country",
+                            "",
+                        )
+                    )
+
+                    if city_display:
 
                         location_parts.append(
-                            clean_text(
-                                employee.city
-                            )
+                            city_display
                         )
 
-                    if employee.country:
+                    if country_display:
 
                         location_parts.append(
-                            clean_text(
-                                employee.country
-                            )
+                            country_display
                         )
 
                     if location_parts:
@@ -2730,6 +3402,11 @@ def show_employees():
                         f"{rate:,.2f}/month"
                     )
 
+                    st.write(
+                        f"**CV:** "
+                        f"{cv_status}"
+                    )
+
                 # =================================================
                 # ACTIONS
                 # =================================================
@@ -2754,6 +3431,43 @@ def show_employees():
                         ),
                         use_container_width=True,
                         disabled=is_editing,
+                    )
+
+                # =================================================
+                # DATA WARNINGS
+                # =================================================
+
+                if warnings:
+
+                    for warning in warnings:
+
+                        st.warning(
+                            warning
+                        )
+
+                # =================================================
+                # RELATED RECORDS
+                # =================================================
+
+                related_parts = []
+
+                for label, count in (
+                    related_counts.items()
+                ):
+
+                    if count > 0:
+
+                        related_parts.append(
+                            f"{label}: {count}"
+                        )
+
+                if related_parts:
+
+                    st.caption(
+                        "Related records: "
+                        + " | ".join(
+                            related_parts
+                        )
                     )
 
                 # =================================================
@@ -2839,10 +3553,6 @@ def show_employees():
 
                         try:
 
-                            # ====================================
-                            # RELATED RECORD CHECK
-                            # ====================================
-
                             related_records = (
                                 get_related_records(
                                     employee
@@ -2873,23 +3583,23 @@ def show_employees():
 
                             else:
 
-                                # ----------------------------
-                                # DELETE LOCAL CV
-                                # ----------------------------
-
-                                delete_local_cv(
-                                    employee
+                                cv_path = (
+                                    get_uploaded_cv_path(
+                                        employee
+                                    )
                                 )
-
-                                # ----------------------------
-                                # DELETE EMPLOYEE
-                                # ----------------------------
 
                                 session.delete(
                                     employee
                                 )
 
                                 session.commit()
+
+                                if cv_path:
+
+                                    delete_cv_path(
+                                        cv_path
+                                    )
 
                                 clear_employee_delete_confirmation()
 
@@ -2899,6 +3609,19 @@ def show_employees():
                                 )
 
                                 st.rerun()
+
+                        except IntegrityError:
+
+                            session.rollback()
+
+                            clear_employee_delete_confirmation()
+
+                            st.error(
+                                "The employee could "
+                                "not be deleted because "
+                                "another database record "
+                                "still references this employee."
+                            )
 
                         except Exception:
 
@@ -2915,20 +3638,22 @@ def show_employees():
                             )
 
                 # =================================================
-                # CV
+                # CV DISPLAY
                 # =================================================
 
-                cv_link_display = (
-                    clean_text(
-                        getattr(
-                            employee,
-                            "cv_link",
-                            "",
-                        )
+                cv_link_display = clean_text(
+                    getattr(
+                        employee,
+                        "cv_link",
+                        "",
                     )
                 )
 
                 if cv_link_display:
+
+                    st.markdown(
+                        "**CV / Resume**"
+                    )
 
                     local_cv_path = (
                         get_uploaded_cv_path(
@@ -2941,10 +3666,6 @@ def show_employees():
                         and local_cv_path.exists()
                     ):
 
-                        st.markdown(
-                            "**CV / Resume**"
-                        )
-
                         display_local_cv(
                             employee
                         )
@@ -2953,26 +3674,29 @@ def show_employees():
                         cv_link_display
                     ):
 
-                        st.markdown(
-                            f"[Open CV / Resume]"
-                            f"({cv_link_display})"
+                        st.link_button(
+                            "Open CV / Resume",
+                            cv_link_display,
+                            use_container_width=False,
                         )
 
                     else:
 
-                        st.caption(
-                            "CV path is stored, "
-                            "but the local file "
-                            "could not be found."
+                        st.warning(
+                            "The CV path is stored "
+                            "in the database, but the "
+                            "local file could not be found."
                         )
 
                 # =================================================
                 # NOTES
                 # =================================================
 
-                notes_display = (
-                    clean_text(
-                        employee.notes
+                notes_display = clean_text(
+                    getattr(
+                        employee,
+                        "notes",
+                        "",
                     )
                 )
 

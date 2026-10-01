@@ -41,12 +41,10 @@ PRIORITIES = [
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# DISPLAY HELPERS
 # ============================================================
 
 def get_client_name(client):
-    """Return a safe client display name."""
-
     if not client:
         return "No Client"
 
@@ -57,13 +55,11 @@ def get_client_name(client):
 
 
 def get_contact_name(contact):
-    """Return a safe contact display name."""
-
     if not contact:
         return "No Contact"
 
     name = " ".join(
-        part.strip()
+        str(part).strip()
         for part in [
             getattr(contact, "first_name", None),
             getattr(contact, "last_name", None),
@@ -75,13 +71,11 @@ def get_contact_name(contact):
 
 
 def get_employee_name(employee):
-    """Return a safe employee display name."""
-
     if not employee:
         return "Unassigned"
 
     name = " ".join(
-        part.strip()
+        str(part).strip()
         for part in [
             getattr(employee, "first_name", None),
             getattr(employee, "last_name", None),
@@ -93,26 +87,24 @@ def get_employee_name(employee):
 
 
 def get_candidate_name(candidate):
-    """Return candidate name through linked employee."""
-
     if not candidate:
         return "No Candidate"
 
-    if getattr(candidate, "employee", None):
-        return get_employee_name(candidate.employee)
+    employee = getattr(candidate, "employee", None)
+
+    if employee:
+        return get_employee_name(employee)
 
     return f"Candidate #{getattr(candidate, 'id', '')}"
 
 
 def get_placement_name(placement):
-    """Return a readable placement name."""
-
     if not placement:
         return "No Placement"
 
-    employee_name = get_employee_name(
-        getattr(placement, "employee", None)
-    )
+    employee = getattr(placement, "employee", None)
+
+    employee_name = get_employee_name(employee)
 
     position = (
         getattr(placement, "position", None)
@@ -123,8 +115,6 @@ def get_placement_name(placement):
 
 
 def get_contract_name(contract):
-    """Return contract number or fallback identifier."""
-
     if not contract:
         return "No Contract"
 
@@ -135,8 +125,6 @@ def get_contract_name(contract):
 
 
 def get_job_name(job):
-    """Return a safe job display name."""
-
     if not job:
         return "No Job"
 
@@ -146,63 +134,15 @@ def get_job_name(job):
     )
 
 
-def activity_is_overdue(activity):
-    """Return True when an open activity is past its due date."""
-
-    if not activity:
-        return False
-
-    if activity.status != "Open":
-        return False
-
-    if not activity.due_date:
-        return False
-
-    return activity.due_date < date.today()
-
-
-def activity_is_due_today(activity):
-    """Return True when an open activity is due today."""
-
-    if not activity:
-        return False
-
-    if activity.status != "Open":
-        return False
-
-    if not activity.due_date:
-        return False
-
-    return activity.due_date == date.today()
-
-
-def activity_is_upcoming(activity):
-    """Return True when an open activity is due within 7 days."""
-
-    if not activity:
-        return False
-
-    if activity.status != "Open":
-        return False
-
-    if not activity.due_date:
-        return False
-
-    today = date.today()
-    end_date = today + timedelta(days=7)
-
-    return today < activity.due_date <= end_date
-
-
 def safe_text(value):
-    """Convert nullable values into safe searchable text."""
-
     return str(value or "").strip().lower()
 
 
-def build_activity_search_text(activity):
-    """Build searchable text from an activity and its relationships."""
+# ============================================================
+# SEARCH
+# ============================================================
 
+def build_activity_search_text(activity):
     values = [
         getattr(activity, "subject", None),
         getattr(activity, "notes", None),
@@ -235,12 +175,75 @@ def build_activity_search_text(activity):
     )
 
 
-def save_activity(session, activity):
-    """Safely save an activity."""
+# ============================================================
+# DATE / STATUS HELPERS
+# ============================================================
 
+def activity_is_overdue(activity):
+    if not activity:
+        return False
+
+    if activity.status != "Open":
+        return False
+
+    if not activity.due_date:
+        return False
+
+    return activity.due_date < date.today()
+
+
+def activity_is_due_today(activity):
+    if not activity:
+        return False
+
+    if activity.status != "Open":
+        return False
+
+    if not activity.due_date:
+        return False
+
+    return activity.due_date == date.today()
+
+
+def activity_is_upcoming(activity):
+    if not activity:
+        return False
+
+    if activity.status != "Open":
+        return False
+
+    if not activity.due_date:
+        return False
+
+    today = date.today()
+    end_date = today + timedelta(days=7)
+
+    return today < activity.due_date <= end_date
+
+
+def activity_is_future(activity):
+    if not activity:
+        return False
+
+    if activity.status != "Open":
+        return False
+
+    if not activity.due_date:
+        return False
+
+    return activity.due_date > date.today()
+
+
+# ============================================================
+# DATABASE HELPERS
+# ============================================================
+
+def save_activity(session, activity):
     try:
         session.add(activity)
         session.commit()
+        session.refresh(activity)
+
         return True, None
 
     except Exception as error:
@@ -249,10 +252,10 @@ def save_activity(session, activity):
 
 
 def update_activity(session, activity):
-    """Safely update an activity."""
-
     try:
         session.commit()
+        session.refresh(activity)
+
         return True, None
 
     except Exception as error:
@@ -261,11 +264,10 @@ def update_activity(session, activity):
 
 
 def delete_activity(session, activity):
-    """Safely delete an activity."""
-
     try:
         session.delete(activity)
         session.commit()
+
         return True, None
 
     except Exception as error:
@@ -273,24 +275,153 @@ def delete_activity(session, activity):
         return False, error
 
 
-def get_option_id(options, selected_value, empty_value):
-    """Return an ID from a selectbox option."""
+# ============================================================
+# DROPDOWN BUILDERS
+# ============================================================
 
+def build_client_options(clients):
+    options = {}
+
+    for client in clients:
+        label = (
+            f"{get_client_name(client)} "
+            f"(ID: {client.id})"
+        )
+
+        options[label] = client.id
+
+    return options
+
+
+def build_contact_options(contacts):
+    options = {}
+
+    for contact in contacts:
+        label = (
+            f"{get_contact_name(contact)} - "
+            f"{get_client_name(contact.client)} "
+            f"(ID: {contact.id})"
+        )
+
+        options[label] = contact.id
+
+    return options
+
+
+def build_employee_options(employees):
+    options = {}
+
+    for employee in employees:
+        label = (
+            f"{get_employee_name(employee)} "
+            f"(ID: {employee.id})"
+        )
+
+        options[label] = employee.id
+
+    return options
+
+
+def build_job_options(jobs):
+    options = {}
+
+    for job in jobs:
+        label = (
+            f"{get_job_name(job)} - "
+            f"{get_client_name(job.client)} "
+            f"(ID: {job.id})"
+        )
+
+        options[label] = job.id
+
+    return options
+
+
+def build_candidate_options(candidates):
+    options = {}
+
+    for candidate in candidates:
+        label = (
+            f"{get_candidate_name(candidate)} - "
+            f"Candidate #{candidate.id}"
+        )
+
+        options[label] = candidate.id
+
+    return options
+
+
+def build_placement_options(placements):
+    options = {}
+
+    for placement in placements:
+        label = (
+            f"{get_placement_name(placement)} - "
+            f"Placement #{placement.id}"
+        )
+
+        options[label] = placement.id
+
+    return options
+
+
+def build_contract_options(contracts):
+    options = {}
+
+    for contract in contracts:
+        label = (
+            f"{get_contract_name(contract)} - "
+            f"{get_client_name(contract.client)} "
+            f"(ID: {contract.id})"
+        )
+
+        options[label] = contract.id
+
+    return options
+
+
+def get_selected_label(options, selected_id, default_label):
+    if not selected_id:
+        return default_label
+
+    for label, record_id in options.items():
+        if record_id == selected_id:
+            return label
+
+    return default_label
+
+
+def get_option_id(options, selected_value, empty_value):
     if selected_value == empty_value:
         return None
 
     return options.get(selected_value)
 
 
-def make_activity_label(activity):
-    """Create a compact activity label for follow-up links."""
+# ============================================================
+# VALIDATION
+# ============================================================
 
-    subject = (
-        getattr(activity, "subject", None)
-        or f"Activity #{getattr(activity, 'id', '')}"
-    )
+def validate_activity_dates(activity_date, due_date):
+    if not activity_date:
+        return "Activity Date is required."
 
-    return f"{subject} - {getattr(activity, 'activity_type', '')}"
+    if due_date and due_date < activity_date:
+        return "Due Date cannot be earlier than Activity Date."
+
+    return None
+
+
+def validate_activity_subject(subject):
+    clean_subject = str(subject or "").strip()
+
+    if not clean_subject:
+        return "Subject is required."
+
+    if len(clean_subject) > 200:
+        return "Subject must be 200 characters or fewer."
+
+    return None
 
 
 # ============================================================
@@ -308,127 +439,89 @@ def render_edit_activity(
     placements,
     contracts,
 ):
-    """Render an activity editing form."""
-
     edit_key = f"edit_activity_{activity.id}"
 
     st.subheader(
         f"Edit Activity #{activity.id}"
     )
 
-    client_options = {
-        get_client_name(client): client.id
-        for client in clients
-    }
+    client_options = build_client_options(clients)
+    contact_options = build_contact_options(contacts)
+    employee_options = build_employee_options(employees)
+    job_options = build_job_options(jobs)
+    candidate_options = build_candidate_options(candidates)
+    placement_options = build_placement_options(placements)
+    contract_options = build_contract_options(contracts)
 
-    contact_options = {
-        (
-            f"{get_contact_name(contact)} - "
-            f"{get_client_name(contact.client)}"
-        ): contact.id
-        for contact in contacts
-    }
+    client_labels = [
+        "No Client"
+    ] + list(client_options.keys())
 
-    employee_options = {
-        get_employee_name(employee): employee.id
-        for employee in employees
-    }
+    contact_labels = [
+        "No Contact"
+    ] + list(contact_options.keys())
 
-    job_options = {
-        (
-            f"{get_job_name(job)} - "
-            f"{get_client_name(job.client)}"
-        ): job.id
-        for job in jobs
-    }
+    employee_labels = [
+        "Unassigned"
+    ] + list(employee_options.keys())
 
-    candidate_options = {
-        (
-            f"{get_candidate_name(candidate)} - "
-            f"Candidate #{candidate.id}"
-        ): candidate.id
-        for candidate in candidates
-    }
+    job_labels = [
+        "No Job"
+    ] + list(job_options.keys())
 
-    placement_options = {
-        (
-            f"{get_placement_name(placement)} - "
-            f"Placement #{placement.id}"
-        ): placement.id
-        for placement in placements
-    }
+    candidate_labels = [
+        "No Candidate"
+    ] + list(candidate_options.keys())
 
-    contract_options = {
-        (
-            f"{get_contract_name(contract)} - "
-            f"{get_client_name(contract.client)}"
-        ): contract.id
-        for contract in contracts
-    }
+    placement_labels = [
+        "No Placement"
+    ] + list(placement_options.keys())
 
-    client_labels = ["No Client"] + list(client_options.keys())
-    contact_labels = ["No Contact"] + list(contact_options.keys())
-    employee_labels = ["Unassigned"] + list(employee_options.keys())
-    job_labels = ["No Job"] + list(job_options.keys())
-    candidate_labels = ["No Candidate"] + list(candidate_options.keys())
-    placement_labels = ["No Placement"] + list(placement_options.keys())
-    contract_labels = ["No Contract"] + list(contract_options.keys())
+    contract_labels = [
+        "No Contract"
+    ] + list(contract_options.keys())
 
-    current_client_label = "No Client"
+    current_client_label = get_selected_label(
+        client_options,
+        activity.client_id,
+        "No Client",
+    )
 
-    if activity.client_id:
-        for label, record_id in client_options.items():
-            if record_id == activity.client_id:
-                current_client_label = label
-                break
+    current_contact_label = get_selected_label(
+        contact_options,
+        activity.contact_id,
+        "No Contact",
+    )
 
-    current_contact_label = "No Contact"
+    current_employee_label = get_selected_label(
+        employee_options,
+        activity.assigned_to_id,
+        "Unassigned",
+    )
 
-    if activity.contact_id:
-        for label, record_id in contact_options.items():
-            if record_id == activity.contact_id:
-                current_contact_label = label
-                break
+    current_job_label = get_selected_label(
+        job_options,
+        activity.job_id,
+        "No Job",
+    )
 
-    current_employee_label = "Unassigned"
+    current_candidate_label = get_selected_label(
+        candidate_options,
+        activity.candidate_id,
+        "No Candidate",
+    )
 
-    if activity.assigned_to_id:
-        for label, record_id in employee_options.items():
-            if record_id == activity.assigned_to_id:
-                current_employee_label = label
-                break
+    current_placement_label = get_selected_label(
+        placement_options,
+        activity.placement_id,
+        "No Placement",
+    )
 
-    current_job_label = "No Job"
-
-    if activity.job_id:
-        for label, record_id in job_options.items():
-            if record_id == activity.job_id:
-                current_job_label = label
-                break
-
-    current_candidate_label = "No Candidate"
-
-    if activity.candidate_id:
-        for label, record_id in candidate_options.items():
-            if record_id == activity.candidate_id:
-                current_candidate_label = label
-                break
-
-    current_placement_label = "No Placement"
-
-    if activity.placement_id:
-        for label, record_id in placement_options.items():
-            if record_id == activity.placement_id:
-                current_placement_label = label
-                break
-
-    current_contract_label = "No Contract"
-
-    if activity.contract_id:
-        for label, record_id in contract_options.items():
-            if record_id == activity.contract_id:
-                current_contract_label = label
-                break
+    current_contract_label = get_selected_label(
+        contract_options,
+        activity.contract_id,
+        "No Contract",
+    )
 
     activity_type_index = (
         ACTIVITY_TYPES.index(activity.activity_type)
@@ -450,6 +543,8 @@ def render_edit_activity(
 
     with st.form(edit_key):
 
+        st.markdown("### Activity Details")
+
         col1, col2 = st.columns(2)
 
         with col1:
@@ -463,6 +558,7 @@ def render_edit_activity(
             subject = st.text_input(
                 "Subject *",
                 value=activity.subject or "",
+                max_chars=200,
             )
 
             activity_date = st.date_input(
@@ -493,13 +589,15 @@ def render_edit_activity(
                 "Assigned To",
                 employee_labels,
                 index=(
-                    employee_labels.index(current_employee_label)
+                    employee_labels.index(
+                        current_employee_label
+                    )
                     if current_employee_label in employee_labels
                     else 0
                 ),
             )
 
-        st.subheader("Client")
+        st.markdown("### Client")
 
         col1, col2 = st.columns(2)
 
@@ -509,7 +607,9 @@ def render_edit_activity(
                 "Client",
                 client_labels,
                 index=(
-                    client_labels.index(current_client_label)
+                    client_labels.index(
+                        current_client_label
+                    )
                     if current_client_label in client_labels
                     else 0
                 ),
@@ -521,13 +621,15 @@ def render_edit_activity(
                 "Client Contact",
                 contact_labels,
                 index=(
-                    contact_labels.index(current_contact_label)
+                    contact_labels.index(
+                        current_contact_label
+                    )
                     if current_contact_label in contact_labels
                     else 0
                 ),
             )
 
-        st.subheader("Recruitment")
+        st.markdown("### Recruitment")
 
         col1, col2 = st.columns(2)
 
@@ -537,7 +639,9 @@ def render_edit_activity(
                 "Job",
                 job_labels,
                 index=(
-                    job_labels.index(current_job_label)
+                    job_labels.index(
+                        current_job_label
+                    )
                     if current_job_label in job_labels
                     else 0
                 ),
@@ -549,13 +653,15 @@ def render_edit_activity(
                 "Candidate",
                 candidate_labels,
                 index=(
-                    candidate_labels.index(current_candidate_label)
+                    candidate_labels.index(
+                        current_candidate_label
+                    )
                     if current_candidate_label in candidate_labels
                     else 0
                 ),
             )
 
-        st.subheader("Placement / Contract")
+        st.markdown("### Placement / Contract")
 
         col1, col2 = st.columns(2)
 
@@ -565,7 +671,9 @@ def render_edit_activity(
                 "Placement",
                 placement_labels,
                 index=(
-                    placement_labels.index(current_placement_label)
+                    placement_labels.index(
+                        current_placement_label
+                    )
                     if current_placement_label in placement_labels
                     else 0
                 ),
@@ -577,7 +685,9 @@ def render_edit_activity(
                 "Contract",
                 contract_labels,
                 index=(
-                    contract_labels.index(current_contract_label)
+                    contract_labels.index(
+                        current_contract_label
+                    )
                     if current_contract_label in contract_labels
                     else 0
                 ),
@@ -618,22 +728,22 @@ def render_edit_activity(
             clean_subject = subject.strip()
             clean_notes = notes.strip()
 
-            if not clean_subject:
+            subject_error = validate_activity_subject(
+                clean_subject
+            )
 
-                st.error(
-                    "Subject is required."
-                )
+            date_error = validate_activity_dates(
+                activity_date,
+                due_date,
+            )
 
-            elif (
-                due_date
-                and activity_date
-                and due_date < activity_date
-            ):
+            if subject_error:
 
-                st.error(
-                    "Due Date cannot be earlier than "
-                    "Activity Date."
-                )
+                st.error(subject_error)
+
+            elif date_error:
+
+                st.error(date_error)
 
             else:
 
@@ -793,55 +903,13 @@ def show_activities():
         # DROPDOWN OPTIONS
         # ========================================================
 
-        client_options = {
-            get_client_name(client): client.id
-            for client in clients
-        }
-
-        contact_options = {
-            (
-                f"{get_contact_name(contact)} - "
-                f"{get_client_name(contact.client)}"
-            ): contact.id
-            for contact in contacts
-        }
-
-        employee_options = {
-            get_employee_name(employee): employee.id
-            for employee in employees
-        }
-
-        job_options = {
-            (
-                f"{get_job_name(job)} - "
-                f"{get_client_name(job.client)}"
-            ): job.id
-            for job in jobs
-        }
-
-        candidate_options = {
-            (
-                f"{get_candidate_name(candidate)} - "
-                f"Candidate #{candidate.id}"
-            ): candidate.id
-            for candidate in candidates
-        }
-
-        placement_options = {
-            (
-                f"{get_placement_name(placement)} - "
-                f"Placement #{placement.id}"
-            ): placement.id
-            for placement in placements
-        }
-
-        contract_options = {
-            (
-                f"{get_contract_name(contract)} - "
-                f"{get_client_name(contract.client)}"
-            ): contract.id
-            for contract in contracts
-        }
+        client_options = build_client_options(clients)
+        contact_options = build_contact_options(contacts)
+        employee_options = build_employee_options(employees)
+        job_options = build_job_options(jobs)
+        candidate_options = build_candidate_options(candidates)
+        placement_options = build_placement_options(placements)
+        contract_options = build_contract_options(contracts)
 
         # ========================================================
         # STATISTICS
@@ -900,28 +968,24 @@ def show_activities():
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-
             st.metric(
                 "Total Activities",
                 total_activities,
             )
 
         with col2:
-
             st.metric(
                 "Open",
                 open_activities,
             )
 
         with col3:
-
             st.metric(
                 "Completed",
                 completed_activities,
             )
 
         with col4:
-
             st.metric(
                 "Today",
                 today_activities,
@@ -977,7 +1041,7 @@ def show_activities():
 
         with st.form("add_activity_form"):
 
-            st.subheader("Activity Details")
+            st.markdown("### Activity Details")
 
             col1, col2 = st.columns(2)
 
@@ -994,6 +1058,7 @@ def show_activities():
                         "Example: Follow up with client "
                         "about Finance Analyst vacancy"
                     ),
+                    max_chars=200,
                 )
 
                 activity_date = st.date_input(
@@ -1026,7 +1091,7 @@ def show_activities():
                     list(employee_options.keys()),
                 )
 
-            st.subheader("Client")
+            st.markdown("### Client")
 
             col1, col2 = st.columns(2)
 
@@ -1046,7 +1111,7 @@ def show_activities():
                     list(contact_options.keys()),
                 )
 
-            st.subheader("Recruitment")
+            st.markdown("### Recruitment")
 
             col1, col2 = st.columns(2)
 
@@ -1066,7 +1131,7 @@ def show_activities():
                     list(candidate_options.keys()),
                 )
 
-            st.subheader("Placement / Contract")
+            st.markdown("### Placement / Contract")
 
             col1, col2 = st.columns(2)
 
@@ -1104,22 +1169,22 @@ def show_activities():
                 clean_subject = subject.strip()
                 clean_notes = notes.strip()
 
-                if not clean_subject:
+                subject_error = validate_activity_subject(
+                    clean_subject
+                )
 
-                    st.error(
-                        "Subject is required."
-                    )
+                date_error = validate_activity_dates(
+                    activity_date,
+                    due_date,
+                )
 
-                elif (
-                    due_date
-                    and activity_date
-                    and due_date < activity_date
-                ):
+                if subject_error:
 
-                    st.error(
-                        "Due Date cannot be earlier than "
-                        "Activity Date."
-                    )
+                    st.error(subject_error)
+
+                elif date_error:
+
+                    st.error(date_error)
 
                 else:
 
@@ -1256,6 +1321,7 @@ def show_activities():
                     "Overdue",
                     "Due Today",
                     "Next 7 Days",
+                    "Future",
                     "No Due Date",
                 ],
             )
@@ -1316,9 +1382,9 @@ def show_activities():
 
         if client_filter != "All":
 
-            selected_client_id = (
-                client_options[client_filter]
-            )
+            selected_client_id = client_options[
+                client_filter
+            ]
 
             filtered_activities = [
                 activity
@@ -1328,9 +1394,9 @@ def show_activities():
 
         if assigned_filter != "All":
 
-            selected_employee_id = (
-                employee_options[assigned_filter]
-            )
+            selected_employee_id = employee_options[
+                assigned_filter
+            ]
 
             filtered_activities = [
                 activity
@@ -1394,6 +1460,14 @@ def show_activities():
                 if activity_is_upcoming(activity)
             ]
 
+        elif timing_filter == "Future":
+
+            filtered_activities = [
+                activity
+                for activity in filtered_activities
+                if activity_is_future(activity)
+            ]
+
         elif timing_filter == "No Due Date":
 
             filtered_activities = [
@@ -1406,12 +1480,14 @@ def show_activities():
 
             search_text = search.strip().lower()
 
-            filtered_activities = [
-                activity
-                for activity in filtered_activities
-                if search_text
-                in build_activity_search_text(activity)
-            ]
+            if search_text:
+
+                filtered_activities = [
+                    activity
+                    for activity in filtered_activities
+                    if search_text
+                    in build_activity_search_text(activity)
+                ]
 
         # ========================================================
         # RESULTS COUNT
@@ -1439,7 +1515,13 @@ def show_activities():
                 overdue = activity_is_overdue(activity)
                 due_today = activity_is_due_today(activity)
 
-                edit_key = f"edit_activity_{activity.id}"
+                edit_key = (
+                    f"edit_activity_{activity.id}"
+                )
+
+                delete_key = (
+                    f"delete_confirm_{activity.id}"
+                )
 
                 with st.container(border=True):
 
@@ -1654,7 +1736,10 @@ def show_activities():
                             activity.status == "Open"
                             and st.button(
                                 "Mark Completed",
-                                key=f"complete_{activity.id}",
+                                key=(
+                                    f"complete_"
+                                    f"{activity.id}"
+                                ),
                                 use_container_width=True,
                             )
                         ):
@@ -1690,7 +1775,10 @@ def show_activities():
                             activity.status == "Open"
                             and st.button(
                                 "Cancel",
-                                key=f"cancel_{activity.id}",
+                                key=(
+                                    f"cancel_"
+                                    f"{activity.id}"
+                                ),
                                 use_container_width=True,
                             )
                         ):
@@ -1743,10 +1831,6 @@ def show_activities():
 
                     with action_col4:
 
-                        delete_key = (
-                            f"delete_confirm_{activity.id}"
-                        )
-
                         if not st.session_state.get(
                             delete_key,
                             False,
@@ -1754,7 +1838,10 @@ def show_activities():
 
                             if st.button(
                                 "Delete",
-                                key=f"delete_{activity.id}",
+                                key=(
+                                    f"delete_"
+                                    f"{activity.id}"
+                                ),
                                 use_container_width=True,
                             ):
 
