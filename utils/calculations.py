@@ -11,11 +11,13 @@ MONEY_QUANTIZER = Decimal("0.01")
 
 
 # ============================================================
-# BASIC NUMBER / MONEY HELPERS
+# NUMBER / MONEY HELPERS
 # ============================================================
 
 def to_float(value, default=0.0):
-    """Safely convert a value to float."""
+    """
+    Safely convert a value to float.
+    """
     if value is None:
         return default
 
@@ -25,8 +27,10 @@ def to_float(value, default=0.0):
         return default
 
 
-def to_decimal(value, default=Decimal("0")):
-    """Safely convert a value to Decimal."""
+def to_decimal(value, default=Decimal("0.00")):
+    """
+    Safely convert a value to Decimal.
+    """
     if value is None:
         return default
 
@@ -37,22 +41,24 @@ def to_decimal(value, default=Decimal("0")):
 
 
 def round_money(value):
-    """Round a monetary value to two decimal places."""
-    decimal_value = to_decimal(value)
-
-    return decimal_value.quantize(
-        MONEY_QUANTIZER,
-        rounding=ROUND_HALF_UP,
-    )
+    """
+    Round a monetary value to 2 decimal places.
+    """
+    amount = to_decimal(value)
+    return amount.quantize(MONEY_QUANTIZER, rounding=ROUND_HALF_UP)
 
 
 def money_to_float(value):
-    """Convert a monetary value to float."""
+    """
+    Convert money to a rounded float.
+    """
     return float(round_money(value))
 
 
 def safe_divide(numerator, denominator, default=0.0):
-    """Safely divide two numbers."""
+    """
+    Safely divide two numbers.
+    """
     numerator = to_float(numerator)
     denominator = to_float(denominator)
 
@@ -63,402 +69,350 @@ def safe_divide(numerator, denominator, default=0.0):
 
 
 def percentage(numerator, denominator, default=0.0):
-    """Calculate a percentage."""
-    return safe_divide(
-        numerator,
-        denominator,
-        default=default,
-    ) * 100
+    """
+    Calculate percentage.
+
+    Example:
+        percentage(25, 100) -> 25.0
+    """
+    return safe_divide(numerator, denominator, default) * 100
 
 
 # ============================================================
 # PLACEMENT FINANCIAL CALCULATIONS
 # ============================================================
 
-def calculate_gross_margin(
-    client_monthly_fee,
-    worker_monthly_cost,
-):
-    """Calculate monthly gross margin."""
-    revenue = to_float(client_monthly_fee)
-    cost = to_float(worker_monthly_cost)
+def calculate_gross_margin(monthly_fee, monthly_cost):
+    """
+    Monthly gross margin.
 
-    return round(
-        revenue - cost,
-        MONEY_DECIMAL_PLACES,
-    )
+    Gross Margin = Monthly Fee - Monthly Worker Cost
+    """
+    fee = to_decimal(monthly_fee)
+    cost = to_decimal(monthly_cost)
+
+    return round_money(fee - cost)
 
 
-def calculate_gross_margin_percentage(
-    client_monthly_fee,
-    worker_monthly_cost,
-):
-    """Calculate gross margin percentage."""
-    revenue = to_float(client_monthly_fee)
+def calculate_gross_margin_percentage(monthly_fee, monthly_cost):
+    """
+    Gross margin percentage based on monthly client fee.
+    """
+    fee = to_float(monthly_fee)
+    cost = to_float(monthly_cost)
 
-    if revenue <= 0:
+    if fee <= 0:
         return 0.0
 
-    margin = calculate_gross_margin(
-        client_monthly_fee,
-        worker_monthly_cost,
-    )
-
-    return round(
-        (margin / revenue) * 100,
-        2,
-    )
+    return round(safe_divide(fee - cost, fee) * 100, 2)
 
 
 def calculate_annual_revenue(monthly_fee):
-    """Calculate annual revenue from a monthly fee."""
-    return round(
-        to_float(monthly_fee) * 12,
-        MONEY_DECIMAL_PLACES,
-    )
+    """
+    Annual revenue based on monthly client fee.
+    """
+    return round_money(to_decimal(monthly_fee) * 12)
 
 
 def calculate_annual_cost(monthly_cost):
-    """Calculate annual worker cost."""
-    return round(
-        to_float(monthly_cost) * 12,
-        MONEY_DECIMAL_PLACES,
+    """
+    Annual worker cost based on monthly worker cost.
+    """
+    return round_money(to_decimal(monthly_cost) * 12)
+
+
+def calculate_annual_margin(monthly_fee, monthly_cost):
+    """
+    Annual gross margin.
+    """
+    return round_money(
+        calculate_gross_margin(monthly_fee, monthly_cost) * 12
     )
 
 
-def calculate_annual_margin(
-    monthly_fee,
-    monthly_cost,
-):
-    """Calculate annual gross margin."""
-    return round(
-        calculate_gross_margin(
-            monthly_fee,
-            monthly_cost,
-        ) * 12,
-        MONEY_DECIMAL_PLACES,
-    )
+def calculate_placement_financials(monthly_fee, monthly_cost):
+    """
+    Return a financial summary for a placement.
+    """
+    monthly_fee = round_money(monthly_fee)
+    monthly_cost = round_money(monthly_cost)
 
-
-def calculate_placement_financials(placement):
-    """Return the main financial figures for a placement."""
-    revenue = to_float(
-        getattr(
-            placement,
-            "client_monthly_fee",
-            0,
-        )
-    )
-
-    cost = to_float(
-        getattr(
-            placement,
-            "worker_monthly_cost",
-            0,
-        )
-    )
-
-    margin = calculate_gross_margin(
-        revenue,
-        cost,
+    monthly_margin = calculate_gross_margin(
+        monthly_fee,
+        monthly_cost
     )
 
     margin_percentage = calculate_gross_margin_percentage(
-        revenue,
-        cost,
+        monthly_fee,
+        monthly_cost
+    )
+
+    annual_revenue = calculate_annual_revenue(monthly_fee)
+    annual_cost = calculate_annual_cost(monthly_cost)
+    annual_margin = calculate_annual_margin(
+        monthly_fee,
+        monthly_cost
     )
 
     return {
-        "monthly_revenue": round(
-            revenue,
-            MONEY_DECIMAL_PLACES,
-        ),
-        "monthly_cost": round(
-            cost,
-            MONEY_DECIMAL_PLACES,
-        ),
-        "monthly_margin": margin,
+        "monthly_fee": monthly_fee,
+        "monthly_cost": monthly_cost,
+        "monthly_margin": monthly_margin,
         "margin_percentage": margin_percentage,
-        "annual_revenue": calculate_annual_revenue(
-            revenue
-        ),
-        "annual_cost": calculate_annual_cost(
-            cost
-        ),
-        "annual_margin": calculate_annual_margin(
-            revenue,
-            cost,
-        ),
+        "annual_revenue": annual_revenue,
+        "annual_cost": annual_cost,
+        "annual_margin": annual_margin,
     }
 
 
 def placement_is_operational(placement):
-    """Return True when a placement is operational."""
-    status = getattr(
-        placement,
-        "status",
-        None,
-    )
+    """
+    True when placement is Active or Scheduled.
+    """
+    status = getattr(placement, "status", None)
 
-    return status in {
-        "Active",
-        "Scheduled",
-    }
+    return status in ["Active", "Scheduled"]
 
 
 def placement_has_negative_margin(placement):
-    """Return True when placement margin is negative."""
-    return calculate_gross_margin(
-        getattr(
-            placement,
-            "client_monthly_fee",
-            0,
-        ),
-        getattr(
-            placement,
-            "worker_monthly_cost",
-            0,
-        ),
-    ) < 0
+    """
+    Check whether placement has negative monthly margin.
+    """
+    margin = calculate_gross_margin(
+        getattr(placement, "client_monthly_fee", 0),
+        getattr(placement, "worker_monthly_cost", 0),
+    )
+
+    return margin < 0
+
+
+def placement_has_positive_margin(placement):
+    """
+    Check whether placement has positive monthly margin.
+    """
+    margin = calculate_gross_margin(
+        getattr(placement, "client_monthly_fee", 0),
+        getattr(placement, "worker_monthly_cost", 0),
+    )
+
+    return margin > 0
+
+
+def placement_is_break_even(placement):
+    """
+    Check whether placement has zero monthly margin.
+    """
+    margin = calculate_gross_margin(
+        getattr(placement, "client_monthly_fee", 0),
+        getattr(placement, "worker_monthly_cost", 0),
+    )
+
+    return margin == 0
 
 
 def is_active_placement(placement):
-    """Check whether placement is active."""
-    return getattr(
-        placement,
-        "status",
-        None,
-    ) == "Active"
+    return getattr(placement, "status", None) == "Active"
 
 
 def is_scheduled_placement(placement):
-    """Check whether placement is scheduled."""
-    return getattr(
-        placement,
-        "status",
-        None,
-    ) == "Scheduled"
+    return getattr(placement, "status", None) == "Scheduled"
 
 
 def is_completed_placement(placement):
-    """Check whether placement is completed."""
-    return getattr(
-        placement,
-        "status",
-        None,
-    ) == "Completed"
+    return getattr(placement, "status", None) == "Completed"
 
 
 def is_terminated_placement(placement):
-    """Check whether placement is terminated."""
-    return getattr(
-        placement,
-        "status",
-        None,
-    ) == "Terminated"
+    return getattr(placement, "status", None) == "Terminated"
 
 
 # ============================================================
 # INVOICE CALCULATIONS
 # ============================================================
 
-def calculate_invoice_total(subtotal, tax=0):
-    """Calculate invoice total."""
-    return round(
-        to_float(subtotal) + to_float(tax),
-        MONEY_DECIMAL_PLACES,
+def calculate_invoice_total(invoice):
+    """
+    Return invoice total amount.
+    """
+    return round_money(
+        getattr(invoice, "total_amount", 0)
     )
 
 
-def calculate_invoice_balance(
-    total_amount,
-    amount_paid,
-):
-    """Calculate outstanding invoice balance."""
-    total = to_float(total_amount)
-    paid = to_float(amount_paid)
+def calculate_invoice_balance(invoice):
+    """
+    Calculate invoice outstanding balance.
 
-    return round(
-        max(total - paid, 0),
-        MONEY_DECIMAL_PLACES,
+    Balance = Total Amount - Amount Paid
+    """
+    total = to_decimal(
+        getattr(invoice, "total_amount", 0)
     )
 
+    paid = to_decimal(
+        getattr(invoice, "amount_paid", 0)
+    )
 
-def calculate_invoice_payment_percentage(
-    total_amount,
-    amount_paid,
-):
-    """Calculate percentage of invoice paid."""
-    total = to_float(total_amount)
-    paid = to_float(amount_paid)
+    balance = total - paid
+
+    if balance < 0:
+        balance = Decimal("0.00")
+
+    return round_money(balance)
+
+
+def calculate_invoice_payment_percentage(invoice):
+    """
+    Calculate percentage of invoice that has been paid.
+    """
+    total = to_float(
+        getattr(invoice, "total_amount", 0)
+    )
+
+    paid = to_float(
+        getattr(invoice, "amount_paid", 0)
+    )
 
     if total <= 0:
         return 0.0
 
-    value = (paid / total) * 100
+    result = (paid / total) * 100
 
-    return round(
-        min(max(value, 0), 100),
-        2,
-    )
+    return round(result, 2)
+
+
+def calculate_payment_percentage(invoice):
+    """
+    Compatibility function.
+
+    Older screens, including invoices.py, may import
+    calculate_payment_percentage().
+
+    This function intentionally delegates to the newer
+    calculate_invoice_payment_percentage() function.
+    """
+    return calculate_invoice_payment_percentage(invoice)
 
 
 def invoice_is_paid(invoice):
-    """Check whether invoice is fully paid."""
-    total = to_float(
-        getattr(
-            invoice,
-            "total_amount",
-            0,
-        )
+    """
+    Check whether invoice is fully paid.
+    """
+    total = to_decimal(
+        getattr(invoice, "total_amount", 0)
     )
 
-    paid = to_float(
-        getattr(
-            invoice,
-            "amount_paid",
-            0,
-        )
+    paid = to_decimal(
+        getattr(invoice, "amount_paid", 0)
     )
 
     return total > 0 and paid >= total
 
 
 def invoice_is_partially_paid(invoice):
-    """Check whether invoice is partially paid."""
-    total = to_float(
-        getattr(
-            invoice,
-            "total_amount",
-            0,
-        )
+    """
+    Check whether invoice has received some but not all payment.
+    """
+    total = to_decimal(
+        getattr(invoice, "total_amount", 0)
     )
 
-    paid = to_float(
-        getattr(
-            invoice,
-            "amount_paid",
-            0,
-        )
+    paid = to_decimal(
+        getattr(invoice, "amount_paid", 0)
     )
 
-    return (
-        total > 0
-        and paid > 0
-        and paid < total
-    )
+    return paid > 0 and paid < total
 
 
 def invoice_is_outstanding(invoice):
-    """Check whether invoice has an outstanding balance."""
-    return calculate_invoice_balance(
-        getattr(
-            invoice,
-            "total_amount",
-            0,
-        ),
-        getattr(
-            invoice,
-            "amount_paid",
-            0,
-        ),
-    ) > 0
+    """
+    Check whether invoice has an outstanding balance.
+    """
+    return calculate_invoice_balance(invoice) > 0
 
 
 def invoice_is_overpaid(invoice):
-    """Check whether payments exceed invoice total."""
-    total = to_float(
-        getattr(
-            invoice,
-            "total_amount",
-            0,
-        )
+    """
+    Check whether payments exceed invoice total.
+    """
+    total = to_decimal(
+        getattr(invoice, "total_amount", 0)
     )
 
-    paid = to_float(
-        getattr(
-            invoice,
-            "amount_paid",
-            0,
-        )
+    paid = to_decimal(
+        getattr(invoice, "amount_paid", 0)
     )
 
     return paid > total
 
 
 def invoice_is_unpaid(invoice):
-    """Check whether invoice has no payment."""
-    return (
-        to_float(
-            getattr(
-                invoice,
-                "amount_paid",
-                0,
-            )
-        )
-        <= 0
+    """
+    Check whether invoice has received no payment.
+    """
+    paid = to_decimal(
+        getattr(invoice, "amount_paid", 0)
     )
+
+    return paid <= 0
 
 
 def invoice_is_open(invoice):
-    """Check whether invoice is open."""
-    status = getattr(
-        invoice,
-        "status",
-        None,
-    )
+    """
+    Check whether invoice is still open.
+    """
+    status = getattr(invoice, "status", None)
 
-    return status not in {
-        "Cancelled",
+    return status not in [
         "Paid",
-    }
+        "Cancelled",
+        "Canceled",
+    ]
 
 
 def invoice_is_cancelled(invoice):
-    """Check whether invoice is cancelled."""
-    return getattr(
-        invoice,
-        "status",
-        None,
-    ) == "Cancelled"
+    """
+    Check whether invoice is cancelled.
+    """
+    status = getattr(invoice, "status", None)
+
+    return status in [
+        "Cancelled",
+        "Canceled",
+    ]
 
 
 def invoice_status_from_amounts(
     total_amount,
     amount_paid,
-    current_status=None,
     due_date=None,
     today=None,
 ):
-    """Determine invoice status from amounts and due date."""
-    total = to_float(total_amount)
-    paid = to_float(amount_paid)
+    """
+    Determine an invoice status from financial values and due date.
+    """
+    total = to_decimal(total_amount)
+    paid = to_decimal(amount_paid)
 
-    if current_status == "Cancelled":
-        return "Cancelled"
+    if today is None:
+        today = date.today()
 
     if total <= 0:
-        return current_status or "Draft"
+        return "Draft"
 
     if paid >= total:
         return "Paid"
 
     if paid > 0:
-        if due_date is not None:
-            check_date = today or date.today()
-
-            if due_date < check_date:
-                return "Overdue"
+        if due_date and due_date < today:
+            return "Overdue"
 
         return "Partially Paid"
 
-    if due_date is not None:
-        check_date = today or date.today()
+    if due_date and due_date < today:
+        return "Overdue"
 
-        if due_date < check_date:
-            return "Overdue"
-
-    return current_status or "Sent"
+    return "Unpaid"
 
 
 # ============================================================
@@ -466,171 +420,214 @@ def invoice_status_from_amounts(
 # ============================================================
 
 def get_payment_amount(payment):
-    """Return payment amount safely."""
-    return to_float(
-        getattr(
-            payment,
-            "amount",
-            0,
-        )
+    """
+    Safely retrieve payment amount.
+    """
+    return round_money(
+        getattr(payment, "amount", 0)
     )
 
 
 def is_successful_payment_status(status):
-    """Check whether payment was successfully received."""
-    return status == "Received"
+    """
+    Determine whether payment status represents received funds.
+    """
+    if status is None:
+        return False
+
+    return str(status).strip().lower() in [
+        "received",
+        "paid",
+        "completed",
+        "successful",
+    ]
 
 
 def calculate_remaining_balance(
     invoice_total,
-    payments,
+    payments=None,
 ):
-    """Calculate invoice balance from payment records."""
-    total = to_float(invoice_total)
+    """
+    Calculate remaining invoice balance from payment records.
+    """
+    total = to_decimal(invoice_total)
 
-    received = calculate_received_payments(
-        payments
-    )
+    received = Decimal("0.00")
 
-    return round(
-        max(total - received, 0),
-        MONEY_DECIMAL_PLACES,
-    )
+    if payments:
+        for payment in payments:
+            status = getattr(payment, "status", None)
+
+            if is_successful_payment_status(status):
+                received += to_decimal(
+                    getattr(payment, "amount", 0)
+                )
+
+    balance = total - received
+
+    if balance < 0:
+        balance = Decimal("0.00")
+
+    return round_money(balance)
 
 
 def calculate_total_payments(payments):
-    """Calculate total value of payment records."""
-    total = 0.0
+    """
+    Calculate total value of all payment records.
+    """
+    total = Decimal("0.00")
 
-    for payment in payments or []:
-        total += get_payment_amount(
-            payment
-        )
+    if payments:
+        for payment in payments:
+            total += to_decimal(
+                getattr(payment, "amount", 0)
+            )
 
-    return round(
-        total,
-        MONEY_DECIMAL_PLACES,
-    )
+    return round_money(total)
 
 
 def calculate_received_payments(payments):
-    """Calculate total successfully received payments."""
-    total = 0.0
+    """
+    Calculate total successfully received payments.
+    """
+    total = Decimal("0.00")
 
-    for payment in payments or []:
-        status = getattr(
-            payment,
-            "status",
-            None,
-        )
+    if payments:
+        for payment in payments:
+            status = getattr(payment, "status", None)
 
-        if is_successful_payment_status(status):
-            total += get_payment_amount(
-                payment
-            )
+            if is_successful_payment_status(status):
+                total += to_decimal(
+                    getattr(payment, "amount", 0)
+                )
 
-    return round(
-        total,
-        MONEY_DECIMAL_PLACES,
-    )
+    return round_money(total)
+
+
+def calculate_pending_payments(payments):
+    """
+    Calculate total pending payments.
+    """
+    total = Decimal("0.00")
+
+    if payments:
+        for payment in payments:
+            status = getattr(payment, "status", None)
+
+            if str(status).strip().lower() == "pending":
+                total += to_decimal(
+                    getattr(payment, "amount", 0)
+                )
+
+    return round_money(total)
+
+
+def calculate_failed_payments(payments):
+    """
+    Calculate total failed payments.
+    """
+    total = Decimal("0.00")
+
+    if payments:
+        for payment in payments:
+            status = getattr(payment, "status", None)
+
+            if str(status).strip().lower() in [
+                "failed",
+                "declined",
+                "rejected",
+            ]:
+                total += to_decimal(
+                    getattr(payment, "amount", 0)
+                )
+
+    return round_money(total)
+
+
+def calculate_reversed_payments(payments):
+    """
+    Calculate total reversed payments.
+    """
+    total = Decimal("0.00")
+
+    if payments:
+        for payment in payments:
+            status = getattr(payment, "status", None)
+
+            if str(status).strip().lower() in [
+                "reversed",
+                "refunded",
+            ]:
+                total += to_decimal(
+                    getattr(payment, "amount", 0)
+                )
+
+    return round_money(total)
 
 
 def payment_fits_invoice(
-    invoice,
     payment_amount,
+    invoice_balance,
 ):
-    """Check whether payment fits remaining invoice balance."""
-    amount = to_float(payment_amount)
+    """
+    Check whether payment does not exceed invoice balance.
+    """
+    payment = to_decimal(payment_amount)
+    balance = to_decimal(invoice_balance)
 
-    balance = calculate_invoice_balance(
-        getattr(
-            invoice,
-            "total_amount",
-            0,
-        ),
-        getattr(
-            invoice,
-            "amount_paid",
-            0,
-        ),
-    )
-
-    return (
-        amount > 0
-        and amount <= balance
-    )
+    return payment <= balance
 
 
 def payment_would_overpay(
-    invoice,
     payment_amount,
+    invoice_balance,
 ):
-    """Check whether payment would overpay invoice."""
-    amount = to_float(payment_amount)
+    """
+    Check whether payment would cause overpayment.
+    """
+    payment = to_decimal(payment_amount)
+    balance = to_decimal(invoice_balance)
 
-    balance = calculate_invoice_balance(
-        getattr(
-            invoice,
-            "total_amount",
-            0,
-        ),
-        getattr(
-            invoice,
-            "amount_paid",
-            0,
-        ),
-    )
-
-    return amount > balance
+    return payment > balance
 
 
-def payment_is_valid(payment):
-    """Perform basic payment validation."""
-    amount = get_payment_amount(payment)
-
-    if amount <= 0:
-        return False
-
-    status = getattr(
-        payment,
-        "status",
-        None,
-    )
-
-    return status in {
-        "Received",
-        "Pending",
-        "Failed",
-        "Reversed",
-    }
+def payment_is_valid(payment_amount):
+    """
+    Check whether payment amount is positive.
+    """
+    return to_decimal(payment_amount) > 0
 
 
 # ============================================================
-# DATE HELPERS
+# DATE CALCULATIONS
 # ============================================================
 
 def days_between(start_date, end_date):
-    """Return number of days between two dates."""
+    """
+    Number of days between two dates.
+    """
     if not start_date or not end_date:
-        return None
+        return 0
 
-    return (
-        end_date - start_date
-    ).days
+    return (end_date - start_date).days
 
 
 def days_from_today(target_date):
-    """Return number of days from today."""
+    """
+    Positive = future.
+    Negative = past.
+    Zero = today.
+    """
     if not target_date:
-        return None
+        return 0
 
-    return (
-        target_date - date.today()
-    ).days
+    return (target_date - date.today()).days
 
 
 def is_date_overdue(target_date):
-    """Check whether date is before today."""
+    """
+    Check whether date is before today.
+    """
     if not target_date:
         return False
 
@@ -638,7 +635,9 @@ def is_date_overdue(target_date):
 
 
 def is_date_today(target_date):
-    """Check whether date is today."""
+    """
+    Check whether date is today.
+    """
     if not target_date:
         return False
 
@@ -646,7 +645,9 @@ def is_date_today(target_date):
 
 
 def is_date_future(target_date):
-    """Check whether date is after today."""
+    """
+    Check whether date is in the future.
+    """
     if not target_date:
         return False
 
@@ -654,7 +655,9 @@ def is_date_future(target_date):
 
 
 def is_date_today_or_past(target_date):
-    """Check whether date is today or earlier."""
+    """
+    Check whether date is today or in the past.
+    """
     if not target_date:
         return False
 
@@ -662,15 +665,17 @@ def is_date_today_or_past(target_date):
 
 
 def calculate_days_overdue(target_date):
-    """Return number of days overdue."""
+    """
+    Number of days overdue.
+
+    Returns 0 when date is today or in the future.
+    """
     if not target_date:
         return 0
 
-    difference = (
-        date.today() - target_date
-    ).days
+    days = (date.today() - target_date).days
 
-    return max(difference, 0)
+    return max(days, 0)
 
 
 # ============================================================
@@ -678,7 +683,9 @@ def calculate_days_overdue(target_date):
 # ============================================================
 
 def days_until_renewal(contract):
-    """Return days until contract renewal."""
+    """
+    Number of days until contract renewal.
+    """
     renewal_date = getattr(
         contract,
         "renewal_date",
@@ -688,13 +695,13 @@ def days_until_renewal(contract):
     if not renewal_date:
         return None
 
-    return (
-        renewal_date - date.today()
-    ).days
+    return (renewal_date - date.today()).days
 
 
 def contract_is_expired(contract):
-    """Check whether contract has expired."""
+    """
+    Check whether contract end date has passed.
+    """
     end_date = getattr(
         contract,
         "end_date",
@@ -707,47 +714,64 @@ def contract_is_expired(contract):
     return end_date < date.today()
 
 
-def contract_renewal_due(
-    contract,
-    days=30,
-):
-    """Check whether renewal is due within given days."""
-    days_remaining = days_until_renewal(contract)
+def contract_renewal_due(contract, days=30):
+    """
+    Check whether contract renewal is within the next N days.
+    """
+    renewal_date = getattr(
+        contract,
+        "renewal_date",
+        None,
+    )
 
-    if days_remaining is None:
+    if not renewal_date:
         return False
 
-    return 0 <= days_remaining <= days
+    difference = (renewal_date - date.today()).days
+
+    return 0 <= difference <= days
 
 
 def contract_renewal_overdue(contract):
-    """Check whether renewal date has passed."""
-    days_remaining = days_until_renewal(contract)
+    """
+    Check whether renewal date has passed.
+    """
+    renewal_date = getattr(
+        contract,
+        "renewal_date",
+        None,
+    )
 
-    if days_remaining is None:
+    if not renewal_date:
         return False
 
-    return days_remaining < 0
+    return renewal_date < date.today()
 
 
 def contract_renewal_today(contract):
-    """Check whether renewal is today."""
-    return days_until_renewal(contract) == 0
-
-
-def contract_renewal_soon(
-    contract,
-    days=30,
-):
-    """Check whether renewal is approaching."""
-    return contract_renewal_due(
+    """
+    Check whether renewal is today.
+    """
+    renewal_date = getattr(
         contract,
-        days=days,
+        "renewal_date",
+        None,
     )
+
+    return renewal_date == date.today()
+
+
+def contract_renewal_soon(contract, days=30):
+    """
+    Check whether renewal is approaching.
+    """
+    return contract_renewal_due(contract, days)
 
 
 def contract_is_current(contract):
-    """Check whether contract is currently valid."""
+    """
+    Check whether contract is currently within its dates.
+    """
     start_date = getattr(
         contract,
         "start_date",
@@ -772,7 +796,9 @@ def contract_is_current(contract):
 
 
 def contract_started(contract):
-    """Check whether contract has started."""
+    """
+    Check whether contract has started.
+    """
     start_date = getattr(
         contract,
         "start_date",
@@ -786,7 +812,9 @@ def contract_started(contract):
 
 
 def contract_starts_in_future(contract):
-    """Check whether contract starts in the future."""
+    """
+    Check whether contract starts in the future.
+    """
     start_date = getattr(
         contract,
         "start_date",
@@ -800,7 +828,9 @@ def contract_starts_in_future(contract):
 
 
 def contract_duration_days(contract):
-    """Return contract duration in days."""
+    """
+    Calculate contract duration.
+    """
     start_date = getattr(
         contract,
         "start_date",
@@ -814,157 +844,139 @@ def contract_duration_days(contract):
     )
 
     if not start_date or not end_date:
-        return None
+        return 0
 
-    return (
-        end_date - start_date
-    ).days
+    return (end_date - start_date).days
 
 
 def contract_is_terminated(contract):
-    """Check whether contract is terminated."""
-    return getattr(
-        contract,
-        "status",
-        None,
-    ) == "Terminated"
+    """
+    Check whether contract is terminated.
+    """
+    return getattr(contract, "status", None) == "Terminated"
 
 
 def contract_is_signed(contract):
-    """Check whether contract is signed."""
-    return getattr(
-        contract,
-        "status",
-        None,
-    ) == "Signed"
+    """
+    Check whether contract status represents a signed contract.
+    """
+    status = getattr(contract, "status", None)
+
+    return status in [
+        "Signed",
+        "Active",
+        "Completed",
+    ]
 
 
 def contract_is_active(contract):
-    """Check whether contract is active."""
-    return getattr(
-        contract,
-        "status",
-        None,
-    ) == "Active"
+    """
+    Check whether contract status is Active.
+    """
+    return getattr(contract, "status", None) == "Active"
 
 
 def contract_is_draft(contract):
-    """Check whether contract is draft."""
-    return getattr(
-        contract,
-        "status",
-        None,
-    ) == "Draft"
+    """
+    Check whether contract is still a draft.
+    """
+    return getattr(contract, "status", None) == "Draft"
 
 
 def contract_is_operational(contract):
-    """Check whether contract is operational."""
-    return (
-        getattr(
-            contract,
-            "status",
-            None,
-        )
-        in {
-            "Active",
-            "Signed",
-        }
-        and contract_is_current(contract)
-    )
+    """
+    Check whether contract is currently operational.
+    """
+    return contract_is_active(contract) and contract_is_current(contract)
 
 
 # ============================================================
 # JOB CALCULATIONS
 # ============================================================
 
-def calculate_openings_remaining(job):
-    """Calculate remaining openings for a job."""
+def calculate_openings_remaining(job, placements=None):
+    """
+    Calculate remaining job openings.
+
+    Completed and Active placements count as filled.
+    """
     openings = int(
         to_float(
-            getattr(
-                job,
-                "openings",
-                0,
+            getattr(job, "openings", 0)
+        )
+    )
+
+    if openings < 0:
+        openings = 0
+
+    filled = 0
+
+    if placements:
+        for placement in placements:
+            status = getattr(
+                placement,
+                "status",
+                None,
             )
-        )
-    )
 
-    placements = getattr(
-        job,
-        "placements",
-        None,
-    ) or []
+            if status in [
+                "Active",
+                "Completed",
+            ]:
+                filled += 1
 
-    filled = sum(
-        1
-        for placement in placements
-        if getattr(
-            placement,
-            "status",
-            None,
-        )
-        in {
-            "Active",
-            "Scheduled",
-            "Completed",
-        }
-    )
-
-    return max(
-        openings - filled,
-        0,
-    )
+    return max(openings - filled, 0)
 
 
 def job_is_open(job):
-    """Check whether a job is open."""
-    return getattr(
-        job,
-        "status",
-        None,
-    ) == "Open"
+    """
+    Check whether job is open.
+    """
+    status = getattr(job, "status", None)
+
+    return status in [
+        "Open",
+        "Active",
+    ]
 
 
 def job_is_closed(job):
-    """Check whether a job is closed."""
-    return getattr(
-        job,
-        "status",
-        None,
-    ) in {
+    """
+    Check whether job is closed.
+    """
+    status = getattr(job, "status", None)
+
+    return status in [
         "Closed",
-        "Cancelled",
-    }
+        "Completed",
+    ]
 
 
 def job_is_active(job):
-    """Check whether a job is active."""
-    return getattr(
-        job,
-        "status",
-        None,
-    ) in {
-        "Open",
-        "On Hold",
-    }
+    """
+    Check whether job is active.
+    """
+    return getattr(job, "status", None) == "Active"
 
 
-def job_is_filled(job):
-    """Check whether a job is filled."""
-    return getattr(
+def job_is_filled(job, placements=None):
+    """
+    Check whether all job openings are filled.
+    """
+    return calculate_openings_remaining(
         job,
-        "status",
-        None,
-    ) == "Filled"
+        placements
+    ) == 0
 
 
 def job_is_cancelled(job):
-    """Check whether a job is cancelled."""
-    return getattr(
-        job,
-        "status",
-        None,
-    ) == "Cancelled"
+    """
+    Check whether job is cancelled.
+    """
+    return getattr(job, "status", None) in [
+        "Cancelled",
+        "Canceled",
+    ]
 
 
 # ============================================================
@@ -972,75 +984,65 @@ def job_is_cancelled(job):
 # ============================================================
 
 def candidate_is_active(candidate):
-    """Check whether candidate is actively progressing."""
-    return getattr(
-        candidate,
-        "status",
-        None,
-    ) in {
+    """
+    Check whether candidate is in an active recruitment stage.
+    """
+    status = getattr(candidate, "status", None)
+
+    return status in [
         "Submitted",
         "Shortlisted",
         "Interview",
         "Offer",
-    }
+    ]
 
 
 def candidate_is_placed(candidate):
-    """Check whether candidate has been placed."""
-    return getattr(
-        candidate,
-        "status",
-        None,
-    ) == "Placed"
+    """
+    Check whether candidate is placed.
+    """
+    return getattr(candidate, "status", None) == "Placed"
 
 
 def candidate_is_rejected(candidate):
-    """Check whether candidate has been rejected."""
-    return getattr(
-        candidate,
-        "status",
-        None,
-    ) == "Rejected"
+    """
+    Check whether candidate is rejected.
+    """
+    return getattr(candidate, "status", None) == "Rejected"
 
 
 def candidate_is_withdrawn(candidate):
-    """Check whether candidate has withdrawn."""
-    return getattr(
-        candidate,
-        "status",
-        None,
-    ) == "Withdrawn"
+    """
+    Check whether candidate withdrew.
+    """
+    return getattr(candidate, "status", None) == "Withdrawn"
 
 
 def candidate_is_closed(candidate):
-    """Check whether candidate is closed."""
-    return getattr(
-        candidate,
-        "status",
-        None,
-    ) in {
+    """
+    Check whether candidate is in a closed status.
+    """
+    status = getattr(candidate, "status", None)
+
+    return status in [
         "Placed",
         "Rejected",
         "Withdrawn",
-    }
+    ]
 
 
 def candidate_is_interview_stage(candidate):
-    """Check whether candidate is at interview stage."""
-    return getattr(
-        candidate,
-        "status",
-        None,
-    ) == "Interview"
+    """
+    Check whether candidate is at interview stage.
+    """
+    return getattr(candidate, "status", None) == "Interview"
 
 
 def candidate_is_offer_stage(candidate):
-    """Check whether candidate is at offer stage."""
-    return getattr(
-        candidate,
-        "status",
-        None,
-    ) == "Offer"
+    """
+    Check whether candidate is at offer stage.
+    """
+    return getattr(candidate, "status", None) == "Offer"
 
 
 # ============================================================
@@ -1048,393 +1050,555 @@ def candidate_is_offer_stage(candidate):
 # ============================================================
 
 def employee_is_active(employee):
-    """Check whether employee is active."""
-    return getattr(
+    """
+    Check whether employee is not a former employee.
+    """
+    status = getattr(
         employee,
         "employment_status",
         None,
-    ) != "Former Employee"
+    )
+
+    return status not in [
+        "Former Employee",
+        "Former",
+        "Terminated",
+    ]
 
 
 def employee_is_available(employee):
-    """Check whether employee is currently available."""
-    return getattr(
+    """
+    Check whether employee is available.
+    """
+    availability = getattr(
         employee,
         "availability",
         None,
-    ) == "Available Now"
+    )
+
+    return str(availability).strip().lower() in [
+        "available",
+        "yes",
+        "true",
+    ]
 
 
 def employee_is_placed(employee):
-    """Check whether employee is placed."""
-    return getattr(
+    """
+    Check whether employee has a placement.
+    """
+    placements = getattr(
         employee,
-        "employment_status",
+        "placements",
         None,
-    ) == "Placed"
+    )
+
+    if not placements:
+        return False
+
+    for placement in placements:
+        if getattr(
+            placement,
+            "status",
+            None
+        ) in [
+            "Active",
+            "Scheduled",
+        ]:
+            return True
+
+    return False
 
 
 def employee_is_former(employee):
-    """Check whether employee is former employee."""
-    return getattr(
+    """
+    Check whether employee is a former employee.
+    """
+    status = getattr(
         employee,
         "employment_status",
         None,
-    ) == "Former Employee"
+    )
+
+    return status in [
+        "Former Employee",
+        "Former",
+        "Terminated",
+    ]
 
 
 def employee_is_unavailable(employee):
-    """Check whether employee is unavailable."""
-    return getattr(
-        employee,
-        "availability",
-        None,
-    ) == "Unavailable"
+    """
+    Check whether employee is unavailable.
+    """
+    return not employee_is_available(employee)
 
 
 def employee_is_interviewing(employee):
-    """Check whether employee is interviewing."""
-    return getattr(
+    """
+    Check whether employee is marked as interviewing.
+    """
+    availability = getattr(
         employee,
-        "employment_status",
+        "availability",
         None,
-    ) == "Interviewing"
+    )
+
+    return str(availability).strip().lower() == "interviewing"
 
 
 def employee_is_on_leave(employee):
-    """Check whether employee is on leave."""
-    return getattr(
+    """
+    Check whether employee is on leave.
+    """
+    availability = getattr(
         employee,
-        "employment_status",
+        "availability",
         None,
-    ) == "On Leave"
+    )
+
+    return str(availability).strip().lower() in [
+        "leave",
+        "on leave",
+    ]
 
 
 # ============================================================
-# CRM COUNT HELPERS
+# COUNT CALCULATIONS
 # ============================================================
 
-def count_by_status(records, status):
-    """Count records matching a status."""
-    return sum(
-        1
-        for record in records or []
-        if getattr(
+def count_by_status(records):
+    """
+    Return dictionary containing record counts by status.
+    """
+    counts = {}
+
+    if not records:
+        return counts
+
+    for record in records:
+        status = getattr(
             record,
             "status",
-            None,
-        ) == status
-    )
+            None
+        )
+
+        if status is None:
+            status = "Unknown"
+
+        counts[status] = counts.get(status, 0) + 1
+
+    return counts
 
 
-def count_by_currency(records, currency):
-    """Count records matching a currency."""
-    return sum(
-        1
-        for record in records or []
-        if getattr(
+def count_by_currency(records):
+    """
+    Return dictionary containing record counts by currency.
+    """
+    counts = {}
+
+    if not records:
+        return counts
+
+    for record in records:
+        currency = getattr(
             record,
             "currency",
-            None,
-        ) == currency
-    )
+            None
+        )
+
+        if currency is None:
+            currency = "Unknown"
+
+        counts[currency] = counts.get(currency, 0) + 1
+
+    return counts
 
 
 def count_records(records):
-    """Safely count records."""
-    if records is None:
+    """
+    Safely count records.
+    """
+    if not records:
         return 0
 
-    try:
-        return len(records)
-    except TypeError:
-        return 0
+    return len(records)
 
 
 # ============================================================
 # FINANCIAL TOTALS
 # ============================================================
 
-def calculate_total_revenue(
-    placements,
-    active_only=False,
-):
-    """Calculate total monthly placement revenue."""
-    total = 0.0
+def calculate_total_revenue(placements):
+    """
+    Calculate total annual revenue across placements.
+    """
+    total = Decimal("0.00")
 
-    for placement in placements or []:
+    if placements:
+        for placement in placements:
+            total += to_decimal(
+                getattr(
+                    placement,
+                    "client_monthly_fee",
+                    0
+                )
+            ) * 12
 
-        if active_only and not is_active_placement(
-            placement
-        ):
-            continue
-
-        total += to_float(
-            getattr(
-                placement,
-                "client_monthly_fee",
-                0,
-            )
-        )
-
-    return round(
-        total,
-        MONEY_DECIMAL_PLACES,
-    )
+    return round_money(total)
 
 
-def calculate_total_worker_cost(
-    placements,
-    active_only=False,
-):
-    """Calculate total monthly worker cost."""
-    total = 0.0
+def calculate_total_worker_cost(placements):
+    """
+    Calculate total annual worker cost.
+    """
+    total = Decimal("0.00")
 
-    for placement in placements or []:
+    if placements:
+        for placement in placements:
+            total += to_decimal(
+                getattr(
+                    placement,
+                    "worker_monthly_cost",
+                    0
+                )
+            ) * 12
 
-        if active_only and not is_active_placement(
-            placement
-        ):
-            continue
-
-        total += to_float(
-            getattr(
-                placement,
-                "worker_monthly_cost",
-                0,
-            )
-        )
-
-    return round(
-        total,
-        MONEY_DECIMAL_PLACES,
-    )
+    return round_money(total)
 
 
-def calculate_total_margin(
-    placements,
-    active_only=False,
-):
-    """Calculate total monthly gross margin."""
-    revenue = calculate_total_revenue(
-        placements,
-        active_only=active_only,
-    )
+def calculate_total_margin(placements):
+    """
+    Calculate total annual gross margin.
+    """
+    revenue = calculate_total_revenue(placements)
+    cost = calculate_total_worker_cost(placements)
 
-    cost = calculate_total_worker_cost(
-        placements,
-        active_only=active_only,
-    )
-
-    return round(
-        revenue - cost,
-        MONEY_DECIMAL_PLACES,
+    return round_money(
+        to_decimal(revenue) - to_decimal(cost)
     )
 
 
 def calculate_total_invoice_value(invoices):
-    """Calculate total invoice value."""
-    total = 0.0
+    """
+    Calculate total invoice value.
+    """
+    total = Decimal("0.00")
 
-    for invoice in invoices or []:
-        total += to_float(
-            getattr(
-                invoice,
-                "total_amount",
-                0,
+    if invoices:
+        for invoice in invoices:
+            total += to_decimal(
+                getattr(
+                    invoice,
+                    "total_amount",
+                    0
+                )
             )
-        )
 
-    return round(
-        total,
-        MONEY_DECIMAL_PLACES,
-    )
+    return round_money(total)
 
 
 def calculate_total_invoice_paid(invoices):
-    """Calculate total amount paid across invoices."""
-    total = 0.0
+    """
+    Calculate total invoice amount paid.
+    """
+    total = Decimal("0.00")
 
-    for invoice in invoices or []:
-        total += to_float(
-            getattr(
-                invoice,
-                "amount_paid",
-                0,
+    if invoices:
+        for invoice in invoices:
+            total += to_decimal(
+                getattr(
+                    invoice,
+                    "amount_paid",
+                    0
+                )
             )
-        )
 
-    return round(
-        total,
-        MONEY_DECIMAL_PLACES,
-    )
+    return round_money(total)
 
 
 def calculate_total_invoice_outstanding(invoices):
-    """Calculate total outstanding invoice value."""
-    total = 0.0
+    """
+    Calculate total outstanding invoice balance.
+    """
+    total = Decimal("0.00")
 
-    for invoice in invoices or []:
-        total += calculate_invoice_balance(
-            getattr(
-                invoice,
-                "total_amount",
-                0,
-            ),
-            getattr(
-                invoice,
-                "amount_paid",
-                0,
-            ),
-        )
+    if invoices:
+        for invoice in invoices:
+            total += to_decimal(
+                calculate_invoice_balance(invoice)
+            )
 
-    return round(
-        total,
-        MONEY_DECIMAL_PLACES,
-    )
+    return round_money(total)
 
 
 def calculate_financial_summary(
     placements=None,
     invoices=None,
 ):
-    """Return a combined financial summary."""
-    placements = placements or []
-    invoices = invoices or []
-
+    """
+    Return a combined financial summary.
+    """
     revenue = calculate_total_revenue(
-        placements
+        placements or []
     )
 
     worker_cost = calculate_total_worker_cost(
-        placements
+        placements or []
     )
 
     margin = calculate_total_margin(
-        placements
+        placements or []
     )
 
-    invoice_total = calculate_total_invoice_value(
-        invoices
+    invoice_value = calculate_total_invoice_value(
+        invoices or []
     )
 
     invoice_paid = calculate_total_invoice_paid(
-        invoices
+        invoices or []
     )
 
-    invoice_outstanding = (
-        calculate_total_invoice_outstanding(
-            invoices
-        )
+    invoice_outstanding = calculate_total_invoice_outstanding(
+        invoices or []
     )
 
     return {
-        "monthly_revenue": revenue,
-        "monthly_worker_cost": worker_cost,
-        "monthly_gross_margin": margin,
-        "invoice_total": invoice_total,
+        "annual_revenue": revenue,
+        "annual_worker_cost": worker_cost,
+        "annual_margin": margin,
+        "invoice_value": invoice_value,
         "invoice_paid": invoice_paid,
         "invoice_outstanding": invoice_outstanding,
     }
 
 
 # ============================================================
-# DATA QUALITY HELPERS
+# DATA QUALITY / VALIDATION
 # ============================================================
 
 def is_positive_amount(value):
-    """Check whether value is positive."""
-    return to_float(value) > 0
+    """
+    Check whether amount is greater than zero.
+    """
+    return to_decimal(value) > 0
 
 
 def is_non_negative_amount(value):
-    """Check whether value is zero or positive."""
-    return to_float(value) >= 0
+    """
+    Check whether amount is zero or greater.
+    """
+    return to_decimal(value) >= 0
 
 
-def dates_are_valid(
-    start_date,
-    end_date,
-):
-    """Check whether start date is not after end date."""
+def dates_are_valid(start_date, end_date):
+    """
+    Check whether end date is not before start date.
+    """
     if not start_date or not end_date:
         return True
 
-    return start_date <= end_date
+    return end_date >= start_date
 
 
 def amount_is_valid_for_invoice(
-    total_amount,
-    amount_paid,
+    payment_amount,
+    invoice_balance,
 ):
-    """Check whether amount paid is valid for invoice."""
-    total = to_float(total_amount)
-    paid = to_float(amount_paid)
+    """
+    Check whether payment is positive and does not
+    exceed the invoice balance.
+    """
+    payment = to_decimal(payment_amount)
+    balance = to_decimal(invoice_balance)
 
-    return (
-        total >= 0
-        and paid >= 0
-        and paid <= total
-    )
+    if payment <= 0:
+        return False
+
+    if payment > balance:
+        return False
+
+    return True
 
 
 # ============================================================
-# FORMATTING HELPERS
+# FORMATTING
 # ============================================================
 
 def format_money(
     amount,
     currency="GBP",
 ):
-    """Format a monetary amount."""
-    return f"{currency} {to_float(amount):,.2f}"
+    """
+    Format monetary amount.
+
+    Example:
+        format_money(1250, "GBP")
+        -> GBP 1,250.00
+    """
+    value = money_to_float(amount)
+
+    return f"{currency} {value:,.2f}"
 
 
 def format_percentage(value):
-    """Format a percentage."""
-    return f"{to_float(value):.2f}%"
+    """
+    Format percentage.
+    """
+    return f"{to_float(value):,.2f}%"
 
 
-def format_number(value):
-    """Format a number."""
-    return f"{to_float(value):,.2f}"
+def format_number(value, decimals=2):
+    """
+    Format a number with commas.
+    """
+    number = to_float(value)
+
+    return f"{number:,.{decimals}f}"
 
 
 # ============================================================
-# GENERAL RECORD SUMMARY
+# RECORD SUMMARY
 # ============================================================
 
 def summarise_record_counts(
-    records,
-    status_values=None,
+    clients=None,
+    jobs=None,
+    candidates=None,
+    employees=None,
+    placements=None,
+    contracts=None,
+    invoices=None,
+    payments=None,
 ):
-    """Return record counts grouped by status."""
-    summary = {}
+    """
+    Return a simple CRM record count summary.
+    """
+    return {
+        "clients": count_records(clients),
+        "jobs": count_records(jobs),
+        "candidates": count_records(candidates),
+        "employees": count_records(employees),
+        "placements": count_records(placements),
+        "contracts": count_records(contracts),
+        "invoices": count_records(invoices),
+        "payments": count_records(payments),
+    }
 
-    if not records:
-        return summary
 
-    if status_values is None:
-        status_values = sorted(
-            {
+# ============================================================
+# CURRENCY-SPECIFIC FINANCIAL TOTALS
+# ============================================================
+
+def calculate_revenue_by_currency(placements):
+    """
+    Calculate annual revenue grouped by currency.
+    """
+    totals = {}
+
+    if not placements:
+        return totals
+
+    for placement in placements:
+        currency = getattr(
+            placement,
+            "currency",
+            None
+        ) or "GBP"
+
+        revenue = (
+            to_decimal(
                 getattr(
-                    record,
-                    "status",
-                    None,
+                    placement,
+                    "client_monthly_fee",
+                    0
                 )
-                for record in records
-                if getattr(
-                    record,
-                    "status",
-                    None,
-                )
-            }
+            ) * 12
         )
 
-    for status in status_values:
-        summary[status] = count_by_status(
-            records,
-            status,
+        totals[currency] = (
+            totals.get(currency, Decimal("0.00"))
+            + revenue
         )
 
-    return summary
+    return {
+        currency: round_money(amount)
+        for currency, amount in totals.items()
+    }
+
+
+def calculate_cost_by_currency(placements):
+    """
+    Calculate annual worker cost grouped by currency.
+    """
+    totals = {}
+
+    if not placements:
+        return totals
+
+    for placement in placements:
+        currency = getattr(
+            placement,
+            "currency",
+            None
+        ) or "GBP"
+
+        cost = (
+            to_decimal(
+                getattr(
+                    placement,
+                    "worker_monthly_cost",
+                    0
+                )
+            ) * 12
+        )
+
+        totals[currency] = (
+            totals.get(currency, Decimal("0.00"))
+            + cost
+        )
+
+    return {
+        currency: round_money(amount)
+        for currency, amount in totals.items()
+    }
+
+
+def calculate_margin_by_currency(placements):
+    """
+    Calculate annual gross margin grouped by currency.
+    """
+    revenue = calculate_revenue_by_currency(
+        placements
+    )
+
+    cost = calculate_cost_by_currency(
+        placements
+    )
+
+    currencies = set(
+        revenue.keys()
+    ) | set(
+        cost.keys()
+    )
+
+    totals = {}
+
+    for currency in currencies:
+        totals[currency] = round_money(
+            to_decimal(
+                revenue.get(
+                    currency,
+                    Decimal("0.00")
+                )
+            )
+            -
+            to_decimal(
+                cost.get(
+                    currency,
+                    Decimal("0.00")
+                )
+            )
+        )
+
+    return totals
