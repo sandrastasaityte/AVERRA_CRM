@@ -57,6 +57,26 @@ def clean_text(value):
     return str(value).strip()
 
 
+def safe_float(value, default=0.0):
+    """Safely convert a value to float."""
+
+    try:
+        return float(value or 0)
+
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_int(value, default=0):
+    """Safely convert a value to integer."""
+
+    try:
+        return int(value or 0)
+
+    except (TypeError, ValueError):
+        return default
+
+
 def get_client_name(job):
     """Return the client's company name."""
 
@@ -150,8 +170,6 @@ def get_active_placement_count(job):
 
     Active and Scheduled placements count as current
     filled positions.
-
-    Completed and Terminated placements do not.
     """
 
     placements = getattr(
@@ -185,29 +203,20 @@ def get_active_placement_count(job):
 def get_total_openings(job):
     """Return the total number of openings."""
 
-    try:
-
-        return max(
-            int(
-                getattr(
-                    job,
-                    "openings",
-                    0,
-                )
-                or 0
-            ),
-            0,
-        )
-
-    except (TypeError, ValueError):
-
-        return 0
+    return max(
+        safe_int(
+            getattr(
+                job,
+                "openings",
+                0,
+            )
+        ),
+        0,
+    )
 
 
 def get_remaining_openings(job):
-    """
-    Return the number of unfilled openings.
-    """
+    """Return the number of unfilled openings."""
 
     total_openings = get_total_openings(
         job
@@ -262,9 +271,7 @@ def job_has_placements(job):
 
 
 def job_has_history(job):
-    """
-    Return whether the job has recruitment history.
-    """
+    """Return whether the job has recruitment history."""
 
     return (
         job_has_candidates(job)
@@ -440,9 +447,7 @@ def get_closing_label(job):
 # ============================================================
 
 def get_search_text(job):
-    """
-    Return combined searchable text for a job.
-    """
+    """Return combined searchable text for a job."""
 
     values = [
         getattr(job, "position", ""),
@@ -506,6 +511,16 @@ def validate_job_status(
             "Please use Filled status."
         )
 
+    if (
+        status == "Cancelled"
+        and active_placements > 0
+    ):
+
+        return (
+            "A job with active or scheduled placements "
+            "cannot be marked Cancelled."
+        )
+
     return None
 
 
@@ -529,6 +544,34 @@ def validate_job_dates(
         return (
             "Closing date cannot be before "
             "the opening date."
+        )
+
+    return None
+
+
+def validate_job_budget(
+    client_budget,
+):
+    """Validate the client budget."""
+
+    if client_budget < 0:
+
+        return (
+            "Client budget cannot be negative."
+        )
+
+    return None
+
+
+def validate_job_openings(
+    openings,
+):
+    """Validate the number of openings."""
+
+    if openings < 1:
+
+        return (
+            "Number of openings must be at least 1."
         )
 
     return None
@@ -681,7 +724,7 @@ def show_jobs():
             client_index = 0
 
         # ====================================================
-        # DYNAMIC WIDGET KEY
+        # FORM KEY
         # ====================================================
 
         form_key = (
@@ -806,9 +849,12 @@ def show_jobs():
                     step=100.0,
                     format="%.2f",
                     value=(
-                        float(
-                            editing_job.client_budget
-                            or 0.0
+                        safe_float(
+                            getattr(
+                                editing_job,
+                                "client_budget",
+                                0.0,
+                            )
                         )
                         if editing_job
                         else 0.0
@@ -873,22 +919,17 @@ def show_jobs():
 
                 if editing_job:
 
-                    try:
-
-                        current_openings = max(
-                            int(
-                                editing_job.openings
-                                or 1
+                    current_openings = max(
+                        safe_int(
+                            getattr(
+                                editing_job,
+                                "openings",
+                                1,
                             ),
                             1,
-                        )
-
-                    except (
-                        TypeError,
-                        ValueError,
-                    ):
-
-                        current_openings = 1
+                        ),
+                        1,
+                    )
 
                 openings = st.number_input(
                     "Number of Openings",
@@ -949,7 +990,11 @@ def show_jobs():
                 "Remote Country",
                 value=(
                     clean_text(
-                        editing_job.remote_country
+                        getattr(
+                            editing_job,
+                            "remote_country",
+                            "",
+                        )
                     )
                     if editing_job
                     else "India"
@@ -1101,7 +1146,11 @@ def show_jobs():
                 "Notes",
                 value=(
                     clean_text(
-                        editing_job.notes
+                        getattr(
+                            editing_job,
+                            "notes",
+                            "",
+                        )
                     )
                     if editing_job
                     else ""
@@ -1199,6 +1248,13 @@ def show_jobs():
                         "Position is required."
                     )
 
+                elif len(position_clean) > 200:
+
+                    validation_error = (
+                        "Position must be 200 characters "
+                        "or fewer."
+                    )
+
                 elif not remote_country_clean:
 
                     validation_error = (
@@ -1219,7 +1275,31 @@ def show_jobs():
                     )
 
                 # =============================================
+                # BUDGET VALIDATION
+                # =============================================
+
+                if validation_error is None:
+
+                    validation_error = (
+                        validate_job_budget(
+                            client_budget
+                        )
+                    )
+
+                # =============================================
                 # OPENINGS VALIDATION
+                # =============================================
+
+                if validation_error is None:
+
+                    validation_error = (
+                        validate_job_openings(
+                            int(openings)
+                        )
+                    )
+
+                # =============================================
+                # CURRENT PLACEMENTS
                 # =============================================
 
                 active_placements = 0
@@ -1231,6 +1311,10 @@ def show_jobs():
                             editing_job
                         )
                     )
+
+                # =============================================
+                # PROTECT EXISTING PLACEMENTS
+                # =============================================
 
                 if validation_error is None:
 
@@ -1260,7 +1344,7 @@ def show_jobs():
                     )
 
                 # =============================================
-                # CLOSED / CANCELLED DATE WARNING
+                # CLOSED / CANCELLED DATE VALIDATION
                 # =============================================
 
                 if (
@@ -1294,7 +1378,7 @@ def show_jobs():
                 else:
 
                     # =========================================
-                    # UPDATE
+                    # UPDATE EXISTING JOB
                     # =========================================
 
                     if editing_job:
@@ -1371,17 +1455,18 @@ def show_jobs():
 
                             st.rerun()
 
-                        except Exception as error:
+                        except Exception:
 
                             session.rollback()
 
                             st.error(
-                                "Could not update job: "
-                                f"{error}"
+                                "Could not update the job. "
+                                "Please check the entered information "
+                                "and try again."
                             )
 
                     # =========================================
-                    # CREATE
+                    # CREATE NEW JOB
                     # =========================================
 
                     else:
@@ -1422,13 +1507,14 @@ def show_jobs():
 
                             st.rerun()
 
-                        except Exception as error:
+                        except Exception:
 
                             session.rollback()
 
                             st.error(
-                                "Could not create job: "
-                                f"{error}"
+                                "Could not create the job. "
+                                "Please check the entered information "
+                                "and try again."
                             )
 
         # ====================================================
@@ -2048,13 +2134,12 @@ def show_jobs():
                 get_closing_state(job)
             )
 
-            budget = float(
+            budget = safe_float(
                 getattr(
                     job,
                     "client_budget",
                     0,
                 )
-                or 0
             )
 
             currency = (
@@ -2429,7 +2514,7 @@ def show_jobs():
 
                                 st.rerun()
 
-                            except Exception as error:
+                            except Exception:
 
                                 session.rollback()
 
@@ -2438,8 +2523,9 @@ def show_jobs():
                                 )
 
                                 st.error(
-                                    "Could not delete job: "
-                                    f"{error}"
+                                    "Could not delete the job. "
+                                    "It may be linked to other "
+                                    "records."
                                 )
 
                 # =================================================
@@ -2611,7 +2697,7 @@ def show_jobs():
                             "for this job yet."
                         )
 
-                    elif candidate_count > 0:
+                    else:
 
                         st.caption(
                             f"{candidate_count} candidate(s) "
@@ -2640,13 +2726,13 @@ def show_jobs():
                             )
                         )
 
-    except Exception as error:
+    except Exception:
 
         session.rollback()
 
         st.error(
-            "An error occurred while loading jobs: "
-            f"{error}"
+            "An error occurred while loading jobs. "
+            "Please refresh the page and try again."
         )
 
     finally:

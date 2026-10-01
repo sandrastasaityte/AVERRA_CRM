@@ -1,6 +1,7 @@
 import csv
 import io
 from datetime import date
+from xml.sax.saxutils import escape
 
 import streamlit as st
 
@@ -10,11 +11,8 @@ from models import Invoice, Client, Placement
 from utils.calculations import (
     calculate_invoice_balance,
     calculate_payment_percentage,
-    invoice_is_overpaid,
 )
-from utils.helpers import (
-    valid_url,
-)
+from utils.helpers import valid_url
 
 
 # ============================================================
@@ -37,143 +35,162 @@ INVOICE_STATUSES = [
     "Cancelled",
 ]
 
+MAX_DESCRIPTION_LENGTH = 500
+MAX_NOTES_LENGTH = 2000
+
 
 # ============================================================
-# HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 def clean_text(value):
-    """Return safely cleaned text."""
-
     if value is None:
         return ""
-
     return str(value).strip()
 
 
-def get_client_name(invoice):
-    """Return invoice client name."""
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
-    if invoice.client:
 
-        return (
-            clean_text(invoice.client.company_name)
-            or "Unknown Client"
-        )
+def normalize_invoice_number(value):
+    value = clean_text(value)
+    return " ".join(value.split())
 
-    return "Unknown Client"
+
+def get_client_name(client):
+    if not client:
+        return "Unknown Client"
+
+    company_name = clean_text(
+        getattr(client, "company_name", None)
+    )
+
+    if company_name:
+        return company_name
+
+    name = clean_text(
+        getattr(client, "name", None)
+    )
+
+    return name or "Unknown Client"
 
 
 def get_client_address(client):
-    """Return a readable client address."""
-
     if not client:
         return ""
 
-    parts = [
-        clean_text(getattr(client, "address", "")),
-        clean_text(getattr(client, "city", "")),
-        clean_text(getattr(client, "postcode", "")),
-        clean_text(getattr(client, "country", "")),
+    parts = []
+
+    possible_fields = [
+        "address",
+        "address_line_1",
+        "address_line_2",
+        "city",
+        "county",
+        "postcode",
+        "postal_code",
+        "country",
     ]
 
-    return ", ".join(
-        part for part in parts if part
+    for field in possible_fields:
+        value = clean_text(
+            getattr(client, field, None)
+        )
+
+        if value and value not in parts:
+            parts.append(value)
+
+    return ", ".join(parts)
+
+
+def get_employee_name(employee):
+    if not employee:
+        return "Unknown Employee"
+
+    full_name = clean_text(
+        getattr(employee, "full_name", None)
     )
+
+    if full_name:
+        return full_name
+
+    first_name = clean_text(
+        getattr(employee, "first_name", None)
+    )
+
+    last_name = clean_text(
+        getattr(employee, "last_name", None)
+    )
+
+    name = " ".join(
+        part
+        for part in [first_name, last_name]
+        if part
+    )
+
+    return name or "Unknown Employee"
 
 
 def get_placement_label(placement):
-    """Return a readable placement label."""
+    if not placement:
+        return "No Placement"
 
-    employee_name = "Unknown Employee"
-
-    if placement.employee:
-
-        first_name = clean_text(
-            placement.employee.first_name
-        )
-
-        last_name = clean_text(
-            placement.employee.last_name
-        )
-
-        employee_name = (
-            f"{first_name} {last_name}"
-        ).strip()
-
-        if not employee_name:
-
-            employee_name = "Unknown Employee"
-
-    client_name = "Unknown Client"
-
-    if placement.client:
-
-        client_name = (
-            clean_text(
-                placement.client.company_name
-            )
-            or "Unknown Client"
-        )
-
-    position = (
-        clean_text(placement.position)
-        or "No Position"
+    employee_name = get_employee_name(
+        getattr(placement, "employee", None)
     )
 
-    return (
-        f"Placement #{placement.id} - "
-        f"{client_name} - "
-        f"{employee_name} - "
-        f"{position}"
+    position = clean_text(
+        getattr(placement, "position", None)
     )
 
+    if employee_name and position:
+        return f"{employee_name} — {position}"
+
+    if employee_name:
+        return employee_name
+
+    if position:
+        return position
+
+    return f"Placement #{placement.id}"
+
+
+# ============================================================
+# INVOICE CALCULATIONS
+# ============================================================
 
 def get_balance_due(invoice):
-    """Calculate the current invoice balance."""
-
-    return calculate_invoice_balance(
-        invoice.total_amount,
-        invoice.amount_paid,
+    total = safe_float(
+        getattr(invoice, "total_amount", 0.0)
     )
 
-
-def get_effective_status(invoice):
-    """
-    Return the displayed invoice status.
-
-    Overdue is displayed automatically when:
-    - invoice is not Paid
-    - invoice is not Cancelled
-    - due date has passed
-    - balance remains outstanding
-    """
-
-    current_status = clean_text(
-        invoice.status
+    paid = safe_float(
+        getattr(invoice, "amount_paid", 0.0)
     )
 
-    if current_status in [
-        "Paid",
-        "Cancelled",
-    ]:
-        return current_status
+    try:
+        calculated_balance = calculate_invoice_balance(
+            total,
+            paid,
+        )
 
-    balance = get_balance_due(invoice)
+        balance = safe_float(
+            calculated_balance
+        )
 
-    if (
-        invoice.due_date
-        and invoice.due_date < date.today()
-        and balance > 0
-    ):
-        return "Overdue"
+    except Exception:
+        balance = total - paid
 
-    return current_status or "Draft"
+    return max(balance, 0.0)
 
 
 def get_payment_count(invoice):
-    """Return number of recorded payments."""
-
     payments = getattr(
         invoice,
         "payments",
@@ -185,108 +202,198 @@ def get_payment_count(invoice):
 
     try:
         return len(payments)
-
     except TypeError:
         return 0
 
 
 def has_payments(invoice):
-    """Determine whether payments are attached."""
+    return get_payment_count(invoice) > 0
 
-    if get_payment_count(invoice) > 0:
-        return True
 
-    return (
-        float(
-            getattr(
-                invoice,
-                "amount_paid",
-                0,
-            )
-            or 0
+def get_effective_status(invoice):
+    """
+    Calculates the status displayed to the user without
+    changing the stored database status.
+    """
+
+    stored_status = clean_text(
+        getattr(invoice, "status", None)
+    )
+
+    if stored_status == "Cancelled":
+        return "Cancelled"
+
+    total = safe_float(
+        getattr(invoice, "total_amount", 0.0)
+    )
+
+    paid = safe_float(
+        getattr(invoice, "amount_paid", 0.0)
+    )
+
+    balance = get_balance_due(invoice)
+
+    if total > 0 and paid >= total:
+        return "Paid"
+
+    if paid > 0 and balance > 0:
+        due_date = getattr(
+            invoice,
+            "due_date",
+            None,
         )
-        > 0
+
+        if due_date and due_date < date.today():
+            return "Overdue"
+
+        return "Partially Paid"
+
+    due_date = getattr(
+        invoice,
+        "due_date",
+        None,
     )
 
+    if (
+        balance > 0
+        and due_date
+        and due_date < date.today()
+    ):
+        return "Overdue"
 
-def format_money(currency, amount):
-    """Format an invoice amount."""
+    return stored_status or "Draft"
+
+
+def calculate_days_overdue(invoice):
+    balance = get_balance_due(invoice)
+
+    if balance <= 0:
+        return 0
+
+    due_date = getattr(
+        invoice,
+        "due_date",
+        None,
+    )
+
+    if not due_date:
+        return 0
+
+    if due_date >= date.today():
+        return 0
 
     return (
-        f"{currency} "
-        f"{float(amount or 0):,.2f}"
+        date.today() - due_date
+    ).days
+
+
+def get_payment_percentage(invoice):
+    total = safe_float(
+        getattr(invoice, "total_amount", 0.0)
     )
 
+    paid = safe_float(
+        getattr(invoice, "amount_paid", 0.0)
+    )
+
+    try:
+        percentage = calculate_payment_percentage(
+            total,
+            paid,
+        )
+
+        percentage = safe_float(
+            percentage
+        )
+
+    except Exception:
+        if total <= 0:
+            return 0.0
+
+        percentage = (
+            paid / total
+        ) * 100
+
+    return max(
+        0.0,
+        min(100.0, percentage),
+    )
+
+
+def format_money(amount, currency):
+    amount = safe_float(amount)
+
+    return f"{currency} {amount:,.2f}"
+
+
+# ============================================================
+# CURRENCY SUMMARY
+# ============================================================
 
 def get_currency_totals(invoices):
-    """
-    Return invoice totals grouped by currency.
-
-    Important:
-    GBP, EUR, USD and INR are never added together.
-    """
-
     totals = {}
 
     for invoice in invoices:
-
-        currency = (
-            clean_text(
-                invoice.currency
-            )
-            or "GBP"
-        )
+        currency = clean_text(
+            getattr(invoice, "currency", None)
+        ) or "GBP"
 
         if currency not in totals:
-
             totals[currency] = {
-                "invoiced": 0.0,
+                "invoice_count": 0,
+                "total": 0.0,
                 "paid": 0.0,
-                "outstanding": 0.0,
+                "balance": 0.0,
                 "overdue": 0.0,
-                "count": 0,
             }
 
-        total = float(
-            invoice.total_amount or 0
+        totals[currency]["invoice_count"] += 1
+
+        totals[currency]["total"] += safe_float(
+            getattr(
+                invoice,
+                "total_amount",
+                0.0,
+            )
         )
 
-        paid = float(
-            invoice.amount_paid or 0
+        totals[currency]["paid"] += safe_float(
+            getattr(
+                invoice,
+                "amount_paid",
+                0.0,
+            )
         )
 
-        balance = get_balance_due(invoice)
-
-        totals[currency]["invoiced"] += total
-        totals[currency]["paid"] += paid
-        totals[currency]["outstanding"] += balance
-        totals[currency]["count"] += 1
+        totals[currency]["balance"] += (
+            get_balance_due(invoice)
+        )
 
         if (
             get_effective_status(invoice)
             == "Overdue"
         ):
-
-            totals[currency]["overdue"] += balance
+            totals[currency]["overdue"] += (
+                get_balance_due(invoice)
+            )
 
     return totals
 
 
-def get_csv_bytes(invoices):
-    """Create downloadable invoice CSV data."""
+# ============================================================
+# CSV EXPORT
+# ============================================================
 
+def get_csv_bytes(invoices):
     output = io.StringIO()
 
-    writer = csv.writer(
-        output
-    )
+    writer = csv.writer(output)
 
     writer.writerow(
         [
-            "Invoice ID",
             "Invoice Number",
             "Client",
-            "Placement ID",
+            "Placement",
             "Invoice Date",
             "Due Date",
             "Description",
@@ -295,62 +402,121 @@ def get_csv_bytes(invoices):
             "Total Amount",
             "Amount Paid",
             "Balance Due",
+            "Payment %",
             "Currency",
-            "Status",
-            "Payment Count",
+            "Stored Status",
+            "Effective Status",
+            "Days Overdue",
             "Document Link",
             "Notes",
         ]
     )
 
     for invoice in invoices:
-
         writer.writerow(
             [
-                invoice.id,
                 clean_text(
-                    invoice.invoice_number
+                    getattr(
+                        invoice,
+                        "invoice_number",
+                        "",
+                    )
                 ),
-                get_client_name(invoice),
-                invoice.placement_id
-                if invoice.placement_id
-                else "",
-                invoice.invoice_date
-                if invoice.invoice_date
-                else "",
-                invoice.due_date
-                if invoice.due_date
-                else "",
+                get_client_name(
+                    getattr(
+                        invoice,
+                        "client",
+                        None,
+                    )
+                ),
+                get_placement_label(
+                    getattr(
+                        invoice,
+                        "placement",
+                        None,
+                    )
+                ),
+                getattr(
+                    invoice,
+                    "invoice_date",
+                    "",
+                ),
+                getattr(
+                    invoice,
+                    "due_date",
+                    "",
+                ),
                 clean_text(
-                    invoice.description
+                    getattr(
+                        invoice,
+                        "description",
+                        "",
+                    )
                 ),
-                float(
-                    invoice.subtotal or 0
+                safe_float(
+                    getattr(
+                        invoice,
+                        "subtotal",
+                        0.0,
+                    )
                 ),
-                float(
-                    invoice.tax or 0
+                safe_float(
+                    getattr(
+                        invoice,
+                        "tax",
+                        0.0,
+                    )
                 ),
-                float(
-                    invoice.total_amount or 0
+                safe_float(
+                    getattr(
+                        invoice,
+                        "total_amount",
+                        0.0,
+                    )
                 ),
-                float(
-                    invoice.amount_paid or 0
+                safe_float(
+                    getattr(
+                        invoice,
+                        "amount_paid",
+                        0.0,
+                    )
                 ),
                 get_balance_due(invoice),
-                clean_text(
-                    invoice.currency
-                ),
-                get_effective_status(
-                    invoice
-                ),
-                get_payment_count(
-                    invoice
+                round(
+                    get_payment_percentage(
+                        invoice
+                    ),
+                    2,
                 ),
                 clean_text(
-                    invoice.document_link
+                    getattr(
+                        invoice,
+                        "currency",
+                        "",
+                    )
                 ),
                 clean_text(
-                    invoice.notes
+                    getattr(
+                        invoice,
+                        "status",
+                        "",
+                    )
+                ),
+                get_effective_status(invoice),
+                calculate_days_overdue(invoice),
+                clean_text(
+                    getattr(
+                        invoice,
+                        "document_link",
+                        "",
+                    )
+                ),
+                clean_text(
+                    getattr(
+                        invoice,
+                        "notes",
+                        "",
+                    )
                 ),
             ]
         )
@@ -360,18 +526,31 @@ def get_csv_bytes(invoices):
     )
 
 
+# ============================================================
+# PDF HELPERS
+# ============================================================
+
+def pdf_text(value, fallback=""):
+    value = clean_text(value)
+
+    if not value:
+        value = fallback
+
+    return escape(value).replace(
+        "\n",
+        "<br/>",
+    )
+
+
 def generate_invoice_pdf(invoice):
-    """
-    Generate a professional PDF invoice.
-
-    Requires reportlab.
-    """
-
     try:
-
-        from reportlab.lib.pagesizes import A4
         from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import (
+            getSampleStyleSheet,
+            ParagraphStyle,
+        )
         from reportlab.lib.units import mm
         from reportlab.platypus import (
             SimpleDocTemplate,
@@ -382,452 +561,752 @@ def generate_invoice_pdf(invoice):
         )
 
     except ImportError:
-
         raise RuntimeError(
             "PDF generation requires reportlab. "
-            "Add 'reportlab' to requirements.txt "
-            "and redeploy the application."
+            "Add reportlab to requirements.txt."
         )
 
-    buffer = io.BytesIO()
+    try:
+        buffer = io.BytesIO()
 
-    document = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=18 * mm,
-        leftMargin=18 * mm,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
-    )
-
-    styles = getSampleStyleSheet()
-
-    title_style = styles["Title"]
-    heading_style = styles["Heading2"]
-    normal_style = styles["Normal"]
-
-    story = []
-
-    # ========================================================
-    # COMPANY HEADER
-    # ========================================================
-
-    story.append(
-        Paragraph(
-            "<b>AVERRA STAFFING SOLUTIONS LTD</b>",
-            title_style,
+        document = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=18 * mm,
+            leftMargin=18 * mm,
+            topMargin=18 * mm,
+            bottomMargin=18 * mm,
         )
-    )
 
-    story.append(
-        Spacer(1, 5 * mm)
-    )
+        styles = getSampleStyleSheet()
 
-    story.append(
-        Paragraph(
-            "<b>INVOICE</b>",
-            heading_style,
+        title_style = ParagraphStyle(
+            "InvoiceTitle",
+            parent=styles["Title"],
+            alignment=TA_CENTER,
+            fontSize=22,
+            spaceAfter=12,
         )
-    )
 
-    story.append(
-        Spacer(1, 5 * mm)
-    )
-
-    # ========================================================
-    # CLIENT INFORMATION
-    # ========================================================
-
-    client = invoice.client
-
-    client_name = (
-        clean_text(
-            client.company_name
+        right_style = ParagraphStyle(
+            "RightStyle",
+            parent=styles["Normal"],
+            alignment=TA_RIGHT,
         )
-        if client
-        else "Unknown Client"
-    )
 
-    client_address = (
-        get_client_address(client)
-        if client
-        else ""
-    )
-
-    invoice_date_text = (
-        invoice.invoice_date.strftime(
-            "%d %B %Y"
+        small_style = ParagraphStyle(
+            "SmallStyle",
+            parent=styles["Normal"],
+            fontSize=8,
+            leading=10,
         )
-        if invoice.invoice_date
-        else ""
-    )
 
-    due_date_text = (
-        invoice.due_date.strftime(
-            "%d %B %Y"
+        story = []
+
+        invoice_number = clean_text(
+            getattr(
+                invoice,
+                "invoice_number",
+                "",
+            )
         )
-        if invoice.due_date
-        else ""
-    )
 
-    invoice_information = [
-        [
+        currency = clean_text(
+            getattr(
+                invoice,
+                "currency",
+                "",
+            )
+        ) or "GBP"
+
+        subtotal = safe_float(
+            getattr(
+                invoice,
+                "subtotal",
+                0.0,
+            )
+        )
+
+        tax = safe_float(
+            getattr(
+                invoice,
+                "tax",
+                0.0,
+            )
+        )
+
+        total = safe_float(
+            getattr(
+                invoice,
+                "total_amount",
+                0.0,
+            )
+        )
+
+        paid = safe_float(
+            getattr(
+                invoice,
+                "amount_paid",
+                0.0,
+            )
+        )
+
+        balance = get_balance_due(invoice)
+
+        story.append(
+            Paragraph(
+                "INVOICE",
+                title_style,
+            )
+        )
+
+        header_data = [
+            [
+                Paragraph(
+                    "<b>Invoice Number</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    pdf_text(
+                        invoice_number
+                    ),
+                    styles["Normal"],
+                ),
+            ],
+            [
+                Paragraph(
+                    "<b>Invoice Date</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    pdf_text(
+                        getattr(
+                            invoice,
+                            "invoice_date",
+                            "",
+                        )
+                    ),
+                    styles["Normal"],
+                ),
+            ],
+            [
+                Paragraph(
+                    "<b>Due Date</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    pdf_text(
+                        getattr(
+                            invoice,
+                            "due_date",
+                            "",
+                        )
+                    ),
+                    styles["Normal"],
+                ),
+            ],
+            [
+                Paragraph(
+                    "<b>Status</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    pdf_text(
+                        get_effective_status(
+                            invoice
+                        )
+                    ),
+                    styles["Normal"],
+                ),
+            ],
+        ]
+
+        header_table = Table(
+            header_data,
+            colWidths=[
+                45 * mm,
+                45 * mm,
+            ],
+        )
+
+        header_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "TOP",
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.grey,
+                    ),
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (0, -1),
+                        colors.lightgrey,
+                    ),
+                    (
+                        "LEFTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "RIGHTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                ]
+            )
+        )
+
+        story.append(header_table)
+        story.append(Spacer(1, 12))
+
+        client = getattr(
+            invoice,
+            "client",
+            None,
+        )
+
+        client_name = get_client_name(
+            client
+        )
+
+        client_address = get_client_address(
+            client
+        )
+
+        story.append(
             Paragraph(
                 "<b>Bill To</b>",
-                normal_style,
-            ),
+                styles["Heading3"],
+            )
+        )
+
+        story.append(
             Paragraph(
-                "<b>Invoice Details</b>",
-                normal_style,
-            ),
-        ],
-        [
-            Paragraph(
-                client_name,
-                normal_style,
-            ),
-            Paragraph(
-                (
-                    f"Invoice Number: "
-                    f"{clean_text(invoice.invoice_number)}"
-                    f"<br/>"
-                    f"Invoice Date: "
-                    f"{invoice_date_text}"
-                    f"<br/>"
-                    f"Due Date: "
-                    f"{due_date_text}"
-                ),
-                normal_style,
-            ),
-        ],
-    ]
-
-    if client_address:
-
-        invoice_information[1][0] = Paragraph(
-            (
-                f"{client_name}"
-                f"<br/>{client_address}"
-            ),
-            normal_style,
+                pdf_text(client_name),
+                styles["Normal"],
+            )
         )
 
-    information_table = Table(
-        invoice_information,
-        colWidths=[
-            85 * mm,
-            85 * mm,
-        ],
-    )
+        if client_address:
+            story.append(
+                Paragraph(
+                    pdf_text(
+                        client_address
+                    ),
+                    styles["Normal"],
+                )
+            )
 
-    information_table.setStyle(
-        TableStyle(
-            [
-                (
-                    "VALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "TOP",
-                ),
-                (
-                    "BOTTOMPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    6,
-                ),
-            ]
+        story.append(Spacer(1, 12))
+
+        placement = getattr(
+            invoice,
+            "placement",
+            None,
         )
-    )
 
-    story.append(
-        information_table
-    )
-
-    story.append(
-        Spacer(1, 8 * mm)
-    )
-
-    # ========================================================
-    # DESCRIPTION
-    # ========================================================
-
-    description = (
-        clean_text(
-            invoice.description
+        placement_label = get_placement_label(
+            placement
         )
-        or "Professional staffing / outsourcing services"
-    )
 
-    currency = (
-        clean_text(
-            invoice.currency
+        description = clean_text(
+            getattr(
+                invoice,
+                "description",
+                "",
+            )
         )
-        or "GBP"
-    )
 
-    subtotal = float(
-        invoice.subtotal or 0
-    )
+        line_description = (
+            description
+            if description
+            else placement_label
+        )
 
-    tax = float(
-        invoice.tax or 0
-    )
-
-    total = float(
-        invoice.total_amount or 0
-    )
-
-    paid = float(
-        invoice.amount_paid or 0
-    )
-
-    balance = get_balance_due(
-        invoice
-    )
-
-    item_table = Table(
-        [
+        line_data = [
             [
                 Paragraph(
                     "<b>Description</b>",
-                    normal_style,
+                    styles["Normal"],
                 ),
                 Paragraph(
                     "<b>Amount</b>",
-                    normal_style,
+                    right_style,
                 ),
             ],
             [
                 Paragraph(
-                    description,
-                    normal_style,
+                    pdf_text(
+                        line_description
+                    ),
+                    styles["Normal"],
                 ),
                 Paragraph(
-                    f"{currency} {subtotal:,.2f}",
-                    normal_style,
+                    format_money(
+                        subtotal,
+                        currency,
+                    ),
+                    right_style,
                 ),
             ],
-        ],
-        colWidths=[
-            130 * mm,
-            40 * mm,
-        ],
-    )
+        ]
 
-    item_table.setStyle(
-        TableStyle(
-            [
-                (
-                    "GRID",
-                    (0, 0),
-                    (-1, -1),
-                    0.5,
-                    colors.grey,
-                ),
-                (
-                    "BACKGROUND",
-                    (0, 0),
-                    (-1, 0),
-                    colors.lightgrey,
-                ),
-                (
-                    "VALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "TOP",
-                ),
-                (
-                    "ALIGN",
-                    (1, 1),
-                    (1, 1),
-                    "RIGHT",
-                ),
-                (
-                    "TOPPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    7,
-                ),
-                (
-                    "BOTTOMPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    7,
-                ),
-            ]
+        line_table = Table(
+            line_data,
+            colWidths=[
+                125 * mm,
+                35 * mm,
+            ],
         )
-    )
 
-    story.append(
-        item_table
-    )
-
-    story.append(
-        Spacer(1, 8 * mm)
-    )
-
-    # ========================================================
-    # TOTALS
-    # ========================================================
-
-    totals_table = Table(
-        [
-            [
-                "Subtotal",
-                f"{currency} {subtotal:,.2f}",
-            ],
-            [
-                "Tax",
-                f"{currency} {tax:,.2f}",
-            ],
-            [
-                "Total",
-                f"{currency} {total:,.2f}",
-            ],
-            [
-                "Paid",
-                f"{currency} {paid:,.2f}",
-            ],
-            [
-                "Balance Due",
-                f"{currency} {balance:,.2f}",
-            ],
-        ],
-        colWidths=[
-            130 * mm,
-            40 * mm,
-        ],
-    )
-
-    totals_table.setStyle(
-        TableStyle(
-            [
-                (
-                    "ALIGN",
-                    (1, 0),
-                    (1, -1),
-                    "RIGHT",
-                ),
-                (
-                    "TOPPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    5,
-                ),
-                (
-                    "BOTTOMPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    5,
-                ),
-                (
-                    "LINEABOVE",
-                    (0, 2),
-                    (-1, 2),
-                    1,
-                    colors.black,
-                ),
-                (
-                    "LINEABOVE",
-                    (0, 4),
-                    (-1, 4),
-                    1,
-                    colors.black,
-                ),
-            ]
+        line_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.grey,
+                    ),
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.lightgrey,
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "TOP",
+                    ),
+                    (
+                        "LEFTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "RIGHTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                ]
+            )
         )
-    )
 
-    story.append(
-        totals_table
-    )
+        story.append(line_table)
+        story.append(Spacer(1, 12))
 
-    story.append(
-        Spacer(1, 10 * mm)
-    )
+        totals_data = [
+            [
+                Paragraph(
+                    "<b>Subtotal</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    format_money(
+                        subtotal,
+                        currency,
+                    ),
+                    right_style,
+                ),
+            ],
+            [
+                Paragraph(
+                    "<b>Tax</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    format_money(
+                        tax,
+                        currency,
+                    ),
+                    right_style,
+                ),
+            ],
+            [
+                Paragraph(
+                    "<b>Total</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    f"<b>{format_money(total, currency)}</b>",
+                    right_style,
+                ),
+            ],
+            [
+                Paragraph(
+                    "<b>Amount Paid</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    format_money(
+                        paid,
+                        currency,
+                    ),
+                    right_style,
+                ),
+            ],
+            [
+                Paragraph(
+                    "<b>Balance Due</b>",
+                    styles["Normal"],
+                ),
+                Paragraph(
+                    f"<b>{format_money(balance, currency)}</b>",
+                    right_style,
+                ),
+            ],
+        ]
 
-    # ========================================================
-    # PAYMENT INFORMATION
-    # ========================================================
-
-    story.append(
-        Paragraph(
-            "<b>Payment Information</b>",
-            heading_style,
+        totals_table = Table(
+            totals_data,
+            colWidths=[
+                125 * mm,
+                35 * mm,
+            ],
         )
-    )
 
-    story.append(
-        Spacer(1, 3 * mm)
-    )
-
-    story.append(
-        Paragraph(
-            (
-                "Please make payment by the invoice due date. "
-                "Payment details should be provided separately "
-                "by AVERRA if not already included in the "
-                "commercial agreement."
-            ),
-            normal_style,
+        totals_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.grey,
+                    ),
+                    (
+                        "LEFTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "RIGHTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                ]
+            )
         )
-    )
 
-    # ========================================================
-    # NOTES
-    # ========================================================
+        story.append(totals_table)
+        story.append(Spacer(1, 14))
 
-    notes = clean_text(
-        invoice.notes
-    )
-
-    if notes:
-
-        story.append(
-            Spacer(1, 8 * mm)
+        notes = clean_text(
+            getattr(
+                invoice,
+                "notes",
+                "",
+            )
         )
+
+        if notes:
+            story.append(
+                Paragraph(
+                    "<b>Notes</b>",
+                    styles["Heading3"],
+                )
+            )
+
+            story.append(
+                Paragraph(
+                    pdf_text(notes),
+                    styles["Normal"],
+                )
+            )
+
+            story.append(Spacer(1, 10))
 
         story.append(
             Paragraph(
-                "<b>Notes</b>",
-                heading_style,
+                (
+                    "Payment status: "
+                    f"{pdf_text(get_effective_status(invoice))}"
+                ),
+                small_style,
             )
         )
 
         story.append(
             Paragraph(
-                notes,
-                normal_style,
+                (
+                    "Payment progress: "
+                    f"{get_payment_percentage(invoice):.1f}%"
+                ),
+                small_style,
             )
         )
 
-    # ========================================================
-    # FOOTER
-    # ========================================================
-
-    story.append(
-        Spacer(1, 15 * mm)
-    )
-
-    story.append(
-        Paragraph(
-            "AVERRA STAFFING SOLUTIONS LTD",
-            normal_style,
+        days_overdue = calculate_days_overdue(
+            invoice
         )
+
+        if days_overdue > 0:
+            story.append(
+                Paragraph(
+                    f"Days overdue: {days_overdue}",
+                    small_style,
+                )
+            )
+
+        story.append(Spacer(1, 15))
+
+        story.append(
+            Paragraph(
+                "Generated by AVERRA Staffing Solutions CRM",
+                small_style,
+            )
+        )
+
+        document.build(story)
+
+        buffer.seek(0)
+
+        return buffer.getvalue()
+
+    except Exception:
+        raise RuntimeError(
+            "The invoice PDF could not be generated."
+        )
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def validate_invoice_data(
+    invoice_number,
+    invoice_date,
+    due_date,
+    subtotal,
+    tax,
+    total_amount,
+    currency,
+    status,
+    description,
+    document_link,
+):
+    errors = []
+
+    if not invoice_number:
+        errors.append(
+            "Invoice number is required."
+        )
+
+    if len(invoice_number) > 100:
+        errors.append(
+            "Invoice number cannot exceed 100 characters."
+        )
+
+    if not invoice_date:
+        errors.append(
+            "Invoice date is required."
+        )
+
+    if not due_date:
+        errors.append(
+            "Due date is required."
+        )
+
+    if invoice_date and due_date:
+        if due_date < invoice_date:
+            errors.append(
+                "Due date cannot be earlier than the invoice date."
+            )
+
+    if subtotal < 0:
+        errors.append(
+            "Subtotal cannot be negative."
+        )
+
+    if tax < 0:
+        errors.append(
+            "Tax cannot be negative."
+        )
+
+    if total_amount <= 0:
+        errors.append(
+            "Total amount must be greater than zero."
+        )
+
+    expected_total = round(
+        subtotal + tax,
+        2,
     )
 
-    document.build(
-        story
+    if abs(
+        total_amount - expected_total
+    ) > 0.01:
+        errors.append(
+            "Total amount must equal subtotal plus tax."
+        )
+
+    if currency not in CURRENCIES:
+        errors.append(
+            "Please select a valid currency."
+        )
+
+    if status not in INVOICE_STATUSES:
+        errors.append(
+            "Please select a valid invoice status."
+        )
+
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        errors.append(
+            f"Description cannot exceed {MAX_DESCRIPTION_LENGTH} characters."
+        )
+
+    if document_link:
+        try:
+            if not valid_url(
+                document_link
+            ):
+                errors.append(
+                    "Document link is not a valid URL."
+                )
+        except Exception:
+            errors.append(
+                "Document link is not a valid URL."
+            )
+
+    return errors
+
+
+def validate_payment_status(
+    status,
+    total_amount,
+    amount_paid,
+    due_date,
+    invoice=None,
+):
+    errors = []
+
+    total_amount = safe_float(
+        total_amount
     )
 
-    buffer.seek(0)
+    amount_paid = safe_float(
+        amount_paid
+    )
 
-    return buffer.getvalue()
+    if amount_paid < 0:
+        errors.append(
+            "Amount paid cannot be negative."
+        )
 
+    if amount_paid > total_amount:
+        errors.append(
+            "Amount paid cannot exceed the invoice total."
+        )
+
+    if status == "Paid":
+        if amount_paid < total_amount:
+            errors.append(
+                "A Paid invoice must be fully paid."
+            )
+
+    if status == "Partially Paid":
+        if amount_paid <= 0:
+            errors.append(
+                "A Partially Paid invoice must have a payment."
+            )
+
+        elif amount_paid >= total_amount:
+            errors.append(
+                "A fully paid invoice should use the Paid status."
+            )
+
+    if status == "Overdue":
+        if amount_paid >= total_amount:
+            errors.append(
+                "A fully paid invoice cannot be Overdue."
+            )
+
+        elif not due_date:
+            errors.append(
+                "An Overdue invoice must have a due date."
+            )
+
+        elif due_date >= date.today():
+            errors.append(
+                "Overdue status requires a due date in the past."
+            )
+
+    if status == "Draft":
+        if amount_paid > 0:
+            errors.append(
+                "A Draft invoice cannot have recorded payments."
+            )
+
+    if status == "Cancelled":
+        if invoice is not None:
+            if has_payments(invoice):
+                errors.append(
+                    "An invoice with payments cannot be cancelled."
+                )
+
+    return errors
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
 
 def clear_invoice_state():
-    """Clear invoice editing/deletion state."""
-
     st.session_state.editing_invoice_id = None
     st.session_state.confirm_delete_invoice_id = None
 
@@ -837,59 +1316,44 @@ def clear_invoice_state():
 # ============================================================
 
 def show_invoices():
-
     st.title("Invoices")
 
     st.caption(
-        "Create invoices, download professional PDF invoices, "
-        "export invoice data to CSV and track outstanding balances."
+        "Create, manage, track and export client invoices."
     )
 
     session = get_session()
 
-    # ========================================================
-    # SESSION STATE
-    # ========================================================
-
     if "editing_invoice_id" not in st.session_state:
-
         st.session_state.editing_invoice_id = None
 
     if "confirm_delete_invoice_id" not in st.session_state:
-
         st.session_state.confirm_delete_invoice_id = None
 
     try:
-
         # ====================================================
         # LOAD CLIENTS
         # ====================================================
 
         clients = (
             session.query(Client)
-            .order_by(
-                Client.company_name
-            )
+            .order_by(Client.id.desc())
             .all()
         )
 
         if not clients:
-
             st.warning(
-                "Please add a client before creating an invoice."
+                "No clients exist yet. Create a client before creating an invoice."
             )
-
             return
 
         # ====================================================
-        # LOAD ALL PLACEMENTS
+        # LOAD PLACEMENTS
         # ====================================================
 
         placements = (
             session.query(Placement)
-            .order_by(
-                Placement.id.desc()
-            )
+            .order_by(Placement.id.desc())
             .all()
         )
 
@@ -899,778 +1363,583 @@ def show_invoices():
 
         editing_invoice = None
 
-        if (
-            st.session_state.editing_invoice_id
-            is not None
-        ):
-
-            editing_invoice = session.get(
-                Invoice,
-                st.session_state.editing_invoice_id,
+        if st.session_state.editing_invoice_id:
+            editing_invoice = (
+                session.query(Invoice)
+                .filter(
+                    Invoice.id
+                    == st.session_state.editing_invoice_id
+                )
+                .first()
             )
 
-            if editing_invoice is None:
-
+            if not editing_invoice:
                 st.session_state.editing_invoice_id = None
 
         # ====================================================
-        # PAGE SECTION
+        # CREATE / EDIT FORM
         # ====================================================
 
         if editing_invoice:
-
             st.subheader(
-                "Edit Invoice "
-                f"#{clean_text(editing_invoice.invoice_number)}"
+                f"Edit Invoice #{editing_invoice.invoice_number}"
             )
-
         else:
+            st.subheader("Create Invoice")
 
-            st.subheader(
-                "Create Invoice"
-            )
+        client_labels = [
+            f"{client.id} — {get_client_name(client)}"
+            for client in clients
+        ]
 
-        # ====================================================
-        # CLIENT OPTIONS
-        # ====================================================
-
-        client_options = {
-            (
-                f"{clean_text(client.company_name)} "
-                f"(ID: {client.id})"
-            ): client.id
+        client_map = {
+            f"{client.id} — {get_client_name(client)}":
+                client.id
             for client in clients
         }
 
-        client_labels = list(
-            client_options.keys()
-        )
-
-        client_values = list(
-            client_options.values()
-        )
-
-        if (
-            editing_invoice
-            and editing_invoice.client_id
-            in client_values
-        ):
-
-            client_index = client_values.index(
+        if editing_invoice:
+            current_client_id = (
                 editing_invoice.client_id
             )
 
-        else:
+            current_client_index = 0
 
-            client_index = 0
+            for index, client in enumerate(clients):
+                if client.id == current_client_id:
+                    current_client_index = index
+                    break
 
-        # ====================================================
-        # CURRENT CLIENT ID
-        # ====================================================
-
-        current_client_id = (
-            editing_invoice.client_id
-            if editing_invoice
-            else client_values[client_index]
-        )
-
-        # ====================================================
-        # PLACEMENTS FOR CURRENT CLIENT
-        # ====================================================
-
-        client_placements = [
-            placement
-            for placement in placements
-            if placement.client_id
-            == current_client_id
-        ]
-
-        placement_options = {
-            "No placement": None
-        }
-
-        for placement in client_placements:
-
-            placement_options[
-                get_placement_label(
-                    placement
-                )
-            ] = placement.id
-
-        placement_labels = list(
-            placement_options.keys()
-        )
-
-        placement_values = list(
-            placement_options.values()
-        )
-
-        if (
-            editing_invoice
-            and editing_invoice.placement_id
-            in placement_values
-        ):
-
-            placement_index = placement_values.index(
-                editing_invoice.placement_id
-            )
-
-        else:
-
-            placement_index = 0
-
-        # ====================================================
-        # FORM
-        # ====================================================
-
-        with st.form(
-            "invoice_form"
-        ):
-
-            # =================================================
-            # CLIENT
-            # =================================================
-
-            selected_client = st.selectbox(
-                "Client",
-                client_labels,
-                index=client_index,
-            )
-
-            selected_client_id = (
-                client_options[
-                    selected_client
+            default_client_label = (
+                client_labels[
+                    current_client_index
                 ]
             )
 
-            # =================================================
-            # PLACEMENT
-            # =================================================
+        else:
+            default_client_label = (
+                client_labels[0]
+            )
 
-            # The form cannot dynamically reload its options
-            # when the client changes. The selected client is
-            # therefore validated again when saving.
+        with st.form(
+            "invoice_form",
+            clear_on_submit=False,
+        ):
+            selected_client_label = st.selectbox(
+                "Client *",
+                options=client_labels,
+                index=client_labels.index(
+                    default_client_label
+                ),
+            )
 
-            current_client_placements = [
+            selected_client_id = client_map[
+                selected_client_label
+            ]
+
+            client_placements = [
                 placement
                 for placement in placements
                 if placement.client_id
                 == selected_client_id
             ]
 
-            dynamic_placement_options = {
-                "No placement": None
+            placement_labels = [
+                (
+                    f"{placement.id} — "
+                    f"{get_placement_label(placement)}"
+                )
+                for placement in client_placements
+            ]
+
+            placement_map = {
+                (
+                    f"{placement.id} — "
+                    f"{get_placement_label(placement)}"
+                ):
+                    placement.id
+                for placement in client_placements
             }
 
-            for placement in current_client_placements:
+            selected_placement_id = None
 
-                dynamic_placement_options[
-                    get_placement_label(
-                        placement
-                    )
-                ] = placement.id
+            if placement_labels:
+                placement_default_index = 0
 
-            dynamic_placement_labels = list(
-                dynamic_placement_options.keys()
-            )
+                if editing_invoice:
+                    for index, placement in enumerate(
+                        client_placements
+                    ):
+                        if (
+                            placement.id
+                            == editing_invoice.placement_id
+                        ):
+                            placement_default_index = index
+                            break
 
-            # Make sure the index is valid.
+                selected_placement_label = st.selectbox(
+                    "Placement",
+                    options=placement_labels,
+                    index=placement_default_index,
+                )
 
-            safe_placement_index = (
-                placement_index
-                if placement_index
-                < len(dynamic_placement_labels)
-                else 0
-            )
+                selected_placement_id = (
+                    placement_map[
+                        selected_placement_label
+                    ]
+                )
 
-            selected_placement = st.selectbox(
-                "Related Placement",
-                dynamic_placement_labels,
-                index=safe_placement_index,
-            )
+            else:
+                st.info(
+                    "This client has no placements. "
+                    "The invoice can still be created without a placement."
+                )
 
-            # =================================================
-            # BASIC INFORMATION
-            # =================================================
+            col1, col2 = st.columns(2)
 
-            invoice_number = st.text_input(
-                "Invoice Number",
-                value=(
-                    clean_text(
+            with col1:
+                invoice_number = st.text_input(
+                    "Invoice Number *",
+                    value=(
                         editing_invoice.invoice_number
-                    )
-                    if editing_invoice
-                    else ""
-                ),
-                placeholder="Example: INV-2026-001",
-            )
+                        if editing_invoice
+                        else ""
+                    ),
+                    max_chars=100,
+                    placeholder="e.g. INV-0001",
+                )
 
-            description = st.text_area(
-                "Description",
-                value=(
-                    clean_text(
+            with col2:
+                description = st.text_input(
+                    "Description",
+                    value=(
                         editing_invoice.description
-                    )
-                    if editing_invoice
-                    else ""
-                ),
-                placeholder=(
-                    "Example: Remote finance specialist "
-                    "services - October 2026"
-                ),
-            )
+                        if editing_invoice
+                        else ""
+                    ) or "",
+                    max_chars=MAX_DESCRIPTION_LENGTH,
+                    placeholder=(
+                        "e.g. Remote Accountant — September 2026"
+                    ),
+                )
 
-            # =================================================
-            # DATES
-            # =================================================
+            col1, col2 = st.columns(2)
 
-            st.subheader(
-                "Invoice Dates"
-            )
-
-            date_col1, date_col2 = st.columns(2)
-
-            with date_col1:
-
+            with col1:
                 invoice_date = st.date_input(
-                    "Invoice Date",
+                    "Invoice Date *",
                     value=(
                         editing_invoice.invoice_date
-                        if (
-                            editing_invoice
-                            and editing_invoice.invoice_date
-                        )
+                        if editing_invoice
                         else date.today()
                     ),
                 )
 
-            with date_col2:
-
+            with col2:
                 due_date = st.date_input(
-                    "Due Date",
+                    "Due Date *",
                     value=(
                         editing_invoice.due_date
-                        if (
-                            editing_invoice
-                            and editing_invoice.due_date
-                        )
+                        if editing_invoice
                         else date.today()
                     ),
                 )
 
-            # =================================================
-            # AMOUNTS
-            # =================================================
+            col1, col2 = st.columns(2)
 
-            st.subheader(
-                "Invoice Amount"
-            )
-
-            amount_col1, amount_col2 = st.columns(2)
-
-            with amount_col1:
-
+            with col1:
                 subtotal = st.number_input(
-                    "Subtotal",
+                    "Subtotal *",
                     min_value=0.0,
-                    step=100.0,
-                    format="%.2f",
                     value=(
-                        float(
+                        safe_float(
                             editing_invoice.subtotal
-                            or 0
                         )
                         if editing_invoice
                         else 0.0
                     ),
+                    step=0.01,
+                    format="%.2f",
                 )
 
-            with amount_col2:
-
+            with col2:
                 tax = st.number_input(
                     "Tax",
                     min_value=0.0,
-                    step=10.0,
-                    format="%.2f",
                     value=(
-                        float(
+                        safe_float(
                             editing_invoice.tax
-                            or 0
                         )
                         if editing_invoice
                         else 0.0
                     ),
+                    step=0.01,
+                    format="%.2f",
                 )
 
-            total_amount = (
-                subtotal + tax
+            total_amount = round(
+                subtotal + tax,
+                2,
             )
 
-            st.info(
-                f"Invoice Total: "
-                f"**{total_amount:,.2f}**"
-            )
-
-            # =================================================
-            # CURRENCY / STATUS
-            # =================================================
-
-            finance_col1, finance_col2 = st.columns(2)
-
-            with finance_col1:
-
-                current_currency = (
-                    clean_text(
-                        editing_invoice.currency
-                    )
-                    if editing_invoice
-                    else ""
-                )
-
-                currency_index = (
-                    CURRENCIES.index(
-                        current_currency
-                    )
-                    if current_currency
+            currency_default = (
+                editing_invoice.currency
+                if (
+                    editing_invoice
+                    and editing_invoice.currency
                     in CURRENCIES
-                    else 0
                 )
+                else "GBP"
+            )
 
+            col1, col2 = st.columns(2)
+
+            with col1:
                 currency = st.selectbox(
-                    "Currency",
-                    CURRENCIES,
-                    index=currency_index,
+                    "Currency *",
+                    options=CURRENCIES,
+                    index=CURRENCIES.index(
+                        currency_default
+                    ),
                 )
 
-            with finance_col2:
-
-                current_status = (
-                    clean_text(
-                        editing_invoice.status
+            with col2:
+                status_default = (
+                    editing_invoice.status
+                    if (
+                        editing_invoice
+                        and editing_invoice.status
+                        in INVOICE_STATUSES
                     )
-                    if editing_invoice
-                    else ""
-                )
-
-                status_index = (
-                    INVOICE_STATUSES.index(
-                        current_status
-                    )
-                    if current_status
-                    in INVOICE_STATUSES
-                    else 0
+                    else "Draft"
                 )
 
                 status = st.selectbox(
-                    "Invoice Status",
-                    INVOICE_STATUSES,
-                    index=status_index,
+                    "Status *",
+                    options=INVOICE_STATUSES,
+                    index=INVOICE_STATUSES.index(
+                        status_default
+                    ),
                 )
 
-            # =================================================
-            # DOCUMENT
-            # =================================================
-
-            document_link = st.text_input(
-                "Invoice Document Link",
-                value=(
-                    clean_text(
-                        editing_invoice.document_link
-                    )
-                    if editing_invoice
-                    else ""
-                ),
-                placeholder=(
-                    "Optional external invoice document link"
+            st.metric(
+                "Calculated Total",
+                format_money(
+                    total_amount,
+                    currency,
                 ),
             )
 
-            # =================================================
-            # NOTES
-            # =================================================
+            document_link = st.text_input(
+                "Document Link",
+                value=(
+                    editing_invoice.document_link
+                    if editing_invoice
+                    else ""
+                ) or "",
+                placeholder="https://...",
+            )
 
             notes = st.text_area(
                 "Notes",
                 value=(
-                    clean_text(
-                        editing_invoice.notes
-                    )
+                    editing_invoice.notes
                     if editing_invoice
                     else ""
-                ),
-                placeholder="Invoice notes...",
+                ) or "",
+                max_chars=MAX_NOTES_LENGTH,
+                height=120,
             )
 
-            # =================================================
-            # SUBMIT
-            # =================================================
+            submit_label = (
+                "Update Invoice"
+                if editing_invoice
+                else "Create Invoice"
+            )
 
             submitted = st.form_submit_button(
-                (
-                    "Save Changes"
-                    if editing_invoice
-                    else "Create Invoice"
-                ),
+                submit_label,
+                type="primary",
                 use_container_width=True,
             )
 
-            if submitted:
+        # ====================================================
+        # SAVE FORM
+        # ====================================================
 
-                invoice_number_clean = (
-                    invoice_number.strip()
+        if submitted:
+            invoice_number = normalize_invoice_number(
+                invoice_number
+            )
+
+            description = clean_text(
+                description
+            )
+
+            document_link = clean_text(
+                document_link
+            )
+
+            notes = clean_text(
+                notes
+            )
+
+            validation_errors = (
+                validate_invoice_data(
+                    invoice_number=invoice_number,
+                    invoice_date=invoice_date,
+                    due_date=due_date,
+                    subtotal=subtotal,
+                    tax=tax,
+                    total_amount=total_amount,
+                    currency=currency,
+                    status=status,
+                    description=description,
+                    document_link=document_link,
                 )
+            )
 
-                description_clean = (
-                    description.strip()
-                )
-
-                document_link_clean = (
-                    document_link.strip()
-                )
-
-                notes_clean = (
-                    notes.strip()
-                )
-
-                # =============================================
-                # VALIDATION
-                # =============================================
-
-                validation_error = None
-
-                if not invoice_number_clean:
-
-                    validation_error = (
-                        "Invoice number is required."
+            if len(notes) > MAX_NOTES_LENGTH:
+                validation_errors.append(
+                    (
+                        "Notes cannot exceed "
+                        f"{MAX_NOTES_LENGTH} characters."
                     )
+                )
 
-                elif due_date < invoice_date:
+            # -----------------------------------------------
+            # Validate placement
+            # -----------------------------------------------
 
-                    validation_error = (
-                        "Due date cannot be before "
-                        "invoice date."
+            selected_placement = None
+
+            if selected_placement_id:
+                selected_placement = (
+                    session.query(Placement)
+                    .filter(
+                        Placement.id
+                        == selected_placement_id
                     )
+                    .first()
+                )
 
-                elif subtotal < 0:
-
-                    validation_error = (
-                        "Subtotal cannot be negative."
-                    )
-
-                elif tax < 0:
-
-                    validation_error = (
-                        "Tax cannot be negative."
+                if not selected_placement:
+                    validation_errors.append(
+                        "Selected placement could not be found."
                     )
 
                 elif (
-                    document_link_clean
-                    and not valid_url(
-                        document_link_clean
-                    )
+                    selected_placement.client_id
+                    != selected_client_id
                 ):
-
-                    validation_error = (
-                        "Please enter a valid document URL."
+                    validation_errors.append(
+                        "Selected placement does not belong to the selected client."
                     )
 
-                # =============================================
-                # SELECTED PLACEMENT
-                # =============================================
+            # -----------------------------------------------
+            # Existing payment protection
+            # -----------------------------------------------
 
-                selected_placement_id = (
-                    dynamic_placement_options[
-                        selected_placement
-                    ]
+            existing_paid = (
+                safe_float(
+                    editing_invoice.amount_paid
                 )
+                if editing_invoice
+                else 0.0
+            )
 
-                selected_placement_object = None
-
-                if selected_placement_id:
-
-                    selected_placement_object = (
-                        session.get(
-                            Placement,
-                            selected_placement_id,
-                        )
-                    )
-
-                    if (
-                        selected_placement_object
-                        is None
-                    ):
-
-                        validation_error = (
-                            "The selected placement "
-                            "could not be found."
-                        )
-
-                    elif (
-                        selected_placement_object.client_id
-                        != selected_client_id
-                    ):
-
-                        validation_error = (
-                            "The selected placement "
-                            "does not belong to the selected client."
-                        )
-
-                # =============================================
-                # EXISTING PAYMENT VALIDATION
-                # =============================================
-
-                existing_paid = 0.0
-
-                if editing_invoice:
-
-                    existing_paid = float(
-                        editing_invoice.amount_paid
-                        or 0
-                    )
-
-                    if (
-                        total_amount
-                        < existing_paid
-                    ):
-
-                        validation_error = (
+            if editing_invoice:
+                if total_amount < existing_paid:
+                    validation_errors.append(
+                        (
                             "Invoice total cannot be lower "
                             "than the amount already paid."
                         )
-
-                    if (
-                        has_payments(
-                            editing_invoice
-                        )
-                        and currency
-                        != clean_text(
-                            editing_invoice.currency
-                        )
-                    ):
-
-                        validation_error = (
-                            "Currency cannot be changed "
-                            "after payments have been recorded."
-                        )
-
-                # =============================================
-                # PAYMENT / STATUS VALIDATION
-                # =============================================
-
-                if (
-                    existing_paid
-                    > total_amount
-                ):
-
-                    validation_error = (
-                        "Amount paid cannot be greater "
-                        "than the invoice total."
                     )
 
                 if (
-                    status == "Paid"
-                    and total_amount
-                    > existing_paid
-                ):
-
-                    validation_error = (
-                        "An invoice cannot be marked Paid "
-                        "while a balance remains outstanding."
-                    )
-
-                if (
-                    status == "Partially Paid"
-                    and existing_paid <= 0
-                ):
-
-                    validation_error = (
-                        "Partially Paid requires a payment "
-                        "to have been recorded."
-                    )
-
-                if (
-                    status == "Cancelled"
+                    editing_invoice.currency
+                    and editing_invoice.currency
+                    != currency
                     and has_payments(
                         editing_invoice
                     )
-                    if editing_invoice
-                    else False
                 ):
-
-                    validation_error = (
-                        "An invoice with recorded payments "
-                        "should not be cancelled from this screen."
-                    )
-
-                if validation_error:
-
-                    st.error(
-                        validation_error
-                    )
-
-                else:
-
-                    # =========================================
-                    # DUPLICATE INVOICE NUMBER
-                    # =========================================
-
-                    duplicate_query = (
-                        session.query(
-                            Invoice
-                        )
-                        .filter(
-                            Invoice.invoice_number.ilike(
-                                invoice_number_clean
-                            )
+                    validation_errors.append(
+                        (
+                            "Currency cannot be changed "
+                            "after payments have been recorded."
                         )
                     )
 
+            # -----------------------------------------------
+            # Payment/status validation
+            # -----------------------------------------------
+
+            validation_errors.extend(
+                validate_payment_status(
+                    status=status,
+                    total_amount=total_amount,
+                    amount_paid=existing_paid,
+                    due_date=due_date,
+                    invoice=editing_invoice,
+                )
+            )
+
+            # -----------------------------------------------
+            # Duplicate invoice number
+            # -----------------------------------------------
+
+            duplicate_query = (
+                session.query(Invoice)
+                .filter(
+                    Invoice.invoice_number.ilike(
+                        invoice_number
+                    )
+                )
+            )
+
+            if editing_invoice:
+                duplicate_query = (
+                    duplicate_query.filter(
+                        Invoice.id
+                        != editing_invoice.id
+                    )
+                )
+
+            duplicate_invoice = (
+                duplicate_query.first()
+            )
+
+            if duplicate_invoice:
+                validation_errors.append(
+                    (
+                        "An invoice with this "
+                        "invoice number already exists."
+                    )
+                )
+
+            # -----------------------------------------------
+            # Display validation errors
+            # -----------------------------------------------
+
+            if validation_errors:
+                for error in validation_errors:
+                    st.error(error)
+
+            # -----------------------------------------------
+            # SAVE
+            # -----------------------------------------------
+
+            else:
+                try:
                     if editing_invoice:
-
-                        duplicate_query = (
-                            duplicate_query.filter(
-                                Invoice.id
-                                != editing_invoice.id
-                            )
+                        editing_invoice.client_id = (
+                            selected_client_id
                         )
 
-                    duplicate = (
-                        duplicate_query.first()
-                    )
+                        editing_invoice.placement_id = (
+                            selected_placement_id
+                        )
 
-                    if duplicate:
+                        editing_invoice.invoice_number = (
+                            invoice_number
+                        )
 
-                        st.error(
-                            "An invoice with this invoice "
-                            "number already exists."
+                        editing_invoice.invoice_date = (
+                            invoice_date
+                        )
+
+                        editing_invoice.due_date = (
+                            due_date
+                        )
+
+                        editing_invoice.description = (
+                            description
+                        )
+
+                        editing_invoice.subtotal = (
+                            subtotal
+                        )
+
+                        editing_invoice.tax = (
+                            tax
+                        )
+
+                        editing_invoice.total_amount = (
+                            total_amount
+                        )
+
+                        editing_invoice.currency = (
+                            currency
+                        )
+
+                        editing_invoice.status = (
+                            status
+                        )
+
+                        editing_invoice.document_link = (
+                            document_link
+                        )
+
+                        editing_invoice.notes = (
+                            notes
+                        )
+
+                        session.commit()
+
+                        st.success(
+                            (
+                                f"Invoice {invoice_number} "
+                                "updated successfully."
+                            )
                         )
 
                     else:
+                        new_invoice = Invoice(
+                            client_id=selected_client_id,
+                            placement_id=selected_placement_id,
+                            invoice_number=invoice_number,
+                            invoice_date=invoice_date,
+                            due_date=due_date,
+                            description=description,
+                            subtotal=subtotal,
+                            tax=tax,
+                            total_amount=total_amount,
+                            amount_paid=0.0,
+                            currency=currency,
+                            status=status,
+                            document_link=document_link,
+                            notes=notes,
+                        )
 
-                        # =====================================
-                        # UPDATE
-                        # =====================================
+                        session.add(
+                            new_invoice
+                        )
 
-                        if editing_invoice:
+                        session.commit()
 
-                            editing_invoice.client_id = (
-                                selected_client_id
+                        st.success(
+                            (
+                                f"Invoice {invoice_number} "
+                                "created successfully."
                             )
+                        )
 
-                            editing_invoice.placement_id = (
-                                selected_placement_id
-                            )
+                    clear_invoice_state()
 
-                            editing_invoice.invoice_number = (
-                                invoice_number_clean
-                            )
+                    st.rerun()
 
-                            editing_invoice.invoice_date = (
-                                invoice_date
-                            )
+                except Exception:
+                    session.rollback()
 
-                            editing_invoice.due_date = (
-                                due_date
-                            )
-
-                            editing_invoice.description = (
-                                description_clean
-                            )
-
-                            editing_invoice.subtotal = (
-                                subtotal
-                            )
-
-                            editing_invoice.tax = (
-                                tax
-                            )
-
-                            editing_invoice.total_amount = (
-                                total_amount
-                            )
-
-                            editing_invoice.currency = (
-                                currency
-                            )
-
-                            editing_invoice.status = (
-                                status
-                            )
-
-                            editing_invoice.document_link = (
-                                document_link_clean
-                            )
-
-                            editing_invoice.notes = (
-                                notes_clean
-                            )
-
-                            try:
-
-                                session.commit()
-
-                                clear_invoice_state()
-
-                                st.success(
-                                    "Invoice updated successfully."
-                                )
-
-                                st.rerun()
-
-                            except Exception as e:
-
-                                session.rollback()
-
-                                st.error(
-                                    "Could not update invoice: "
-                                    f"{e}"
-                                )
-
-                        # =====================================
-                        # CREATE
-                        # =====================================
-
-                        else:
-
-                            invoice = Invoice(
-                                client_id=selected_client_id,
-                                placement_id=selected_placement_id,
-                                invoice_number=invoice_number_clean,
-                                invoice_date=invoice_date,
-                                due_date=due_date,
-                                description=description_clean,
-                                subtotal=subtotal,
-                                tax=tax,
-                                total_amount=total_amount,
-                                amount_paid=0.0,
-                                currency=currency,
-                                status=status,
-                                document_link=document_link_clean,
-                                notes=notes_clean,
-                            )
-
-                            try:
-
-                                session.add(
-                                    invoice
-                                )
-
-                                session.commit()
-
-                                st.success(
-                                    "Invoice created successfully."
-                                )
-
-                                st.rerun()
-
-                            except Exception as e:
-
-                                session.rollback()
-
-                                st.error(
-                                    "Could not create invoice: "
-                                    f"{e}"
-                                )
+                    st.error(
+                        (
+                            "The invoice could not be saved. "
+                            "Please check the entered information "
+                            "and try again."
+                        )
+                    )
 
         # ====================================================
         # INVOICE REGISTER
@@ -1691,567 +1960,646 @@ def show_invoices():
             .all()
         )
 
-        # ====================================================
-        # EXPORT ALL INVOICES
-        # ====================================================
-
-        if invoices:
-
-            csv_data = get_csv_bytes(
-                invoices
-            )
-
-            export_col1, export_col2 = st.columns(
-                [1, 4]
-            )
-
-            with export_col1:
-
-                st.download_button(
-                    "Download CSV",
-                    data=csv_data,
-                    file_name=(
-                        "averra_invoices.csv"
-                    ),
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-
-            with export_col2:
-
-                st.caption(
-                    "Download the complete invoice register "
-                    "as an Excel-compatible CSV file."
-                )
-
-        # ====================================================
-        # KPI SECTION
-        # ====================================================
-
-        if invoices:
-
-            currency_totals = (
-                get_currency_totals(
-                    invoices
-                )
-            )
-
-            st.markdown(
-                "### Invoice Summary"
-            )
-
-            for currency in sorted(
-                currency_totals.keys()
-            ):
-
-                totals = (
-                    currency_totals[
-                        currency
-                    ]
-                )
-
-                st.markdown(
-                    f"**{currency}**"
-                )
-
-                k1, k2, k3, k4, k5 = st.columns(5)
-
-                with k1:
-
-                    st.metric(
-                        "Invoices",
-                        totals["count"],
-                    )
-
-                with k2:
-
-                    st.metric(
-                        "Invoiced",
-                        format_money(
-                            currency,
-                            totals["invoiced"],
-                        ),
-                    )
-
-                with k3:
-
-                    st.metric(
-                        "Paid",
-                        format_money(
-                            currency,
-                            totals["paid"],
-                        ),
-                    )
-
-                with k4:
-
-                    st.metric(
-                        "Outstanding",
-                        format_money(
-                            currency,
-                            totals["outstanding"],
-                        ),
-                    )
-
-                with k5:
-
-                    st.metric(
-                        "Overdue",
-                        format_money(
-                            currency,
-                            totals["overdue"],
-                        ),
-                    )
-
         if not invoices:
-
             st.info(
                 "No invoices have been created yet."
             )
-
             return
+
+        # ====================================================
+        # EXPORT
+        # ====================================================
+
+        st.download_button(
+            label="Export All Invoices CSV",
+            data=get_csv_bytes(
+                invoices
+            ),
+            file_name="averra_invoices.csv",
+            mime="text/csv",
+        )
+
+        # ====================================================
+        # KPI SUMMARY
+        # ====================================================
+
+        total_invoice_count = len(
+            invoices
+        )
+
+        paid_count = sum(
+            1
+            for invoice in invoices
+            if get_effective_status(invoice)
+            == "Paid"
+        )
+
+        overdue_count = sum(
+            1
+            for invoice in invoices
+            if get_effective_status(invoice)
+            == "Overdue"
+        )
+
+        open_count = sum(
+            1
+            for invoice in invoices
+            if get_effective_status(invoice)
+            in [
+                "Draft",
+                "Sent",
+                "Partially Paid",
+                "Overdue",
+            ]
+        )
+
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+
+        kpi1.metric(
+            "Invoices",
+            total_invoice_count,
+        )
+
+        kpi2.metric(
+            "Open",
+            open_count,
+        )
+
+        kpi3.metric(
+            "Paid",
+            paid_count,
+        )
+
+        kpi4.metric(
+            "Overdue",
+            overdue_count,
+        )
+
+        # ====================================================
+        # FINANCIAL SUMMARY BY CURRENCY
+        # ====================================================
+
+        currency_totals = (
+            get_currency_totals(
+                invoices
+            )
+        )
+
+        st.markdown(
+            "### Financial Summary"
+        )
+
+        for currency in sorted(
+            currency_totals.keys()
+        ):
+            totals = currency_totals[
+                currency
+            ]
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                f"{currency} Invoiced",
+                format_money(
+                    totals["total"],
+                    currency,
+                ),
+            )
+
+            c2.metric(
+                f"{currency} Paid",
+                format_money(
+                    totals["paid"],
+                    currency,
+                ),
+            )
+
+            c3.metric(
+                f"{currency} Outstanding",
+                format_money(
+                    totals["balance"],
+                    currency,
+                ),
+            )
+
+            c4.metric(
+                f"{currency} Overdue",
+                format_money(
+                    totals["overdue"],
+                    currency,
+                ),
+            )
 
         # ====================================================
         # FILTERS
         # ====================================================
+
+        st.markdown(
+            "### Search & Filters"
+        )
 
         filter_col1, filter_col2, filter_col3 = (
             st.columns(3)
         )
 
         with filter_col1:
-
             search = st.text_input(
                 "Search",
                 placeholder=(
-                    "Invoice number, client or description..."
+                    "Invoice number, client, description..."
                 ),
             )
 
         with filter_col2:
-
             status_filter = st.selectbox(
                 "Status",
-                ["All"] + INVOICE_STATUSES,
+                options=[
+                    "All"
+                ] + INVOICE_STATUSES,
             )
 
         with filter_col3:
-
             currency_filter = st.selectbox(
                 "Currency",
-                ["All"] + CURRENCIES,
+                options=[
+                    "All"
+                ] + CURRENCIES,
             )
 
-        # ====================================================
-        # APPLY FILTERS
-        # ====================================================
+        filtered_invoices = []
 
-        filtered = invoices
+        search_lower = clean_text(
+            search
+        ).lower()
 
-        if search.strip():
-
-            search_lower = (
-                search.strip().lower()
+        for invoice in invoices:
+            invoice_number = clean_text(
+                getattr(
+                    invoice,
+                    "invoice_number",
+                    "",
+                )
             )
 
-            filtered = [
-                invoice
-                for invoice in filtered
-                if (
-                    search_lower
-                    in clean_text(
-                        invoice.invoice_number
-                    ).lower()
+            description = clean_text(
+                getattr(
+                    invoice,
+                    "description",
+                    "",
                 )
-                or (
-                    search_lower
-                    in get_client_name(
-                        invoice
-                    ).lower()
-                )
-                or (
-                    search_lower
-                    in clean_text(
-                        invoice.description
-                    ).lower()
-                )
-            ]
+            )
 
-        if status_filter != "All":
+            client_name = get_client_name(
+                getattr(
+                    invoice,
+                    "client",
+                    None,
+                )
+            )
 
-            filtered = [
-                invoice
-                for invoice in filtered
-                if get_effective_status(
+            placement_label = (
+                get_placement_label(
+                    getattr(
+                        invoice,
+                        "placement",
+                        None,
+                    )
+                )
+            )
+
+            effective_status = (
+                get_effective_status(
                     invoice
                 )
-                == status_filter
-            ]
-
-        if currency_filter != "All":
-
-            filtered = [
-                invoice
-                for invoice in filtered
-                if clean_text(
-                    invoice.currency
-                )
-                == currency_filter
-            ]
-
-        # ====================================================
-        # FILTER RESULT
-        # ====================================================
-
-        st.caption(
-            f"Showing {len(filtered)} "
-            f"of {len(invoices)} invoice(s)"
-        )
-
-        if not filtered:
-
-            st.info(
-                "No invoices match your filters."
             )
 
+            currency = clean_text(
+                getattr(
+                    invoice,
+                    "currency",
+                    "",
+                )
+            )
+
+            searchable_text = " ".join(
+                [
+                    invoice_number,
+                    description,
+                    client_name,
+                    placement_label,
+                ]
+            ).lower()
+
+            if (
+                search_lower
+                and search_lower
+                not in searchable_text
+            ):
+                continue
+
+            if (
+                status_filter != "All"
+                and effective_status
+                != status_filter
+            ):
+                continue
+
+            if (
+                currency_filter != "All"
+                and currency
+                != currency_filter
+            ):
+                continue
+
+            filtered_invoices.append(
+                invoice
+            )
+
+        st.caption(
+            (
+                f"Showing {len(filtered_invoices)} "
+                f"of {len(invoices)} invoices"
+            )
+        )
+
+        # ====================================================
+        # EMPTY FILTER RESULT
+        # ====================================================
+
+        if not filtered_invoices:
+            st.info(
+                "No invoices match the selected filters."
+            )
             return
 
         # ====================================================
-        # DISPLAY INVOICES
+        # INVOICE CARDS
         # ====================================================
 
-        for invoice in filtered:
+        for invoice in filtered_invoices:
+            invoice_id = invoice.id
 
-            client_name = (
-                get_client_name(invoice)
-            )
-
-            balance_due = (
-                get_balance_due(invoice)
-            )
-
-            displayed_status = (
-                get_effective_status(invoice)
-            )
-
-            total_amount = float(
-                invoice.total_amount or 0
-            )
-
-            amount_paid = float(
-                invoice.amount_paid or 0
-            )
-
-            currency = (
-                clean_text(
-                    invoice.currency
+            invoice_number = clean_text(
+                getattr(
+                    invoice,
+                    "invoice_number",
+                    "",
                 )
-                or "GBP"
+            )
+
+            currency = clean_text(
+                getattr(
+                    invoice,
+                    "currency",
+                    "",
+                )
+            ) or "GBP"
+
+            total = safe_float(
+                getattr(
+                    invoice,
+                    "total_amount",
+                    0.0,
+                )
+            )
+
+            paid = safe_float(
+                getattr(
+                    invoice,
+                    "amount_paid",
+                    0.0,
+                )
+            )
+
+            balance = get_balance_due(
+                invoice
+            )
+
+            effective_status = (
+                get_effective_status(
+                    invoice
+                )
             )
 
             payment_percentage = (
-                calculate_payment_percentage(
-                    total_amount,
-                    amount_paid,
+                get_payment_percentage(
+                    invoice
                 )
             )
 
-            with st.container(
-                border=True
-            ):
+            days_overdue = (
+                calculate_days_overdue(
+                    invoice
+                )
+            )
 
-                # ==========================================
-                # MAIN INFORMATION
-                # ==========================================
+            client = getattr(
+                invoice,
+                "client",
+                None,
+            )
 
-                col1, col2, col3, col4, col5 = (
-                    st.columns(
-                        [2, 3, 2, 2, 1]
+            placement = getattr(
+                invoice,
+                "placement",
+                None,
+            )
+
+            st.markdown(
+                "---"
+            )
+
+            header_col1, header_col2 = (
+                st.columns(
+                    [4, 1]
+                )
+            )
+
+            with header_col1:
+                st.markdown(
+                    f"### Invoice {invoice_number}"
+                )
+
+                st.write(
+                    f"**Client:** "
+                    f"{get_client_name(client)}"
+                )
+
+                if placement:
+                    st.write(
+                        f"**Placement:** "
+                        f"{get_placement_label(placement)}"
+                    )
+
+            with header_col2:
+                st.metric(
+                    "Status",
+                    effective_status,
+                )
+
+            info1, info2, info3, info4 = (
+                st.columns(4)
+            )
+
+            with info1:
+                st.write(
+                    "**Invoice Date**"
+                )
+
+                st.write(
+                    str(
+                        getattr(
+                            invoice,
+                            "invoice_date",
+                            "",
+                        )
                     )
                 )
 
-                with col1:
+            with info2:
+                st.write(
+                    "**Due Date**"
+                )
 
-                    st.write(
-                        f"**{clean_text(invoice.invoice_number)}**"
-                    )
-
-                    if invoice.invoice_date:
-
-                        st.caption(
-                            invoice.invoice_date.strftime(
-                                "%d %b %Y"
-                            )
-                        )
-
-                with col2:
-
-                    st.write(
-                        f"**{client_name}**"
-                    )
-
-                    description_text = (
-                        clean_text(
-                            invoice.description
+                st.write(
+                    str(
+                        getattr(
+                            invoice,
+                            "due_date",
+                            "",
                         )
                     )
+                )
 
-                    if description_text:
+            with info3:
+                st.write(
+                    "**Total**"
+                )
 
-                        st.caption(
-                            description_text
+                st.write(
+                    format_money(
+                        total,
+                        currency,
+                    )
+                )
+
+            with info4:
+                st.write(
+                    "**Balance Due**"
+                )
+
+                st.write(
+                    format_money(
+                        balance,
+                        currency,
+                    )
+                )
+
+            payment_col1, payment_col2 = (
+                st.columns(2)
+            )
+
+            with payment_col1:
+                st.progress(
+                    payment_percentage / 100
+                )
+
+                st.caption(
+                    (
+                        f"{payment_percentage:.1f}% paid "
+                        f"— "
+                        f"{format_money(paid, currency)} "
+                        f"of "
+                        f"{format_money(total, currency)}"
+                    )
+                )
+
+            with payment_col2:
+                if days_overdue > 0:
+                    st.error(
+                        (
+                            f"{days_overdue} "
+                            "days overdue"
                         )
-
-                with col3:
-
-                    st.write(
-                        "Total: **"
-                        f"{format_money(currency, total_amount)}"
-                        "**"
                     )
-
-                    st.write(
-                        "Paid: **"
-                        f"{format_money(currency, amount_paid)}"
-                        "**"
-                    )
-
+                else:
                     st.caption(
-                        f"{payment_percentage:.0f}% paid"
+                        "Payment is not currently overdue."
                     )
 
-                with col4:
+            description = clean_text(
+                getattr(
+                    invoice,
+                    "description",
+                    "",
+                )
+            )
 
-                    st.write(
-                        f"Status: **{displayed_status}**"
-                    )
-
-                    st.write(
-                        "Balance: **"
-                        f"{format_money(currency, balance_due)}"
-                        "**"
-                    )
-
-                    if invoice.due_date:
-
-                        st.caption(
-                            "Due: "
-                            + invoice.due_date.strftime(
-                                "%d %b %Y"
-                            )
-                        )
-
-                with col5:
-
-                    edit_btn = st.button(
-                        "Edit",
-                        key=(
-                            f"edit_invoice_"
-                            f"{invoice.id}"
-                        ),
-                        use_container_width=True,
-                    )
-
-                    delete_btn = st.button(
-                        "Delete",
-                        key=(
-                            f"delete_invoice_"
-                            f"{invoice.id}"
-                        ),
-                        use_container_width=True,
-                    )
-
-                # ==========================================
-                # ACTION BUTTONS
-                # ==========================================
-
-                action_col1, action_col2 = st.columns(
-                    2
+            if description:
+                st.write(
+                    f"**Description:** {description}"
                 )
 
-                with action_col1:
+            document_link = clean_text(
+                getattr(
+                    invoice,
+                    "document_link",
+                    "",
+                )
+            )
 
-                    pdf_available = True
-
-                    try:
-
-                        pdf_data = (
-                            generate_invoice_pdf(
-                                invoice
-                            )
+            if document_link:
+                try:
+                    if valid_url(
+                        document_link
+                    ):
+                        st.link_button(
+                            "Open Invoice Document",
+                            document_link,
                         )
-
-                    except Exception as e:
-
-                        pdf_available = False
-
-                        pdf_data = None
-
-                        st.warning(
-                            f"PDF unavailable: {e}"
+                    else:
+                        st.caption(
+                            "Stored document link is not a valid URL."
                         )
+                except Exception:
+                    st.caption(
+                        "Stored document link could not be validated."
+                    )
 
-                    if pdf_available:
+            notes = clean_text(
+                getattr(
+                    invoice,
+                    "notes",
+                    "",
+                )
+            )
 
-                        pdf_filename = (
-                            clean_text(
-                                invoice.invoice_number
-                            )
-                            or f"invoice_{invoice.id}"
+            if notes:
+                with st.expander(
+                    "Notes"
+                ):
+                    st.write(notes)
+
+            # =================================================
+            # ACTION BUTTONS
+            # =================================================
+
+            action1, action2, action3 = (
+                st.columns(3)
+            )
+
+            with action1:
+                if st.button(
+                    "Edit",
+                    key=(
+                        f"edit_invoice_"
+                        f"{invoice_id}"
+                    ),
+                    use_container_width=True,
+                ):
+                    st.session_state.editing_invoice_id = (
+                        invoice_id
+                    )
+
+                    st.session_state.confirm_delete_invoice_id = (
+                        None
+                    )
+
+                    st.rerun()
+
+            with action2:
+                try:
+                    pdf_bytes = (
+                        generate_invoice_pdf(
+                            invoice
                         )
-
-                        pdf_filename = (
-                            pdf_filename
-                            .replace("/", "-")
-                            .replace("\\", "-")
-                            + ".pdf"
-                        )
-
-                        st.download_button(
-                            "Download Invoice PDF",
-                            data=pdf_data,
-                            file_name=pdf_filename,
-                            mime="application/pdf",
-                            key=(
-                                f"download_pdf_"
-                                f"{invoice.id}"
-                            ),
-                            use_container_width=True,
-                        )
-
-                with action_col2:
+                    )
 
                     st.download_button(
-                        "Download CSV",
-                        data=get_csv_bytes(
-                            [invoice]
-                        ),
+                        label="Download PDF",
+                        data=pdf_bytes,
                         file_name=(
-                            f"{clean_text(invoice.invoice_number)}"
-                            ".csv"
+                            f"{invoice_number}.pdf"
                         ),
-                        mime="text/csv",
+                        mime="application/pdf",
                         key=(
-                            f"download_csv_"
-                            f"{invoice.id}"
+                            f"pdf_invoice_"
+                            f"{invoice_id}"
                         ),
                         use_container_width=True,
                     )
 
-                # ==========================================
-                # EDIT
-                # ==========================================
-
-                if edit_btn:
-
-                    st.session_state.editing_invoice_id = (
-                        invoice.id
-                    )
-
-                    st.session_state.confirm_delete_invoice_id = (
-                        None
-                    )
-
-                    st.rerun()
-
-                # ==========================================
-                # DELETE REQUEST
-                # ==========================================
-
-                if delete_btn:
-
-                    st.session_state.confirm_delete_invoice_id = (
-                        invoice.id
-                    )
-
-                    st.session_state.editing_invoice_id = (
-                        None
-                    )
-
-                    st.rerun()
-
-                # ==========================================
-                # DELETE CONFIRMATION
-                # ==========================================
-
-                if (
-                    st.session_state.confirm_delete_invoice_id
-                    == invoice.id
-                ):
-
+                except RuntimeError as error:
                     st.warning(
-                        "Are you sure you want to delete "
-                        f"invoice **{clean_text(invoice.invoice_number)}**?"
+                        str(error)
                     )
 
-                    if has_payments(invoice):
+            with action3:
+                if st.button(
+                    "Delete",
+                    key=(
+                        f"delete_invoice_"
+                        f"{invoice_id}"
+                    ),
+                    use_container_width=True,
+                ):
+                    st.session_state.confirm_delete_invoice_id = (
+                        invoice_id
+                    )
 
-                        st.error(
+            # =================================================
+            # DELETE CONFIRMATION
+            # =================================================
+
+            if (
+                st.session_state.confirm_delete_invoice_id
+                == invoice_id
+            ):
+                st.warning(
+                    (
+                        f"Are you sure you want to delete "
+                        f"invoice {invoice_number}?"
+                    )
+                )
+
+                if has_payments(invoice):
+                    st.error(
+                        (
                             "This invoice cannot be deleted "
-                            "because payments are attached to it."
+                            "because it has recorded payments. "
+                            "Use Cancelled status instead."
+                        )
+                    )
+
+                    if st.button(
+                        "Close",
+                        key=(
+                            f"close_delete_"
+                            f"{invoice_id}"
+                        ),
+                    ):
+                        st.session_state.confirm_delete_invoice_id = (
+                            None
                         )
 
+                        st.rerun()
+
+                else:
+                    confirm_col1, confirm_col2 = (
+                        st.columns(2)
+                    )
+
+                    with confirm_col1:
                         if st.button(
-                            "Close",
+                            "Yes, Delete",
                             key=(
-                                f"close_delete_"
-                                f"{invoice.id}"
+                                f"confirm_delete_"
+                                f"{invoice_id}"
                             ),
+                            type="primary",
+                            use_container_width=True,
                         ):
-
-                            st.session_state.confirm_delete_invoice_id = (
-                                None
-                            )
-
-                            st.rerun()
-
-                    else:
-
-                        st.caption(
-                            "Invoices should normally be "
-                            "cancelled rather than deleted "
-                            "once they have been issued."
-                        )
-
-                        confirm_col1, confirm_col2 = (
-                            st.columns(2)
-                        )
-
-                        with confirm_col1:
-
-                            confirm_delete = st.button(
-                                "Yes, Delete Invoice",
-                                key=(
-                                    f"confirm_delete_"
-                                    f"{invoice.id}"
-                                ),
-                                type="primary",
-                                use_container_width=True,
-                            )
-
-                        with confirm_col2:
-
-                            cancel_delete = st.button(
-                                "Cancel",
-                                key=(
-                                    f"cancel_delete_"
-                                    f"{invoice.id}"
-                                ),
-                                use_container_width=True,
-                            )
-
-                        if cancel_delete:
-
-                            st.session_state.confirm_delete_invoice_id = (
-                                None
-                            )
-
-                            st.rerun()
-
-                        if confirm_delete:
-
                             try:
-
                                 session.delete(
                                     invoice
                                 )
@@ -2263,59 +2611,75 @@ def show_invoices():
                                 )
 
                                 st.success(
-                                    "Invoice deleted successfully."
+                                    (
+                                        f"Invoice "
+                                        f"{invoice_number} "
+                                        "deleted successfully."
+                                    )
                                 )
 
                                 st.rerun()
 
-                            except Exception as e:
-
+                            except Exception:
                                 session.rollback()
 
-                                st.session_state.confirm_delete_invoice_id = (
-                                    None
-                                )
-
                                 st.error(
-                                    "Could not delete invoice: "
-                                    f"{e}"
+                                    (
+                                        "The invoice could "
+                                        "not be deleted."
+                                    )
                                 )
 
-                # ==========================================
-                # EXISTING DOCUMENT
-                # ==========================================
+                    with confirm_col2:
+                        if st.button(
+                            "Cancel",
+                            key=(
+                                f"cancel_delete_"
+                                f"{invoice_id}"
+                            ),
+                            use_container_width=True,
+                        ):
+                            st.session_state.confirm_delete_invoice_id = (
+                                None
+                            )
 
-                if clean_text(
-                    invoice.document_link
-                ):
+                            st.rerun()
 
-                    st.link_button(
-                        "Open Existing Invoice Link",
-                        invoice.document_link,
-                    )
+        # ====================================================
+        # EDIT MODE CONTROLS
+        # ====================================================
 
-                # ==========================================
-                # NOTES
-                # ==========================================
+        if editing_invoice:
+            st.divider()
 
-                if clean_text(
-                    invoice.notes
-                ):
+            if st.button(
+                "Cancel Editing",
+                use_container_width=True,
+            ):
+                clear_invoice_state()
+                st.rerun()
 
-                    st.caption(
-                        "Notes: "
-                        f"{clean_text(invoice.notes)}"
-                    )
-
-    except Exception as e:
-
+    except Exception:
         session.rollback()
 
         st.error(
-            "An error occurred while loading invoices: "
-            f"{e}"
+            (
+                "The invoices screen could not be loaded. "
+                "Please check the database and invoice data."
+            )
         )
 
     finally:
-
         session.close()
+
+
+# ============================================================
+# COMPATIBILITY ENTRY POINT
+# ============================================================
+
+def main():
+    show_invoices()
+
+
+if __name__ == "__main__":
+    main()
