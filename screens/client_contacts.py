@@ -29,16 +29,22 @@ CONTACT_METHODS = [
 # HELPER FUNCTIONS
 # ============================================================
 
+def normalize_text(value):
+    """Return safely stripped text."""
+
+    return (value or "").strip()
+
+
 def get_full_name(contact):
     """Return the contact's full name."""
 
-    first_name = (
-        contact.first_name or ""
-    ).strip()
+    first_name = normalize_text(
+        contact.first_name
+    )
 
-    last_name = (
-        contact.last_name or ""
-    ).strip()
+    last_name = normalize_text(
+        contact.last_name
+    )
 
     full_name = (
         f"{first_name} {last_name}"
@@ -57,7 +63,9 @@ def get_client_name(client):
         return "Unknown Client"
 
     return (
-        client.company_name
+        normalize_text(
+            client.company_name
+        )
         or f"Client #{client.id}"
     )
 
@@ -66,8 +74,8 @@ def get_client_label(client):
     """
     Return a collision-safe client label.
 
-    Client ID is intentionally included so that
-    duplicate company names cannot cause ambiguity.
+    Client ID is included so duplicate company names
+    cannot create ambiguous selections.
     """
 
     return (
@@ -85,17 +93,22 @@ def get_contact_label(contact):
     )
 
 
+def is_primary(contact):
+    """Return True if the contact is the primary contact."""
+
+    return (
+        contact.primary_contact == "Yes"
+    )
+
+
 def is_valid_email(email):
     """
     Basic email validation.
 
-    Empty email is allowed because the model
-    does not require an email address.
+    Empty email addresses are allowed.
     """
 
-    email = (
-        email or ""
-    ).strip()
+    email = normalize_text(email)
 
     if not email:
         return True
@@ -108,10 +121,7 @@ def is_valid_email(email):
 
     local_part, domain = email.split("@")
 
-    if not local_part:
-        return False
-
-    if not domain:
+    if not local_part or not domain:
         return False
 
     if "." not in domain:
@@ -130,19 +140,15 @@ def is_valid_linkedin(linkedin):
     """
     Basic LinkedIn URL validation.
 
-    Empty LinkedIn URL is allowed.
+    Empty LinkedIn URLs are allowed.
     """
 
-    linkedin = (
-        linkedin or ""
-    ).strip()
+    linkedin = normalize_text(linkedin)
 
     if not linkedin:
         return True
 
-    linkedin_lower = (
-        linkedin.lower()
-    )
+    linkedin_lower = linkedin.lower()
 
     valid_prefixes = (
         "https://www.linkedin.com/",
@@ -156,19 +162,11 @@ def is_valid_linkedin(linkedin):
     )
 
 
-def is_primary(contact):
-    """Return True if the contact is marked as primary."""
-
-    return (
-        contact.primary_contact == "Yes"
-    )
-
-
 def get_activity_count(
     session,
     contact_id,
 ):
-    """Return the number of activities linked to a contact."""
+    """Return the number of CRM activities linked to a contact."""
 
     return (
         session.query(Activity)
@@ -179,10 +177,25 @@ def get_activity_count(
     )
 
 
+def has_activities(
+    session,
+    contact_id,
+):
+    """Return True when the contact has linked CRM activities."""
+
+    return (
+        get_activity_count(
+            session,
+            contact_id,
+        )
+        > 0
+    )
+
+
 def clear_delete_confirmation(
     contact_id,
 ):
-    """Clear delete confirmation state."""
+    """Clear delete confirmation state for one contact."""
 
     st.session_state.pop(
         f"confirm_delete_contact_{contact_id}",
@@ -210,26 +223,21 @@ def clear_edit_state():
     ] = None
 
 
-def normalize_text(value):
-    """Return safely stripped text."""
-
-    return (
-        value or ""
-    ).strip()
-
-
 def get_contact_search_text(contact):
     """
     Build searchable text for a contact.
     """
 
     client_name = (
-        get_client_name(contact.client)
+        get_client_name(
+            contact.client
+        )
         if contact.client
         else "Unknown Client"
     )
 
     values = [
+        str(contact.id),
         get_full_name(contact),
         client_name,
         contact.job_title or "",
@@ -253,8 +261,9 @@ def get_primary_contact(
     exclude_contact_id=None,
 ):
     """
-    Return the existing primary contact for a client,
-    excluding a specified contact when editing.
+    Return the existing primary contact for a client.
+
+    When editing, the current contact can be excluded.
     """
 
     query = (
@@ -265,7 +274,7 @@ def get_primary_contact(
         )
     )
 
-    if exclude_contact_id:
+    if exclude_contact_id is not None:
 
         query = query.filter(
             ClientContact.id
@@ -275,8 +284,25 @@ def get_primary_contact(
     return query.first()
 
 
+def get_primary_contact_count(
+    session,
+    client_id,
+):
+    """Return the number of primary contacts for a client."""
+
+    return (
+        session.query(ClientContact)
+        .filter(
+            ClientContact.client_id == client_id,
+            ClientContact.primary_contact == "Yes",
+        )
+        .count()
+    )
+
+
 def validate_contact(
     first_name,
+    last_name,
     email,
     linkedin,
 ):
@@ -295,6 +321,13 @@ def validate_contact(
             "First name is required."
         )
 
+    if not email and not linkedin:
+
+        errors.append(
+            "It is recommended to provide at least "
+            "an email address or LinkedIn profile."
+        )
+
     if not is_valid_email(email):
 
         errors.append(
@@ -310,8 +343,68 @@ def validate_contact(
     return errors
 
 
+def build_client_lookup(clients):
+    """
+    Build client labels and lookup dictionary.
+    """
+
+    labels = []
+    lookup = {}
+
+    for client in clients:
+
+        label = get_client_label(
+            client
+        )
+
+        labels.append(label)
+
+        lookup[label] = client
+
+    return labels, lookup
+
+
+def get_current_client_label(
+    contact,
+    client_labels,
+):
+    """
+    Return the current contact's client label
+    when possible.
+    """
+
+    if contact and contact.client:
+
+        current_label = get_client_label(
+            contact.client
+        )
+
+        if current_label in client_labels:
+
+            return current_label
+
+    if client_labels:
+
+        return client_labels[0]
+
+    return None
+
+
+def get_status_counts(contacts):
+    """Return contact status counts."""
+
+    return {
+        status: sum(
+            1
+            for contact in contacts
+            if contact.status == status
+        )
+        for status in CONTACT_STATUSES
+    }
+
+
 # ============================================================
-# MAIN CLIENT CONTACTS SCREEN
+# MAIN SCREEN
 # ============================================================
 
 def show_client_contacts():
@@ -319,8 +412,8 @@ def show_client_contacts():
     st.title("Client Contacts")
 
     st.caption(
-        "Manage contacts, decision-makers and "
-        "relationship information for AVERRA clients."
+        "Manage client contacts, decision-makers, "
+        "relationship information and CRM history."
     )
 
     session = get_session()
@@ -371,22 +464,12 @@ def show_client_contacts():
         # CLIENT LOOKUPS
         # ========================================================
 
-        client_labels = []
-        client_lookup = {}
-
-        for client in clients:
-
-            label = get_client_label(
-                client
-            )
-
-            client_labels.append(
-                label
-            )
-
-            client_lookup[
-                label
-            ] = client
+        (
+            client_labels,
+            client_lookup,
+        ) = build_client_lookup(
+            clients
+        )
 
         # ========================================================
         # OVERVIEW
@@ -398,16 +481,24 @@ def show_client_contacts():
             contacts
         )
 
-        active_contacts = sum(
-            1
-            for contact in contacts
-            if contact.status == "Active"
+        status_counts = (
+            get_status_counts(
+                contacts
+            )
         )
 
-        inactive_contacts = sum(
-            1
-            for contact in contacts
-            if contact.status == "Inactive"
+        active_contacts = (
+            status_counts.get(
+                "Active",
+                0,
+            )
+        )
+
+        inactive_contacts = (
+            status_counts.get(
+                "Inactive",
+                0,
+            )
         )
 
         primary_contacts = sum(
@@ -435,10 +526,15 @@ def show_client_contacts():
         contacts_with_activities = sum(
             1
             for contact in contacts
-            if get_activity_count(
+            if has_activities(
                 session,
                 contact.id,
-            ) > 0
+            )
+        )
+
+        contacts_without_activities = (
+            total_contacts
+            - contacts_with_activities
         )
 
         col1, col2, col3, col4 = (
@@ -473,8 +569,8 @@ def show_client_contacts():
                 companies_with_contacts,
             )
 
-        col1, col2, col3 = (
-            st.columns(3)
+        col1, col2, col3, col4 = (
+            st.columns(4)
         )
 
         with col1:
@@ -492,6 +588,13 @@ def show_client_contacts():
             )
 
         with col3:
+
+            st.metric(
+                "Without Activities",
+                contacts_without_activities,
+            )
+
+        with col4:
 
             st.metric(
                 "Missing Email",
@@ -526,7 +629,7 @@ def show_client_contacts():
                 editing_contact_id = None
 
         # ========================================================
-        # ADD / EDIT CONTACT
+        # ADD / EDIT SECTION
         # ========================================================
 
         if editing_contact:
@@ -535,58 +638,46 @@ def show_client_contacts():
                 "Edit Client Contact"
             )
 
-            # ====================================================
-            # EDIT DEFAULT VALUES
-            # ====================================================
+            st.info(
+                f"Editing "
+                f"{get_contact_label(editing_contact)}"
+            )
 
-            if editing_contact.client:
-
-                selected_client_label = (
-                    get_client_label(
-                        editing_contact.client
-                    )
+            selected_client_label = (
+                get_current_client_label(
+                    editing_contact,
+                    client_labels,
                 )
+            )
 
-            else:
-
-                selected_client_label = (
-                    client_labels[0]
-                    if client_labels
-                    else None
-                )
-
-            default_first_name = (
+            default_first_name = normalize_text(
                 editing_contact.first_name
-                or ""
             )
 
-            default_last_name = (
+            default_last_name = normalize_text(
                 editing_contact.last_name
-                or ""
             )
 
-            default_job_title = (
+            default_job_title = normalize_text(
                 editing_contact.job_title
-                or ""
             )
 
-            default_email = (
+            default_email = normalize_text(
                 editing_contact.email
-                or ""
             )
 
-            default_phone = (
+            default_phone = normalize_text(
                 editing_contact.phone
-                or ""
             )
 
-            default_linkedin = (
+            default_linkedin = normalize_text(
                 editing_contact.linkedin
-                or ""
             )
 
             default_preferred_contact = (
-                editing_contact.preferred_contact
+                normalize_text(
+                    editing_contact.preferred_contact
+                )
                 or "Email"
             )
 
@@ -596,13 +687,14 @@ def show_client_contacts():
             )
 
             default_status = (
-                editing_contact.status
+                normalize_text(
+                    editing_contact.status
+                )
                 or "Active"
             )
 
-            default_notes = (
+            default_notes = normalize_text(
                 editing_contact.notes
-                or ""
             )
 
         else:
@@ -689,6 +781,9 @@ def show_client_contacts():
                     email = st.text_input(
                         "Email",
                         value=default_email,
+                        placeholder=(
+                            "name@company.com"
+                        ),
                     )
 
                     phone = st.text_input(
@@ -752,7 +847,10 @@ def show_client_contacts():
                     value=default_primary,
                     help=(
                         "Only one contact per client "
-                        "can be marked as the primary contact."
+                        "can be marked as primary. "
+                        "Saving a new primary contact "
+                        "will remove the primary status "
+                        "from the existing one."
                     ),
                 )
 
@@ -769,7 +867,7 @@ def show_client_contacts():
                 )
 
                 # ====================================================
-                # SUBMIT
+                # FORM SUBMIT
                 # ====================================================
 
                 if editing_contact:
@@ -837,6 +935,7 @@ def show_client_contacts():
                     validation_errors = (
                         validate_contact(
                             first_name,
+                            last_name,
                             email,
                             linkedin,
                         )
@@ -846,6 +945,25 @@ def show_client_contacts():
 
                         validation_errors.append(
                             "Please select a valid client."
+                        )
+
+                    if (
+                        status
+                        not in CONTACT_STATUSES
+                    ):
+
+                        validation_errors.append(
+                            "Please select a valid contact status."
+                        )
+
+                    if (
+                        preferred_contact
+                        not in CONTACT_METHODS
+                    ):
+
+                        validation_errors.append(
+                            "Please select a valid preferred "
+                            "contact method."
                         )
 
                     if validation_errors:
@@ -1043,7 +1161,7 @@ def show_client_contacts():
                                     )
 
                                 # ====================================
-                                # SAVE
+                                # SAVE DATABASE CHANGES
                                 # ====================================
 
                                 session.commit()
@@ -1101,13 +1219,13 @@ def show_client_contacts():
         search_text = st.text_input(
             "Search Contacts",
             placeholder=(
-                "Search name, company, job title, "
-                "email, phone, LinkedIn or notes..."
+                "Search contact ID, name, company, "
+                "job title, email, phone, LinkedIn or notes..."
             ),
         )
 
         # ========================================================
-        # FILTERS
+        # FILTER ROW 1
         # ========================================================
 
         col1, col2, col3 = (
@@ -1148,11 +1266,11 @@ def show_client_contacts():
             )
 
         # ========================================================
-        # SECOND FILTER ROW
+        # FILTER ROW 2
         # ========================================================
 
-        col1, col2 = (
-            st.columns(2)
+        col1, col2, col3 = (
+            st.columns(3)
         )
 
         with col1:
@@ -1167,6 +1285,18 @@ def show_client_contacts():
             )
 
         with col2:
+
+            contact_method_filter = (
+                st.selectbox(
+                    "Preferred Contact",
+                    [
+                        "All Methods"
+                    ]
+                    + CONTACT_METHODS,
+                )
+            )
+
+        with col3:
 
             sort_order = st.selectbox(
                 "Sort By",
@@ -1193,6 +1323,8 @@ def show_client_contacts():
             != "All Clients"
             or activity_filter
             != "All Contacts"
+            or contact_method_filter
+            != "All Methods"
         )
 
         if filter_active:
@@ -1205,10 +1337,8 @@ def show_client_contacts():
                 st.rerun()
 
         # ========================================================
-        # APPLY FILTERS
+        # PREPARE FILTER VALUES
         # ========================================================
-
-        filtered_contacts = []
 
         search_lower = (
             search_text.strip().lower()
@@ -1226,6 +1356,12 @@ def show_client_contacts():
                     client_filter
                 )
             )
+
+        # ========================================================
+        # APPLY FILTERS
+        # ========================================================
+
+        filtered_contacts = []
 
         for contact in contacts:
 
@@ -1320,6 +1456,19 @@ def show_client_contacts():
 
                 continue
 
+            # ====================================================
+            # CONTACT METHOD
+            # ====================================================
+
+            if (
+                contact_method_filter
+                != "All Methods"
+                and contact.preferred_contact
+                != contact_method_filter
+            ):
+
+                continue
+
             filtered_contacts.append(
                 contact
             )
@@ -1370,7 +1519,9 @@ def show_client_contacts():
             filtered_contacts.sort(
                 key=lambda contact: (
                     not is_primary(contact),
-                    get_full_name(contact).lower(),
+                    get_full_name(
+                        contact
+                    ).lower(),
                 )
             )
 
@@ -1393,7 +1544,7 @@ def show_client_contacts():
         if not filtered_contacts:
 
             st.info(
-                "No contacts match your filters."
+                "No contacts match your current filters."
             )
 
         # ========================================================
@@ -1402,13 +1553,15 @@ def show_client_contacts():
 
         else:
 
-            for contact in (
-                filtered_contacts
-            ):
+            for contact in filtered_contacts:
 
                 with st.container(
                     border=True
                 ):
+
+                    # =================================================
+                    # CONTACT CARD
+                    # =================================================
 
                     col1, col2, col3 = (
                         st.columns(
@@ -1416,9 +1569,9 @@ def show_client_contacts():
                         )
                     )
 
-                    # ================================================
-                    # CONTACT
-                    # ================================================
+                    # =============================================
+                    # CONTACT INFORMATION
+                    # =============================================
 
                     with col1:
 
@@ -1450,14 +1603,19 @@ def show_client_contacts():
                                 f"{contact.job_title}"
                             )
 
-                        st.write(
-                            f"**Status:** "
-                            f"{contact.status or 'Not specified'}"
+                        status_value = (
+                            contact.status
+                            or "Not specified"
                         )
 
-                    # ================================================
+                        st.write(
+                            f"**Status:** "
+                            f"{status_value}"
+                        )
+
+                    # =============================================
                     # CONTACT DETAILS
-                    # ================================================
+                    # =============================================
 
                     with col2:
 
@@ -1481,6 +1639,12 @@ def show_client_contacts():
                                 f"{contact.phone}"
                             )
 
+                        else:
+
+                            st.caption(
+                                "Phone: Not provided"
+                            )
+
                         if contact.preferred_contact:
 
                             st.write(
@@ -1491,7 +1655,7 @@ def show_client_contacts():
                         if contact.linkedin:
 
                             st.markdown(
-                                "[Open LinkedIn profile]"
+                                f"[Open LinkedIn profile]"
                                 f"({contact.linkedin})"
                             )
 
@@ -1502,14 +1666,22 @@ def show_client_contacts():
                             )
                         )
 
-                        st.caption(
-                            f"CRM Activities: "
-                            f"{activity_count}"
-                        )
+                        if activity_count > 0:
 
-                    # ================================================
+                            st.caption(
+                                f"CRM Activities: "
+                                f"{activity_count}"
+                            )
+
+                        else:
+
+                            st.caption(
+                                "CRM Activities: 0"
+                            )
+
+                    # =============================================
                     # ACTIONS
-                    # ================================================
+                    # =============================================
 
                     with col3:
 
@@ -1554,9 +1726,9 @@ def show_client_contacts():
 
                             st.rerun()
 
-                    # ================================================
+                    # =============================================
                     # NOTES
-                    # ================================================
+                    # =============================================
 
                     if contact.notes:
 
@@ -1568,9 +1740,9 @@ def show_client_contacts():
                                 contact.notes
                             )
 
-                    # ================================================
+                    # =============================================
                     # DELETE CONFIRMATION
-                    # ================================================
+                    # =============================================
 
                     if st.session_state.get(
                         (
@@ -1645,6 +1817,10 @@ def show_client_contacts():
                                 ):
 
                                     try:
+
+                                        # =================================
+                                        # PROTECT PRIMARY CONTACT LOGIC
+                                        # =================================
 
                                         session.delete(
                                             contact

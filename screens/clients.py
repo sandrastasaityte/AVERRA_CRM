@@ -83,33 +83,39 @@ CLOSED_STATUSES = [
 # HELPER FUNCTIONS
 # ============================================================
 
-def get_client_name(client):
-    """Return the client's company name."""
-
-    company_name = (
-        client.company_name or ""
-    ).strip()
-
-    return (
-        company_name
-        or f"Client {client.id}"
-    )
-
-
-def get_client_label(client):
-    """Return a consistent client label."""
-
-    return (
-        f"{get_client_name(client)} "
-        f"(ID: {client.id})"
-    )
-
-
 def normalize_text(value):
     """Normalize text for comparisons."""
 
     return " ".join(
         (value or "").strip().lower().split()
+    )
+
+
+def clean_text(value):
+    """Return safely stripped text."""
+
+    return (value or "").strip()
+
+
+def get_client_name(client):
+    """Return the client's company name."""
+
+    company_name = clean_text(
+        client.company_name
+    )
+
+    return (
+        company_name
+        or f"Client #{client.id}"
+    )
+
+
+def get_client_label(client):
+    """Return a collision-safe client label."""
+
+    return (
+        f"{get_client_name(client)} "
+        f"(Client #{client.id})"
     )
 
 
@@ -129,9 +135,9 @@ def normalize_website(website):
         -> https://example.com
     """
 
-    website = (
-        website or ""
-    ).strip()
+    website = clean_text(
+        website
+    )
 
     if not website:
         return ""
@@ -150,9 +156,9 @@ def normalize_website(website):
 def is_valid_website(website):
     """Basic website URL validation."""
 
-    website = (
-        website or ""
-    ).strip()
+    website = clean_text(
+        website
+    )
 
     if not website:
         return True
@@ -166,16 +172,18 @@ def is_valid_website(website):
 
 
 def get_contact_count(client):
-    """Return number of contacts linked to a client."""
+    """Return the number of contacts linked to a client."""
 
     try:
-        return len(client.contacts)
+        return len(
+            client.contacts
+        )
     except Exception:
         return 0
 
 
 def get_primary_contact_count(client):
-    """Return number of primary contacts linked to a client."""
+    """Return the number of primary contacts."""
 
     try:
         return sum(
@@ -189,10 +197,7 @@ def get_primary_contact_count(client):
 
 def get_related_record_counts(client):
     """
-    Return counts of records linked to a client.
-
-    These relationships are used to prevent accidental
-    deletion of clients that already have CRM history.
+    Return counts of CRM records linked to a client.
     """
 
     counts = {
@@ -250,7 +255,7 @@ def get_related_record_counts(client):
 
 
 def has_related_records(client):
-    """Return True if the client has any linked CRM records."""
+    """Return True when the client has CRM history."""
 
     counts = get_related_record_counts(
         client
@@ -264,7 +269,7 @@ def has_related_records(client):
 
 def get_follow_up_state(client):
     """
-    Return the follow-up state.
+    Return the current follow-up state.
 
     Possible values:
 
@@ -291,7 +296,7 @@ def get_follow_up_state(client):
 
 
 def get_follow_up_label(client):
-    """Return a human-readable follow-up label."""
+    """Return a readable follow-up label."""
 
     follow_up = client.next_follow_up
 
@@ -316,11 +321,7 @@ def get_follow_up_label(client):
 
 
 def get_client_age_days(client):
-    """
-    Return the number of days since the client was added.
-
-    If date_added is unavailable, return None.
-    """
+    """Return number of days since the client was added."""
 
     if not client.date_added:
         return None
@@ -362,9 +363,9 @@ def get_client_age_label(client):
 def get_status_group(client):
     """Return a broad status group."""
 
-    status = (
-        client.status or ""
-    ).strip()
+    status = clean_text(
+        client.status
+    )
 
     if status in PIPELINE_STATUSES:
         return "Pipeline"
@@ -379,12 +380,10 @@ def get_status_group(client):
 
 
 def get_related_records_summary(client):
-    """Build a readable related-record summary."""
+    """Return readable related-record information."""
 
-    related_counts = (
-        get_related_record_counts(
-            client
-        )
+    counts = get_related_record_counts(
+        client
     )
 
     related_parts = []
@@ -398,7 +397,7 @@ def get_related_records_summary(client):
         ("Invoices", "invoices"),
     ]:
 
-        count = related_counts[key]
+        count = counts[key]
 
         if count > 0:
 
@@ -410,7 +409,7 @@ def get_related_records_summary(client):
 
 
 def get_status_counts(clients):
-    """Return client counts by status."""
+    """Return counts for each client status."""
 
     return {
         status: sum(
@@ -422,16 +421,51 @@ def get_status_counts(clients):
     }
 
 
+def get_country_counts(clients):
+    """Return counts by country."""
+
+    counts = {}
+
+    for client in clients:
+
+        country = (
+            clean_text(
+                client.country
+            )
+            or "Not specified"
+        )
+
+        counts[country] = (
+            counts.get(country, 0)
+            + 1
+        )
+
+    return counts
+
+
 def clear_delete_confirmation(client_id):
     """Clear delete confirmation state."""
 
-    st.session_state[
-        f"confirm_delete_client_{client_id}"
-    ] = False
+    st.session_state.pop(
+        f"confirm_delete_client_{client_id}",
+        None,
+    )
+
+
+def clear_all_delete_confirmations(
+    clients,
+):
+    """Clear all delete confirmations."""
+
+    for client in clients:
+
+        clear_delete_confirmation(
+            client.id
+        )
 
 
 def clear_edit_state():
-    """Clear the current client being edited."""
+    """Clear current editing state."""
 
     st.session_state[
         "editing_client_id"
@@ -439,19 +473,34 @@ def clear_edit_state():
 
 
 def get_status_display(client):
-    """Return a safe client status."""
+    """Return a safe status value."""
 
     return (
-        client.status
+        clean_text(
+            client.status
+        )
         or "Not specified"
     )
 
 
 def get_account_owner_display(client):
-    """Return a safe account owner value."""
+    """Return a safe account owner."""
 
     return (
-        client.account_owner
+        clean_text(
+            client.account_owner
+        )
+        or "Not specified"
+    )
+
+
+def get_lead_source_display(client):
+    """Return a safe lead source."""
+
+    return (
+        clean_text(
+            client.lead_source
+        )
         or "Not specified"
     )
 
@@ -478,7 +527,7 @@ def save_client(
 
     Returns:
 
-        (success, message)
+        success, message
     """
 
     try:
@@ -587,7 +636,8 @@ def show_clients():
     st.title("Clients")
 
     st.caption(
-        "Manage AVERRA clients, prospects and business relationships."
+        "Manage AVERRA clients, prospects, "
+        "sales pipeline and business relationships."
     )
 
     session = get_session()
@@ -601,7 +651,8 @@ def show_clients():
         clients = (
             session.query(Client)
             .order_by(
-                Client.company_name.asc()
+                Client.company_name.asc(),
+                Client.id.asc(),
             )
             .all()
         )
@@ -610,7 +661,10 @@ def show_clients():
         # SESSION STATE
         # ========================================================
 
-        if "editing_client_id" not in st.session_state:
+        if (
+            "editing_client_id"
+            not in st.session_state
+        ):
 
             st.session_state[
                 "editing_client_id"
@@ -651,17 +705,17 @@ def show_clients():
             clients
         )
 
-        active_clients = sum(
-            1
-            for client in clients
-            if client.status == "Active"
-        )
-
         pipeline_clients = sum(
             1
             for client in clients
             if client.status
             in PIPELINE_STATUSES
+        )
+
+        active_clients = sum(
+            1
+            for client in clients
+            if client.status == "Active"
         )
 
         won_clients = sum(
@@ -713,9 +767,13 @@ def show_clients():
         # OVERVIEW
         # ========================================================
 
-        st.subheader("Overview")
+        st.subheader(
+            "Client Overview"
+        )
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4 = (
+            st.columns(4)
+        )
 
         with col1:
 
@@ -727,15 +785,15 @@ def show_clients():
         with col2:
 
             st.metric(
-                "Active",
-                active_clients,
+                "Pipeline",
+                pipeline_clients,
             )
 
         with col3:
 
             st.metric(
-                "Pipeline",
-                pipeline_clients,
+                "Active",
+                active_clients,
             )
 
         with col4:
@@ -751,32 +809,32 @@ def show_clients():
 
         st.divider()
 
-        summary_col1, summary_col2, summary_col3, summary_col4 = (
+        col1, col2, col3, col4 = (
             st.columns(4)
         )
 
-        with summary_col1:
+        with col1:
 
             st.metric(
                 "Overdue",
                 overdue_followups,
             )
 
-        with summary_col2:
+        with col2:
 
             st.metric(
-                "Today",
+                "Due Today",
                 today_followups,
             )
 
-        with summary_col3:
+        with col3:
 
             st.metric(
                 "Upcoming",
                 upcoming_followups,
             )
 
-        with summary_col4:
+        with col4:
 
             st.metric(
                 "No Follow-Up",
@@ -788,14 +846,12 @@ def show_clients():
         # ========================================================
 
         with st.expander(
-            "Client Status Breakdown"
+            "View Full Pipeline Breakdown"
         ):
 
-            breakdown_col1, breakdown_col2, breakdown_col3, breakdown_col4 = (
-                st.columns(4)
-            )
+            breakdown_columns = st.columns(4)
 
-            with breakdown_col1:
+            with breakdown_columns[0]:
 
                 st.metric(
                     "Lead",
@@ -821,7 +877,7 @@ def show_clients():
                     ),
                 )
 
-            with breakdown_col2:
+            with breakdown_columns[1]:
 
                 st.metric(
                     "Call",
@@ -847,7 +903,7 @@ def show_clients():
                     ),
                 )
 
-            with breakdown_col3:
+            with breakdown_columns[2]:
 
                 st.metric(
                     "Contract",
@@ -873,7 +929,7 @@ def show_clients():
                     ),
                 )
 
-            with breakdown_col4:
+            with breakdown_columns[3]:
 
                 st.metric(
                     "Active",
@@ -891,24 +947,26 @@ def show_clients():
                     ),
                 )
 
-        if lost_clients > 0 or inactive_clients > 0:
+                st.metric(
+                    "Total",
+                    total_clients,
+                )
 
-            st.caption(
-                f"Lost: {lost_clients} | "
-                f"Inactive: {inactive_clients}"
-            )
+        # ========================================================
+        # EDIT / ADD CLIENT
+        # ========================================================
 
         st.divider()
-
-        # ========================================================
-        # ADD / EDIT CLIENT
-        # ========================================================
 
         if editing_client:
 
             st.subheader(
-                f"Edit Client — "
-                f"{get_client_name(editing_client)}"
+                "Edit Client"
+            )
+
+            st.info(
+                f"Editing: "
+                f"{get_client_label(editing_client)}"
             )
 
             default_company_name = (
@@ -1007,10 +1065,14 @@ def show_clients():
             company_name = st.text_input(
                 "Company Name *",
                 value=default_company_name,
-                placeholder="e.g. ABC Limited",
+                placeholder=(
+                    "e.g. ABC Limited"
+                ),
             )
 
-            col1, col2 = st.columns(2)
+            col1, col2 = (
+                st.columns(2)
+            )
 
             # ====================================================
             # COMPANY INFORMATION
@@ -1022,7 +1084,7 @@ def show_clients():
                     "Industry",
                     value=default_industry,
                     placeholder=(
-                        "e.g. Accounting, Architecture, Technology"
+                        "e.g. Finance, Architecture, Technology"
                     ),
                 )
 
@@ -1054,7 +1116,9 @@ def show_clients():
 
                 company_size = st.selectbox(
                     "Company Size",
-                    ["Not specified"]
+                    [
+                        "Not specified"
+                    ]
                     + COMPANY_SIZES,
                     index=(
                         COMPANY_SIZES.index(
@@ -1087,7 +1151,9 @@ def show_clients():
 
                 lead_source = st.selectbox(
                     "Lead Source",
-                    ["Not specified"]
+                    [
+                        "Not specified"
+                    ]
                     + LEAD_SOURCES,
                     index=(
                         LEAD_SOURCES.index(
@@ -1102,7 +1168,9 @@ def show_clients():
                 account_owner = st.text_input(
                     "Account Owner",
                     value=default_account_owner,
-                    placeholder="e.g. Sandra",
+                    placeholder=(
+                        "e.g. Sandra"
+                    ),
                 )
 
                 has_follow_up = st.checkbox(
@@ -1115,19 +1183,15 @@ def show_clients():
 
                 if has_follow_up:
 
-                    if default_next_follow_up:
-
-                        next_follow_up = st.date_input(
+                    next_follow_up = (
+                        st.date_input(
                             "Next Follow-Up",
-                            value=default_next_follow_up,
+                            value=(
+                                default_next_follow_up
+                                or date.today()
+                            ),
                         )
-
-                    else:
-
-                        next_follow_up = st.date_input(
-                            "Next Follow-Up",
-                            value=date.today(),
-                        )
+                    )
 
                 else:
 
@@ -1155,19 +1219,24 @@ def show_clients():
                 "Notes",
                 value=default_notes,
                 height=120,
+                placeholder=(
+                    "Internal CRM notes about this client..."
+                ),
             )
 
             # ====================================================
             # SUBMIT
             # ====================================================
 
-            submitted = st.form_submit_button(
-                (
-                    "Update Client"
-                    if editing_client
-                    else "Add Client"
-                ),
-                use_container_width=True,
+            submitted = (
+                st.form_submit_button(
+                    (
+                        "Update Client"
+                        if editing_client
+                        else "Add Client"
+                    ),
+                    use_container_width=True,
+                )
             )
 
             # ====================================================
@@ -1176,37 +1245,36 @@ def show_clients():
 
             if submitted:
 
-                company_name = (
-                    company_name.strip()
+                company_name = clean_text(
+                    company_name
                 )
 
-                industry = (
-                    industry.strip()
+                industry = clean_text(
+                    industry
                 )
 
                 website = normalize_website(
                     website
                 )
 
-                city = (
-                    city.strip()
+                city = clean_text(
+                    city
                 )
 
-                address = (
-                    address.strip()
+                address = clean_text(
+                    address
                 )
 
-                postcode = (
-                    postcode.strip()
-                    .upper()
+                postcode = clean_text(
+                    postcode
+                ).upper()
+
+                account_owner = clean_text(
+                    account_owner
                 )
 
-                account_owner = (
-                    account_owner.strip()
-                )
-
-                notes = (
-                    notes.strip()
+                notes = clean_text(
+                    notes
                 )
 
                 if company_size == "Not specified":
@@ -1221,33 +1289,46 @@ def show_clients():
                 # VALIDATION
                 # ================================================
 
-                validation_error = None
+                validation_errors = []
 
                 if not company_name:
 
-                    validation_error = (
+                    validation_errors.append(
                         "Company name is required."
                     )
 
-                elif len(company_name) > 255:
+                if len(company_name) > 255:
 
-                    validation_error = (
+                    validation_errors.append(
                         "Company name is too long."
                     )
 
-                elif not is_valid_website(
+                if not is_valid_website(
                     website
                 ):
 
-                    validation_error = (
+                    validation_errors.append(
                         "Please enter a valid website URL."
                     )
 
-                if validation_error:
+                if (
+                    status
+                    not in CLIENT_STATUSES
+                ):
 
-                    st.error(
-                        validation_error
+                    validation_errors.append(
+                        "Please select a valid client status."
                     )
+
+                if validation_errors:
+
+                    for error_message in (
+                        validation_errors
+                    ):
+
+                        st.error(
+                            error_message
+                        )
 
                 else:
 
@@ -1255,13 +1336,13 @@ def show_clients():
                     # DUPLICATE COMPANY CHECK
                     # ============================================
 
+                    duplicate = None
+
                     normalized_company_name = (
                         normalize_text(
                             company_name
                         )
                     )
-
-                    duplicate = None
 
                     for existing_client in clients:
 
@@ -1314,7 +1395,7 @@ def show_clients():
 
                             st.warning(
                                 "The selected follow-up date "
-                                "is in the past. The client "
+                                "is in the past. This client "
                                 "will appear as Overdue."
                             )
 
@@ -1322,7 +1403,10 @@ def show_clients():
                         # SAVE
                         # ========================================
 
-                        success, message = save_client(
+                        (
+                            success,
+                            message,
+                        ) = save_client(
                             session=session,
                             editing_client=editing_client,
                             company_name=company_name,
@@ -1398,16 +1482,20 @@ def show_clients():
         )
 
         # ========================================================
-        # FILTERS
+        # FILTER ROW 1
         # ========================================================
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4 = (
+            st.columns(4)
+        )
 
         with col1:
 
             status_filter = st.selectbox(
                 "Status",
-                ["All Statuses"]
+                [
+                    "All Statuses"
+                ]
                 + CLIENT_STATUSES,
             )
 
@@ -1426,23 +1514,57 @@ def show_clients():
 
         with col3:
 
+            country_options = sorted(
+                {
+                    clean_text(
+                        client.country
+                    )
+                    for client in clients
+                    if clean_text(
+                        client.country
+                    )
+                }
+            )
+
             country_filter = st.selectbox(
                 "Country",
-                ["All Countries"]
-                + COUNTRIES,
+                [
+                    "All Countries"
+                ]
+                + country_options,
             )
 
         with col4:
 
-            lead_source_filter = st.selectbox(
-                "Lead Source",
-                ["All Sources"]
-                + LEAD_SOURCES,
+            lead_source_options = sorted(
+                {
+                    clean_text(
+                        client.lead_source
+                    )
+                    for client in clients
+                    if clean_text(
+                        client.lead_source
+                    )
+                }
             )
 
-        col5, col6, col7, col8 = st.columns(4)
+            lead_source_filter = st.selectbox(
+                "Lead Source",
+                [
+                    "All Sources"
+                ]
+                + lead_source_options,
+            )
 
-        with col5:
+        # ========================================================
+        # FILTER ROW 2
+        # ========================================================
+
+        col1, col2, col3, col4 = (
+            st.columns(4)
+        )
+
+        with col1:
 
             follow_up_filter = st.selectbox(
                 "Follow-Up",
@@ -1455,35 +1577,54 @@ def show_clients():
                 ],
             )
 
-        with col6:
+        with col2:
+
+            company_size_options = sorted(
+                {
+                    clean_text(
+                        client.company_size
+                    )
+                    for client in clients
+                    if clean_text(
+                        client.company_size
+                    )
+                }
+            )
 
             company_size_filter = st.selectbox(
                 "Company Size",
-                ["All Sizes"]
-                + COMPANY_SIZES,
+                [
+                    "All Sizes"
+                ]
+                + company_size_options,
             )
 
-        with col7:
+        with col3:
 
-            account_owners = sorted(
+            account_owner_options = sorted(
                 {
-                    client.account_owner.strip()
+                    clean_text(
+                        client.account_owner
+                    )
                     for client in clients
-                    if client.account_owner
-                    and client.account_owner.strip()
+                    if clean_text(
+                        client.account_owner
+                    )
                 }
             )
 
             account_owner_filter = st.selectbox(
                 "Account Owner",
-                ["All Owners"]
-                + account_owners,
+                [
+                    "All Owners"
+                ]
+                + account_owner_options,
             )
 
-        with col8:
+        with col4:
 
             sort_order = st.selectbox(
-                "Sort",
+                "Sort By",
                 [
                     "Company Name",
                     "Follow-Up Priority",
@@ -1495,7 +1636,7 @@ def show_clients():
             )
 
         # ========================================================
-        # FILTER ACTIONS
+        # RESET FILTERS
         # ========================================================
 
         if st.button(
@@ -1523,22 +1664,27 @@ def show_clients():
 
             if search_lower:
 
+                searchable_values = [
+                    str(
+                        client.id
+                        or ""
+                    ),
+                    client.company_name or "",
+                    client.industry or "",
+                    client.website or "",
+                    client.country or "",
+                    client.city or "",
+                    client.address or "",
+                    client.postcode or "",
+                    client.company_size or "",
+                    client.status or "",
+                    client.lead_source or "",
+                    client.account_owner or "",
+                    client.notes or "",
+                ]
+
                 combined_text = " ".join(
-                    [
-                        str(client.id or ""),
-                        client.company_name or "",
-                        client.industry or "",
-                        client.website or "",
-                        client.country or "",
-                        client.city or "",
-                        client.address or "",
-                        client.postcode or "",
-                        client.company_size or "",
-                        client.status or "",
-                        client.lead_source or "",
-                        client.account_owner or "",
-                        client.notes or "",
-                    ]
+                    searchable_values
                 ).lower()
 
                 if search_lower not in combined_text:
@@ -1550,7 +1696,8 @@ def show_clients():
             # ====================================================
 
             if (
-                status_filter != "All Statuses"
+                status_filter
+                != "All Statuses"
                 and client.status
                 != status_filter
             ):
@@ -1562,7 +1709,8 @@ def show_clients():
             # ====================================================
 
             if (
-                pipeline_filter != "All"
+                pipeline_filter
+                != "All"
                 and get_status_group(client)
                 != pipeline_filter
             ):
@@ -1574,7 +1722,8 @@ def show_clients():
             # ====================================================
 
             if (
-                country_filter != "All Countries"
+                country_filter
+                != "All Countries"
                 and client.country
                 != country_filter
             ):
@@ -1586,7 +1735,8 @@ def show_clients():
             # ====================================================
 
             if (
-                lead_source_filter != "All Sources"
+                lead_source_filter
+                != "All Sources"
                 and client.lead_source
                 != lead_source_filter
             ):
@@ -1613,10 +1763,9 @@ def show_clients():
             if (
                 account_owner_filter
                 != "All Owners"
-                and (
+                and clean_text(
                     client.account_owner
-                    or ""
-                ).strip()
+                )
                 != account_owner_filter
             ):
 
@@ -1633,7 +1782,8 @@ def show_clients():
             )
 
             if (
-                follow_up_filter != "All"
+                follow_up_filter
+                != "All"
                 and follow_up_filter
                 != "No Follow-Up"
                 and follow_up_state
@@ -1693,23 +1843,32 @@ def show_clients():
 
         elif sort_order == "Client Age":
 
-            filtered_clients.sort(
-                key=lambda client:
-                (
+            def client_age_sort_key(
+                client
+            ):
+
+                age = (
                     get_client_age_days(
                         client
                     )
-                    if get_client_age_days(
-                        client
-                    ) is not None
-                    else -1
-                ),
+                )
+
+                if age is None:
+
+                    return -1
+
+                return age
+
+            filtered_clients.sort(
+                key=client_age_sort_key,
                 reverse=True,
             )
 
         elif sort_order == "Follow-Up Priority":
 
-            def follow_up_sort_key(client):
+            def follow_up_sort_key(
+                client
+            ):
 
                 state = (
                     get_follow_up_state(
@@ -1763,7 +1922,7 @@ def show_clients():
         if not filtered_clients:
 
             st.info(
-                "No clients match your filters."
+                "No clients match your current filters."
             )
 
         # ========================================================
@@ -1780,13 +1939,13 @@ def show_clients():
 
                     col1, col2, col3 = (
                         st.columns(
-                            [3, 2, 1]
+                            [3, 3, 1]
                         )
                     )
 
-                    # ============================================
+                    # =============================================
                     # CLIENT INFORMATION
-                    # ============================================
+                    # =============================================
 
                     with col1:
 
@@ -1796,7 +1955,7 @@ def show_clients():
                         )
 
                         st.caption(
-                            f"Client ID: {client.id}"
+                            f"Client #{client.id}"
                         )
 
                         st.write(
@@ -1834,21 +1993,22 @@ def show_clients():
                             )
                         )
 
-                    # ============================================
+                    # =============================================
                     # CLIENT DETAILS
-                    # ============================================
+                    # =============================================
 
                     with col2:
 
                         if client.website:
 
                             st.markdown(
-                                f"[Open Website]({client.website})"
+                                f"[Open Website]"
+                                f"({client.website})"
                             )
 
                         st.write(
                             f"**Lead Source:** "
-                            f"{client.lead_source or 'Not specified'}"
+                            f"{get_lead_source_display(client)}"
                         )
 
                         st.write(
@@ -1882,10 +2042,20 @@ def show_clients():
                             f"{related_counts['placements']}"
                         )
 
+                        # =========================================
+                        # FOLLOW-UP
+                        # =========================================
+
                         if client.next_follow_up:
 
                             follow_up_state = (
                                 get_follow_up_state(
+                                    client
+                                )
+                            )
+
+                            follow_up_label = (
+                                get_follow_up_label(
                                     client
                                 )
                             )
@@ -1897,7 +2067,7 @@ def show_clients():
 
                                 st.error(
                                     f"**Follow-Up:** "
-                                    f"{get_follow_up_label(client)}"
+                                    f"{follow_up_label}"
                                 )
 
                             elif (
@@ -1907,14 +2077,14 @@ def show_clients():
 
                                 st.warning(
                                     f"**Follow-Up:** "
-                                    f"{get_follow_up_label(client)}"
+                                    f"{follow_up_label}"
                                 )
 
                             else:
 
                                 st.write(
                                     f"**Next Follow-Up:** "
-                                    f"{get_follow_up_label(client)}"
+                                    f"{follow_up_label}"
                                 )
 
                         else:
@@ -1923,9 +2093,9 @@ def show_clients():
                                 "No follow-up scheduled"
                             )
 
-                    # ============================================
+                    # =============================================
                     # ACTIONS
-                    # ============================================
+                    # =============================================
 
                     with col3:
 
@@ -1937,6 +2107,10 @@ def show_clients():
                             ),
                             use_container_width=True,
                         ):
+
+                            clear_all_delete_confirmations(
+                                clients
+                            )
 
                             st.session_state[
                                 "editing_client_id"
@@ -1953,6 +2127,10 @@ def show_clients():
                             use_container_width=True,
                         ):
 
+                            clear_all_delete_confirmations(
+                                clients
+                            )
+
                             st.session_state[
                                 (
                                     f"confirm_delete_client_"
@@ -1960,11 +2138,13 @@ def show_clients():
                                 )
                             ] = True
 
+                            clear_edit_state()
+
                             st.rerun()
 
-                    # ============================================
+                    # =============================================
                     # RELATED RECORDS
-                    # ============================================
+                    # =============================================
 
                     related_parts = (
                         get_related_records_summary(
@@ -1987,9 +2167,9 @@ def show_clients():
                             "Related records: None"
                         )
 
-                    # ============================================
+                    # =============================================
                     # ADDRESS
-                    # ============================================
+                    # =============================================
 
                     if client.address:
 
@@ -2009,23 +2189,23 @@ def show_clients():
                             f"{address_text}"
                         )
 
-                    # ============================================
+                    # =============================================
                     # NOTES
-                    # ============================================
+                    # =============================================
 
                     if client.notes:
 
                         with st.expander(
-                            "Notes"
+                            "View Notes"
                         ):
 
                             st.write(
                                 client.notes
                             )
 
-                    # ============================================
+                    # =============================================
                     # DELETE CONFIRMATION
-                    # ============================================
+                    # =============================================
 
                     if st.session_state.get(
                         (
@@ -2041,29 +2221,45 @@ def show_clients():
                             )
                         )
 
-                        # ========================================
+                        # =========================================
                         # PROTECTED CLIENT
-                        # ========================================
+                        # =========================================
 
                         if has_related_records(
                             client
                         ):
 
                             st.warning(
-                                "This client has related "
-                                "CRM records and should not "
-                                "be deleted."
+                                "Deletion is blocked for this client."
                             )
 
                             related_items = []
 
                             for label, key in [
-                                ("Contacts", "contacts"),
-                                ("Jobs", "jobs"),
-                                ("Placements", "placements"),
-                                ("Activities", "activities"),
-                                ("Contracts", "contracts"),
-                                ("Invoices", "invoices"),
+                                (
+                                    "Contacts",
+                                    "contacts",
+                                ),
+                                (
+                                    "Jobs",
+                                    "jobs",
+                                ),
+                                (
+                                    "Placements",
+                                    "placements",
+                                ),
+                                (
+                                    "Activities",
+                                    "activities",
+                                ),
+                                (
+                                    "Contracts",
+                                    "contracts",
+                                ),
+                                (
+                                    "Invoices",
+                                    "invoices",
+                                ),
                             ]:
 
                                 count = (
@@ -2078,17 +2274,19 @@ def show_clients():
                                         f"{label}: {count}"
                                     )
 
-                            st.write(
-                                " | ".join(
+                            st.info(
+                                "This client has linked CRM "
+                                "records: "
+                                + " | ".join(
                                     related_items
                                 )
                             )
 
-                            st.info(
+                            st.write(
                                 "For CRM history protection, "
                                 "keep this client and change "
-                                "its status to Inactive or Lost "
-                                "instead of deleting it."
+                                "its status to **Inactive** "
+                                "or **Lost** instead."
                             )
 
                             if st.button(
@@ -2106,16 +2304,20 @@ def show_clients():
 
                                 st.rerun()
 
-                        # ========================================
+                        # =========================================
                         # CLIENT WITHOUT HISTORY
-                        # ========================================
+                        # =========================================
 
                         else:
 
                             st.warning(
                                 "This client has no linked "
-                                "CRM records. Are you sure "
-                                "you want to permanently delete it?"
+                                "CRM records."
+                            )
+
+                            st.write(
+                                "Are you sure you want to "
+                                "permanently delete this client?"
                             )
 
                             confirm_col1, confirm_col2 = (
