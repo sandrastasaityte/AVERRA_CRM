@@ -1,5 +1,8 @@
+import csv
+import io
+from datetime import date, timedelta
+
 import streamlit as st
-from datetime import date
 
 from database import get_session
 from models import (
@@ -35,6 +38,42 @@ CURRENCIES = [
     "USD",
     "INR",
 ]
+
+OPERATIONAL_FILTERS = [
+    "All Placements",
+    "Currently Active",
+    "Future Starts",
+    "Expired Active",
+    "Ending Within 7 Days",
+    "Ending Within 30 Days",
+    "Ending Within 60 Days",
+    "Negative Margin",
+    "Zero Margin",
+    "Positive Margin",
+    "With Contracts",
+    "With Invoices",
+    "With Payments",
+    "No Financial History",
+]
+
+SORT_OPTIONS = [
+    "Start Date — Newest",
+    "Start Date — Oldest",
+    "End Date — Soonest",
+    "End Date — Latest",
+    "Margin — Highest",
+    "Margin — Lowest",
+    "Margin % — Highest",
+    "Margin % — Lowest",
+    "Client — A-Z",
+    "Employee — A-Z",
+    "Status",
+    "ID — Highest",
+    "ID — Lowest",
+]
+
+MAX_POSITION_LENGTH = 200
+MAX_NOTES_LENGTH = 5000
 
 
 # ============================================================
@@ -395,6 +434,27 @@ def get_days_until_start(placement):
     ).days
 
 
+def get_days_until_end(placement):
+    """Return number of days until placement ends."""
+
+    if not placement:
+        return None
+
+    end_date = getattr(
+        placement,
+        "end_date",
+        None,
+    )
+
+    if not end_date:
+        return None
+
+    return (
+        end_date
+        - date.today()
+    ).days
+
+
 def is_future_start(placement):
     """Return True if placement starts in the future."""
 
@@ -409,7 +469,7 @@ def is_future_start(placement):
 
 
 def is_currently_active(placement):
-    """Return True if placement is active today."""
+    """Return True if placement is operationally active today."""
 
     if get_status(
         placement
@@ -443,7 +503,7 @@ def is_currently_active(placement):
 
 
 def is_expired_active_placement(placement):
-    """Return True if active placement has passed end date."""
+    """Return True if an Active placement has passed its end date."""
 
     end_date = getattr(
         placement,
@@ -573,6 +633,7 @@ def get_payments_for_placement(
         )
 
         if invoice_id is not None:
+
             invoice_ids.append(
                 invoice_id
             )
@@ -659,6 +720,188 @@ def has_financial_history(
 
 
 # ============================================================
+# DATA QUALITY
+# ============================================================
+
+def get_placement_warnings(
+    placement,
+    session=None,
+):
+    """Return placement data-quality warnings."""
+
+    warnings = []
+
+    position = clean_text(
+        getattr(
+            placement,
+            "position",
+            "",
+        )
+    )
+
+    if not position:
+
+        warnings.append(
+            "Position is missing."
+        )
+
+    start_date = getattr(
+        placement,
+        "start_date",
+        None,
+    )
+
+    end_date = getattr(
+        placement,
+        "end_date",
+        None,
+    )
+
+    status = get_status(
+        placement
+    )
+
+    if not start_date:
+
+        warnings.append(
+            "Start date is missing."
+        )
+
+    if (
+        start_date
+        and end_date
+        and end_date < start_date
+    ):
+
+        warnings.append(
+            "End date is before start date."
+        )
+
+    if (
+        status == "Active"
+        and start_date
+        and start_date > date.today()
+    ):
+
+        warnings.append(
+            "Active placement has a future start date."
+        )
+
+    if is_expired_active_placement(
+        placement
+    ):
+
+        warnings.append(
+            "Active placement has passed its end date."
+        )
+
+    if (
+        status in [
+            "Completed",
+            "Terminated",
+        ]
+        and not end_date
+    ):
+
+        warnings.append(
+            f"{status} placement has no end date."
+        )
+
+    if (
+        status in [
+            "Completed",
+            "Terminated",
+        ]
+        and end_date
+        and end_date > date.today()
+    ):
+
+        warnings.append(
+            f"{status} placement has a future end date."
+        )
+
+    client_fee = get_client_fee(
+        placement
+    )
+
+    worker_cost = get_worker_cost(
+        placement
+    )
+
+    if (
+        client_fee == 0
+        and worker_cost == 0
+    ):
+
+        warnings.append(
+            "No client fee or worker cost has been entered."
+        )
+
+    if (
+        client_fee > 0
+        and worker_cost > client_fee
+    ):
+
+        warnings.append(
+            "Worker cost exceeds client fee."
+        )
+
+    if (
+        getattr(
+            placement,
+            "client_id",
+            None,
+        )
+        is None
+    ):
+
+        warnings.append(
+            "No client is linked."
+        )
+
+    if (
+        getattr(
+            placement,
+            "employee_id",
+            None,
+        )
+        is None
+    ):
+
+        warnings.append(
+            "No employee is linked."
+        )
+
+    if (
+        getattr(
+            placement,
+            "currency",
+            None,
+        )
+        not in CURRENCIES
+    ):
+
+        warnings.append(
+            "Currency is missing or invalid."
+        )
+
+    if (
+        getattr(
+            placement,
+            "billing_frequency",
+            None,
+        )
+        not in BILLING_FREQUENCIES
+    ):
+
+        warnings.append(
+            "Billing frequency is missing or invalid."
+        )
+
+    return warnings
+
+
+# ============================================================
 # FINANCIAL SUMMARY HELPERS
 # ============================================================
 
@@ -672,6 +915,7 @@ def get_currency_totals(
     totals = {}
 
     if statuses is None:
+
         statuses = PLACEMENT_STATUSES
 
     for placement in placements:
@@ -682,6 +926,7 @@ def get_currency_totals(
             )
             not in statuses
         ):
+
             continue
 
         currency = get_currency(
@@ -729,6 +974,172 @@ def format_currency_totals(
 
 
 # ============================================================
+# CSV EXPORT
+# ============================================================
+
+def build_csv(
+    placements,
+    session,
+):
+    """Build CSV export for placements."""
+
+    output = io.StringIO()
+
+    writer = csv.writer(
+        output
+    )
+
+    writer.writerow(
+        [
+            "Placement ID",
+            "Employee",
+            "Client",
+            "Job",
+            "Position",
+            "Status",
+            "Start Date",
+            "End Date",
+            "Currency",
+            "Billing Frequency",
+            "Client Monthly Fee",
+            "Worker Monthly Cost",
+            "Gross Margin",
+            "Margin %",
+            "Margin Status",
+            "Contracts",
+            "Invoices",
+            "Payments",
+            "Currently Active",
+            "Future Start",
+            "Ending Soon",
+            "Data Quality Warnings",
+            "Notes",
+        ]
+    )
+
+    for placement in placements:
+
+        employee = getattr(
+            placement,
+            "employee",
+            None,
+        )
+
+        client = getattr(
+            placement,
+            "client",
+            None,
+        )
+
+        job = getattr(
+            placement,
+            "job",
+            None,
+        )
+
+        warnings = get_placement_warnings(
+            placement,
+            session,
+        )
+
+        writer.writerow(
+            [
+                getattr(
+                    placement,
+                    "id",
+                    "",
+                ),
+                get_employee_name(
+                    employee
+                ),
+                get_client_name(
+                    client
+                ),
+                get_job_label(
+                    job
+                ),
+                clean_text(
+                    getattr(
+                        placement,
+                        "position",
+                        "",
+                    )
+                ),
+                get_status(
+                    placement
+                ),
+                getattr(
+                    placement,
+                    "start_date",
+                    "",
+                ),
+                getattr(
+                    placement,
+                    "end_date",
+                    "",
+                ),
+                get_currency(
+                    placement
+                ),
+                get_billing_frequency(
+                    placement
+                ),
+                f"{get_client_fee(placement):.2f}",
+                f"{get_worker_cost(placement):.2f}",
+                f"{calculate_margin(placement):.2f}",
+                f"{calculate_margin_percentage(placement):.1f}",
+                get_margin_status(
+                    placement
+                ),
+                len(
+                    get_contracts(
+                        placement
+                    )
+                ),
+                len(
+                    get_invoices(
+                        placement
+                    )
+                ),
+                len(
+                    get_payments_for_placement(
+                        session,
+                        placement,
+                    )
+                ),
+                "Yes"
+                if is_currently_active(
+                    placement
+                )
+                else "No",
+                "Yes"
+                if is_future_start(
+                    placement
+                )
+                else "No",
+                "Yes"
+                if is_ending_soon(
+                    placement,
+                    30,
+                )
+                else "No",
+                " | ".join(
+                    warnings
+                ),
+                clean_text(
+                    getattr(
+                        placement,
+                        "notes",
+                        "",
+                    )
+                ),
+            ]
+        )
+
+    return output.getvalue()
+
+
+# ============================================================
 # MAIN SCREEN
 # ============================================================
 
@@ -739,7 +1150,8 @@ def show_placements():
     )
 
     st.caption(
-        "Manage employee placements from assignment through completion."
+        "Manage employee placements from assignment through completion, "
+        "including operational dates, billing, margins and financial history."
     )
 
     session = get_session()
@@ -752,12 +1164,14 @@ def show_placements():
         "editing_placement_id"
         not in st.session_state
     ):
+
         st.session_state.editing_placement_id = None
 
     if (
         "confirm_delete_placement_id"
         not in st.session_state
     ):
+
         st.session_state.confirm_delete_placement_id = None
 
     try:
@@ -862,6 +1276,24 @@ def show_placements():
             st.caption(
                 f"Editing Placement #{editing_placement.id}"
             )
+
+            edit_warnings = get_placement_warnings(
+                editing_placement,
+                session,
+            )
+
+            if edit_warnings:
+
+                with st.expander(
+                    "Current data-quality warnings",
+                    expanded=False,
+                ):
+
+                    for warning in edit_warnings:
+
+                        st.warning(
+                            warning
+                        )
 
         else:
 
@@ -1016,6 +1448,7 @@ def show_placements():
                 ):
 
                     current_job_label = label
+
                     break
 
         job_index = (
@@ -1091,6 +1524,7 @@ def show_placements():
                         if editing_placement
                         else ""
                     ),
+                    max_chars=MAX_POSITION_LENGTH,
                     placeholder="Example: Finance Specialist",
                 )
 
@@ -1227,8 +1661,7 @@ def show_placements():
             )
 
             st.caption(
-                "Client Monthly Fee and Worker Monthly Cost "
-                "are stored as monthly values in the current database. "
+                "Fees and costs are stored as monthly values. "
                 "Billing Frequency is recorded separately."
             )
 
@@ -1307,6 +1740,7 @@ def show_placements():
                     if editing_placement
                     else ""
                 ),
+                max_chars=MAX_NOTES_LENGTH,
                 placeholder="Additional placement information...",
             )
 
@@ -1378,6 +1812,20 @@ def show_placements():
 
                 errors.append(
                     "Position is required."
+                )
+
+            if len(position_clean) > MAX_POSITION_LENGTH:
+
+                errors.append(
+                    f"Position cannot exceed "
+                    f"{MAX_POSITION_LENGTH} characters."
+                )
+
+            if len(notes_clean) > MAX_NOTES_LENGTH:
+
+                errors.append(
+                    f"Notes cannot exceed "
+                    f"{MAX_NOTES_LENGTH} characters."
                 )
 
             if not start_date:
@@ -1480,6 +1928,16 @@ def show_placements():
 
                 errors.append(
                     "Worker monthly cost cannot be negative."
+                )
+
+            if (
+                client_monthly_fee == 0
+                and worker_monthly_cost > 0
+            ):
+
+                errors.append(
+                    "Worker cost cannot be greater than zero "
+                    "when the client monthly fee is zero."
                 )
 
             # ================================================
@@ -1901,12 +2359,89 @@ def show_placements():
             )
         )
 
+        ending_7_days = sum(
+            1
+            for placement in placements
+            if is_ending_soon(
+                placement,
+                7,
+            )
+        )
+
+        ending_30_days = sum(
+            1
+            for placement in placements
+            if is_ending_soon(
+                placement,
+                30,
+            )
+        )
+
         negative_margin_placements = sum(
             1
             for placement in placements
             if calculate_margin(
                 placement
             ) < 0
+        )
+
+        zero_margin_placements = sum(
+            1
+            for placement in placements
+            if calculate_margin(
+                placement
+            ) == 0
+        )
+
+        positive_margin_placements = sum(
+            1
+            for placement in placements
+            if calculate_margin(
+                placement
+            ) > 0
+        )
+
+        placements_with_contracts = sum(
+            1
+            for placement in placements
+            if has_contracts(
+                placement
+            )
+        )
+
+        placements_with_invoices = sum(
+            1
+            for placement in placements
+            if has_invoices(
+                placement
+            )
+        )
+
+        placements_with_payments = sum(
+            1
+            for placement in placements
+            if has_payments(
+                session,
+                placement,
+            )
+        )
+
+        placements_with_no_history = sum(
+            1
+            for placement in placements
+            if not has_financial_history(
+                session,
+                placement,
+            )
+        )
+
+        data_quality_issues = sum(
+            1
+            for placement in placements
+            if get_placement_warnings(
+                placement,
+                session,
+            )
         )
 
         # ====================================================
@@ -2000,10 +2535,58 @@ def show_placements():
             )
 
         # ====================================================
+        # SECONDARY KPIs
+        # ====================================================
+
+        s1, s2, s3, s4, s5, s6 = st.columns(6)
+
+        with s1:
+
+            st.metric(
+                "Future Starts",
+                future_starts,
+            )
+
+        with s2:
+
+            st.metric(
+                "Ending ≤ 30 Days",
+                ending_30_days,
+            )
+
+        with s3:
+
+            st.metric(
+                "Negative Margin",
+                negative_margin_placements,
+            )
+
+        with s4:
+
+            st.metric(
+                "Positive Margin",
+                positive_margin_placements,
+            )
+
+        with s5:
+
+            st.metric(
+                "With Invoices",
+                placements_with_invoices,
+            )
+
+        with s6:
+
+            st.metric(
+                "Data Issues",
+                data_quality_issues,
+            )
+
+        # ====================================================
         # ALERTS
         # ====================================================
 
-        alert_col1, alert_col2, alert_col3 = st.columns(3)
+        alert_col1, alert_col2, alert_col3, alert_col4 = st.columns(4)
 
         with alert_col1:
 
@@ -2024,6 +2607,15 @@ def show_placements():
                 )
 
         with alert_col3:
+
+            if ending_7_days:
+
+                st.warning(
+                    f"{ending_7_days} active placement(s) "
+                    "end within 7 days."
+                )
+
+        with alert_col4:
 
             if negative_margin_placements:
 
@@ -2079,12 +2671,66 @@ def show_placements():
             )
 
         # ====================================================
+        # OPERATIONAL SUMMARY
+        # ====================================================
+
+        with st.expander(
+            "Operational Summary",
+            expanded=False,
+        ):
+
+            op1, op2, op3, op4 = st.columns(4)
+
+            with op1:
+
+                st.metric(
+                    "Ending ≤ 7 Days",
+                    ending_7_days,
+                )
+
+            with op2:
+
+                st.metric(
+                    "Ending ≤ 30 Days",
+                    ending_30_days,
+                )
+
+            with op3:
+
+                st.metric(
+                    "Contracts",
+                    placements_with_contracts,
+                )
+
+            with op4:
+
+                st.metric(
+                    "Payments",
+                    placements_with_payments,
+                )
+
+            st.write(
+                f"**No financial history:** "
+                f"{placements_with_no_history}"
+            )
+
+            st.write(
+                f"**Zero-margin placements:** "
+                f"{zero_margin_placements}"
+            )
+
+            st.write(
+                f"**Terminated placements:** "
+                f"{terminated_placements}"
+            )
+
+        # ====================================================
         # FILTERS
         # ====================================================
 
         st.divider()
 
-        filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
 
         with filter_col1:
 
@@ -2094,6 +2740,7 @@ def show_placements():
                     "All",
                     *PLACEMENT_STATUSES,
                 ],
+                key="placements_status_filter",
             )
 
         with filter_col2:
@@ -2118,6 +2765,7 @@ def show_placements():
                 list(
                     client_filter_options.keys()
                 ),
+                key="placements_client_filter",
             )
 
         with filter_col3:
@@ -2128,35 +2776,60 @@ def show_placements():
                     "All",
                     *CURRENCIES,
                 ],
+                key="placements_currency_filter",
             )
 
+        filter_col4, filter_col5, filter_col6 = st.columns(3)
+
         with filter_col4:
+
+            operational_filter = st.selectbox(
+                "Operational View",
+                OPERATIONAL_FILTERS,
+                key="placements_operational_filter",
+            )
+
+        with filter_col5:
+
+            sort_option = st.selectbox(
+                "Sort By",
+                SORT_OPTIONS,
+                key="placements_sort_option",
+            )
+
+        with filter_col6:
 
             search = st.text_input(
                 "Search",
                 placeholder=(
                     "ID, employee, client, job or position..."
                 ),
+                key="placements_search",
             )
 
         # ====================================================
-        # OPERATIONAL FILTER
+        # FILTER RESET
         # ====================================================
 
-        operational_filter = st.selectbox(
-            "Operational View",
-            [
-                "All Placements",
-                "Currently Active",
-                "Future Starts",
-                "Expired Active",
-                "Negative Margin",
-                "Ending Within 30 Days",
-                "With Contracts",
-                "With Invoices",
-                "With Payments",
-            ],
-        )
+        if st.button(
+            "Reset Placement Filters",
+            key="reset_placement_filters",
+        ):
+
+            for key in [
+                "placements_status_filter",
+                "placements_client_filter",
+                "placements_currency_filter",
+                "placements_operational_filter",
+                "placements_sort_option",
+                "placements_search",
+            ]:
+
+                if key in st.session_state:
+
+                    del st.session_state[key]
+
+            st.rerun()
 
         # ====================================================
         # APPLY FILTERS
@@ -2319,14 +2992,15 @@ def show_placements():
                 )
             ]
 
-        elif operational_filter == "Negative Margin":
+        elif operational_filter == "Ending Within 7 Days":
 
             filtered_placements = [
                 placement
                 for placement in filtered_placements
-                if calculate_margin(
-                    placement
-                ) < 0
+                if is_ending_soon(
+                    placement,
+                    7,
+                )
             ]
 
         elif operational_filter == "Ending Within 30 Days":
@@ -2338,6 +3012,47 @@ def show_placements():
                     placement,
                     30,
                 )
+            ]
+
+        elif operational_filter == "Ending Within 60 Days":
+
+            filtered_placements = [
+                placement
+                for placement in filtered_placements
+                if is_ending_soon(
+                    placement,
+                    60,
+                )
+            ]
+
+        elif operational_filter == "Negative Margin":
+
+            filtered_placements = [
+                placement
+                for placement in filtered_placements
+                if calculate_margin(
+                    placement
+                ) < 0
+            ]
+
+        elif operational_filter == "Zero Margin":
+
+            filtered_placements = [
+                placement
+                for placement in filtered_placements
+                if calculate_margin(
+                    placement
+                ) == 0
+            ]
+
+        elif operational_filter == "Positive Margin":
+
+            filtered_placements = [
+                placement
+                for placement in filtered_placements
+                if calculate_margin(
+                    placement
+                ) > 0
             ]
 
         elif operational_filter == "With Contracts":
@@ -2371,8 +3086,233 @@ def show_placements():
                 )
             ]
 
+        elif operational_filter == "No Financial History":
+
+            filtered_placements = [
+                placement
+                for placement in filtered_placements
+                if not has_financial_history(
+                    session,
+                    placement,
+                )
+            ]
+
         # ====================================================
-        # RESULT COUNT
+        # SORTING
+        # ====================================================
+
+        if sort_option == "Start Date — Newest":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    getattr(
+                        p,
+                        "start_date",
+                        date.min,
+                    )
+                    or date.min,
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                ),
+                reverse=True,
+            )
+
+        elif sort_option == "Start Date — Oldest":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    getattr(
+                        p,
+                        "start_date",
+                        date.max,
+                    )
+                    or date.max,
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                )
+            )
+
+        elif sort_option == "End Date — Soonest":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    getattr(
+                        p,
+                        "end_date",
+                        date.max,
+                    )
+                    or date.max,
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                )
+            )
+
+        elif sort_option == "End Date — Latest":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    getattr(
+                        p,
+                        "end_date",
+                        date.min,
+                    )
+                    or date.min,
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                ),
+                reverse=True,
+            )
+
+        elif sort_option == "Margin — Highest":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    calculate_margin(
+                        p
+                    ),
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                ),
+                reverse=True,
+            )
+
+        elif sort_option == "Margin — Lowest":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    calculate_margin(
+                        p
+                    ),
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                )
+            )
+
+        elif sort_option == "Margin % — Highest":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    calculate_margin_percentage(
+                        p
+                    ),
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                ),
+                reverse=True,
+            )
+
+        elif sort_option == "Margin % — Lowest":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    calculate_margin_percentage(
+                        p
+                    ),
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                )
+            )
+
+        elif sort_option == "Client — A-Z":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    get_client_name(
+                        getattr(
+                            p,
+                            "client",
+                            None,
+                        )
+                    ).lower(),
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                )
+            )
+
+        elif sort_option == "Employee — A-Z":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    get_employee_name(
+                        getattr(
+                            p,
+                            "employee",
+                            None,
+                        )
+                    ).lower(),
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                )
+            )
+
+        elif sort_option == "Status":
+
+            filtered_placements.sort(
+                key=lambda p: (
+                    get_status(
+                        p
+                    ),
+                    getattr(
+                        p,
+                        "id",
+                        0,
+                    ),
+                )
+            )
+
+        elif sort_option == "ID — Highest":
+
+            filtered_placements.sort(
+                key=lambda p: getattr(
+                    p,
+                    "id",
+                    0,
+                ),
+                reverse=True,
+            )
+
+        elif sort_option == "ID — Lowest":
+
+            filtered_placements.sort(
+                key=lambda p: getattr(
+                    p,
+                    "id",
+                    0,
+                )
+            )
+
+        # ====================================================
+        # RESULT SUMMARY
         # ====================================================
 
         st.caption(
@@ -2387,6 +3327,91 @@ def show_placements():
             )
 
             return
+
+        # ====================================================
+        # FILTERED FINANCIAL SUMMARY
+        # ====================================================
+
+        filtered_client_fee_totals = (
+            get_currency_totals(
+                filtered_placements,
+                get_client_fee,
+            )
+        )
+
+        filtered_worker_cost_totals = (
+            get_currency_totals(
+                filtered_placements,
+                get_worker_cost,
+            )
+        )
+
+        filtered_margin_totals = (
+            get_currency_totals(
+                filtered_placements,
+                calculate_margin,
+            )
+        )
+
+        with st.expander(
+            "Filtered Financial Summary",
+            expanded=False,
+        ):
+
+            fc1, fc2, fc3 = st.columns(3)
+
+            with fc1:
+
+                st.write(
+                    "**Client Fees**"
+                )
+
+                st.write(
+                    format_currency_totals(
+                        filtered_client_fee_totals
+                    )
+                )
+
+            with fc2:
+
+                st.write(
+                    "**Worker Costs**"
+                )
+
+                st.write(
+                    format_currency_totals(
+                        filtered_worker_cost_totals
+                    )
+                )
+
+            with fc3:
+
+                st.write(
+                    "**Gross Margin**"
+                )
+
+                st.write(
+                    format_currency_totals(
+                        filtered_margin_totals
+                    )
+                )
+
+        # ====================================================
+        # CSV EXPORT
+        # ====================================================
+
+        csv_data = build_csv(
+            filtered_placements,
+            session,
+        )
+
+        st.download_button(
+            label="Export Placements CSV",
+            data=csv_data,
+            file_name="averra_placements.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
         # ====================================================
         # DISPLAY PLACEMENTS
@@ -2459,6 +3484,32 @@ def show_placements():
             margin_status = (
                 get_margin_status(
                     placement
+                )
+            )
+
+            placement_warnings = (
+                get_placement_warnings(
+                    placement,
+                    session,
+                )
+            )
+
+            placement_contracts = (
+                get_contracts(
+                    placement
+                )
+            )
+
+            placement_invoices = (
+                get_invoices(
+                    placement
+                )
+            )
+
+            placement_payments = (
+                get_payments_for_placement(
+                    session,
+                    placement,
                 )
             )
 
@@ -2566,11 +3617,36 @@ def show_placements():
                             f"{end_date_value.strftime('%d %b %Y')}"
                         )
 
+                        remaining_days = (
+                            get_days_until_end(
+                                placement
+                            )
+                        )
+
+                        if (
+                            is_currently_active(
+                                placement
+                            )
+                            and remaining_days is not None
+                        ):
+
+                            if remaining_days <= 7:
+
+                                st.warning(
+                                    f"Ends in {remaining_days} day(s)"
+                                )
+
+                            elif remaining_days <= 30:
+
+                                st.info(
+                                    f"Ends in {remaining_days} day(s)"
+                                )
+
                     if is_expired_active_placement(
                         placement
                     ):
 
-                        st.warning(
+                        st.error(
                             "End date passed"
                         )
 
@@ -2593,6 +3669,13 @@ def show_placements():
                     if margin < 0:
 
                         st.error(
+                            f"Margin: {currency} "
+                            f"{margin:,.2f}"
+                        )
+
+                    elif margin == 0:
+
+                        st.warning(
                             f"Margin: {currency} "
                             f"{margin:,.2f}"
                         )
@@ -2630,6 +3713,45 @@ def show_placements():
                         key=f"delete_placement_{placement.id}",
                         use_container_width=True,
                     )
+
+                # ==========================================
+                # RELATIONSHIP SUMMARY
+                # ==========================================
+
+                relationship_col1, relationship_col2, relationship_col3, relationship_col4 = st.columns(4)
+
+                with relationship_col1:
+
+                    st.caption(
+                        f"Contracts: {len(placement_contracts)}"
+                    )
+
+                with relationship_col2:
+
+                    st.caption(
+                        f"Invoices: {len(placement_invoices)}"
+                    )
+
+                with relationship_col3:
+
+                    st.caption(
+                        f"Payments: {len(placement_payments)}"
+                    )
+
+                with relationship_col4:
+
+                    if placement_warnings:
+
+                        st.warning(
+                            f"⚠ {len(placement_warnings)} "
+                            "data-quality issue(s)"
+                        )
+
+                    else:
+
+                        st.caption(
+                            "✓ Data checks passed"
+                        )
 
                 # ==========================================
                 # EDIT
@@ -2671,21 +3793,6 @@ def show_placements():
                     st.session_state.confirm_delete_placement_id
                     == placement.id
                 ):
-
-                    placement_contracts = get_contracts(
-                        placement
-                    )
-
-                    placement_invoices = get_invoices(
-                        placement
-                    )
-
-                    placement_payments = (
-                        get_payments_for_placement(
-                            session,
-                            placement,
-                        )
-                    )
 
                     if placement_contracts:
 
@@ -2896,6 +4003,40 @@ def show_placements():
                                 f"{days_active} day(s)"
                             )
 
+                        days_until_start = (
+                            get_days_until_start(
+                                placement
+                            )
+                        )
+
+                        if (
+                            days_until_start is not None
+                            and days_until_start > 0
+                        ):
+
+                            st.write(
+                                f"**Starts In:** "
+                                f"{days_until_start} day(s)"
+                            )
+
+                        days_until_end = (
+                            get_days_until_end(
+                                placement
+                            )
+                        )
+
+                        if (
+                            is_currently_active(
+                                placement
+                            )
+                            and days_until_end is not None
+                        ):
+
+                            st.write(
+                                f"**Ends In:** "
+                                f"{days_until_end} day(s)"
+                            )
+
                         st.write(
                             f"**Currency:** {currency}"
                         )
@@ -2925,20 +4066,142 @@ def show_placements():
                             f"{margin_status}"
                         )
 
+                    # --------------------------------------
+                    # RELATIONSHIPS
+                    # --------------------------------------
+
+                    st.divider()
+
+                    rc1, rc2, rc3 = st.columns(3)
+
+                    with rc1:
+
                         st.write(
                             f"**Contracts:** "
-                            f"{len(get_contracts(placement))}"
+                            f"{len(placement_contracts)}"
                         )
+
+                        if placement_contracts:
+
+                            for contract in placement_contracts:
+
+                                contract_number = clean_text(
+                                    getattr(
+                                        contract,
+                                        "contract_number",
+                                        "",
+                                    )
+                                )
+
+                                if contract_number:
+
+                                    st.caption(
+                                        contract_number
+                                    )
+
+                                else:
+
+                                    st.caption(
+                                        f"Contract #{getattr(contract, 'id', '')}"
+                                    )
+
+                    with rc2:
 
                         st.write(
                             f"**Invoices:** "
-                            f"{len(get_invoices(placement))}"
+                            f"{len(placement_invoices)}"
                         )
+
+                        if placement_invoices:
+
+                            for invoice in placement_invoices:
+
+                                invoice_number = clean_text(
+                                    getattr(
+                                        invoice,
+                                        "invoice_number",
+                                        "",
+                                    )
+                                )
+
+                                if invoice_number:
+
+                                    st.caption(
+                                        invoice_number
+                                    )
+
+                                else:
+
+                                    st.caption(
+                                        f"Invoice #{getattr(invoice, 'id', '')}"
+                                    )
+
+                    with rc3:
 
                         st.write(
                             f"**Payments:** "
-                            f"{len(get_payments_for_placement(session, placement))}"
+                            f"{len(placement_payments)}"
                         )
+
+                        if placement_payments:
+
+                            payment_total = {}
+
+                            for payment in placement_payments:
+
+                                payment_currency = clean_text(
+                                    getattr(
+                                        payment,
+                                        "currency",
+                                        "",
+                                    )
+                                ) or currency
+
+                                payment_amount = round_money(
+                                    getattr(
+                                        payment,
+                                        "amount",
+                                        0,
+                                    )
+                                )
+
+                                payment_total[
+                                    payment_currency
+                                ] = round_money(
+                                    payment_total.get(
+                                        payment_currency,
+                                        0.0,
+                                    )
+                                    + payment_amount
+                                )
+
+                            st.caption(
+                                format_currency_totals(
+                                    payment_total
+                                )
+                            )
+
+                    # --------------------------------------
+                    # DATA QUALITY
+                    # --------------------------------------
+
+                    if placement_warnings:
+
+                        st.divider()
+
+                        st.warning(
+                            "Data-quality checks"
+                        )
+
+                        for warning in placement_warnings:
+
+                            st.write(
+                                f"• {warning}"
+                            )
+
+                    # --------------------------------------
+                    # NOTES
+                    # --------------------------------------
 
                     placement_notes = clean_text(
                         getattr(
@@ -2949,6 +4212,8 @@ def show_placements():
                     )
 
                     if placement_notes:
+
+                        st.divider()
 
                         st.write(
                             f"**Notes:** {placement_notes}"
