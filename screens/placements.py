@@ -1,4 +1,3 @@
-
 import streamlit as st
 from datetime import date
 
@@ -41,7 +40,7 @@ CURRENCIES = [
 
 
 # ============================================================
-# HELPERS
+# BASIC HELPERS
 # ============================================================
 
 def clean_text(value):
@@ -52,6 +51,29 @@ def clean_text(value):
 
     return str(value).strip()
 
+
+def safe_float(value, default=0.0):
+    """Safely convert a value to float."""
+
+    try:
+        return float(value or 0)
+
+    except (TypeError, ValueError):
+        return default
+
+
+def round_money(value):
+    """Round a financial value to two decimal places."""
+
+    return round(
+        safe_float(value),
+        2,
+    )
+
+
+# ============================================================
+# DISPLAY HELPERS
+# ============================================================
 
 def get_employee_name(employee):
     """Return employee full name safely."""
@@ -76,7 +98,10 @@ def get_employee_name(employee):
         if part
     )
 
-    return full_name or "Unknown Employee"
+    return (
+        full_name
+        or "Unknown Employee"
+    )
 
 
 def get_client_name(client):
@@ -86,7 +111,9 @@ def get_client_name(client):
         return "Unknown Client"
 
     return (
-        clean_text(client.company_name)
+        clean_text(
+            client.company_name
+        )
         or "Unknown Client"
     )
 
@@ -107,7 +134,8 @@ def get_job_label(job):
     )
 
     return (
-        f"{position} — {client_name}"
+        f"{position} — "
+        f"{client_name}"
     )
 
 
@@ -131,8 +159,10 @@ def get_status(placement):
     """Return safe placement status."""
 
     return (
-        clean_text(placement.status)
-        or "Active"
+        clean_text(
+            placement.status
+        )
+        or "Scheduled"
     )
 
 
@@ -140,43 +170,49 @@ def get_currency(placement):
     """Return safe placement currency."""
 
     return (
-        clean_text(placement.currency)
+        clean_text(
+            placement.currency
+        )
         or "GBP"
     )
 
 
+# ============================================================
+# FINANCIAL HELPERS
+# ============================================================
+
 def get_client_fee(placement):
     """Return client fee safely."""
 
-    try:
-
-        return float(
-            placement.client_monthly_fee or 0
-        )
-
-    except (TypeError, ValueError):
-
+    if not placement:
         return 0.0
+
+    return max(
+        round_money(
+            placement.client_monthly_fee
+        ),
+        0.0,
+    )
 
 
 def get_worker_cost(placement):
     """Return worker cost safely."""
 
-    try:
-
-        return float(
-            placement.worker_monthly_cost or 0
-        )
-
-    except (TypeError, ValueError):
-
+    if not placement:
         return 0.0
+
+    return max(
+        round_money(
+            placement.worker_monthly_cost
+        ),
+        0.0,
+    )
 
 
 def calculate_margin(placement):
     """Calculate gross margin safely."""
 
-    return (
+    return round_money(
         get_client_fee(placement)
         - get_worker_cost(placement)
     )
@@ -190,7 +226,6 @@ def calculate_margin_percentage(placement):
     )
 
     if client_fee <= 0:
-
         return 0.0
 
     margin = calculate_margin(
@@ -202,11 +237,33 @@ def calculate_margin_percentage(placement):
     ) * 100
 
 
+def get_margin_status(placement):
+    """Return a descriptive margin state."""
+
+    margin = calculate_margin(
+        placement
+    )
+
+    if margin > 0:
+        return "Positive"
+
+    if margin < 0:
+        return "Negative"
+
+    return "Break-even"
+
+
+# ============================================================
+# DATE HELPERS
+# ============================================================
+
 def get_days_active(placement):
     """Return number of days since placement started."""
 
-    if not placement.start_date:
+    if not placement:
+        return None
 
+    if not placement.start_date:
         return None
 
     end_date = (
@@ -223,6 +280,72 @@ def get_days_active(placement):
     )
 
 
+def get_days_until_start(placement):
+    """Return number of days until placement starts."""
+
+    if not placement:
+        return None
+
+    if not placement.start_date:
+        return None
+
+    return (
+        placement.start_date
+        - date.today()
+    ).days
+
+
+def is_future_start(placement):
+    """Return True when the placement starts in the future."""
+
+    days = get_days_until_start(
+        placement
+    )
+
+    return (
+        days is not None
+        and days > 0
+    )
+
+
+def is_currently_active(placement):
+    """Return True when placement is active today."""
+
+    if get_status(placement) != "Active":
+        return False
+
+    if not placement.start_date:
+        return False
+
+    if placement.start_date > date.today():
+        return False
+
+    if (
+        placement.end_date
+        and placement.end_date < date.today()
+    ):
+        return False
+
+    return True
+
+
+def is_expired_active_placement(placement):
+    """
+    Detect an Active placement whose end date
+    has already passed.
+    """
+
+    return (
+        get_status(placement) == "Active"
+        and placement.end_date is not None
+        and placement.end_date < date.today()
+    )
+
+
+# ============================================================
+# RELATIONSHIP HELPERS
+# ============================================================
+
 def get_contracts(placement):
     """Return contracts safely."""
 
@@ -233,15 +356,14 @@ def get_contracts(placement):
     )
 
     if contracts is None:
-
         return []
 
     try:
-
-        return list(contracts)
+        return list(
+            contracts
+        )
 
     except TypeError:
-
         return []
 
 
@@ -255,15 +377,14 @@ def get_invoices(placement):
     )
 
     if invoices is None:
-
         return []
 
     try:
-
-        return list(invoices)
+        return list(
+            invoices
+        )
 
     except TypeError:
-
         return []
 
 
@@ -275,10 +396,7 @@ def get_payments_for_placement(
     Find payments linked indirectly through
     invoices belonging to this placement.
 
-    This uses a query rather than relying on a
-    Payment.placement relationship, because the
-    current model links Payment -> Invoice ->
-    Placement.
+    Payment -> Invoice -> Placement
     """
 
     invoices = get_invoices(
@@ -288,11 +406,11 @@ def get_payments_for_placement(
     invoice_ids = [
         invoice.id
         for invoice in invoices
-        if invoice and invoice.id
+        if invoice
+        and invoice.id
     ]
 
     if not invoice_ids:
-
         return []
 
     try:
@@ -315,17 +433,17 @@ def get_payments_for_placement(
 def has_contracts(placement):
     """Return whether placement has contracts."""
 
-    return len(
+    return bool(
         get_contracts(placement)
-    ) > 0
+    )
 
 
 def has_invoices(placement):
     """Return whether placement has invoices."""
 
-    return len(
+    return bool(
         get_invoices(placement)
-    ) > 0
+    )
 
 
 def has_payments(
@@ -334,13 +452,36 @@ def has_payments(
 ):
     """Return whether placement has payment history."""
 
-    return len(
+    return bool(
         get_payments_for_placement(
             session,
             placement,
         )
-    ) > 0
+    )
 
+
+def has_financial_history(
+    session,
+    placement,
+):
+    """
+    Return True when a placement has
+    contracts, invoices or payments.
+    """
+
+    return (
+        has_contracts(placement)
+        or has_invoices(placement)
+        or has_payments(
+            session,
+            placement,
+        )
+    )
+
+
+# ============================================================
+# FINANCIAL SUMMARY HELPERS
+# ============================================================
 
 def get_currency_totals(
     placements,
@@ -356,25 +497,31 @@ def get_currency_totals(
     totals = {}
 
     if statuses is None:
-
         statuses = PLACEMENT_STATUSES
 
     for placement in placements:
 
-        if get_status(placement) not in statuses:
-
+        if (
+            get_status(placement)
+            not in statuses
+        ):
             continue
 
         currency = get_currency(
             placement
         )
 
-        value = value_function(
-            placement
+        value = round_money(
+            value_function(
+                placement
+            )
         )
 
-        totals[currency] = (
-            totals.get(currency, 0.0)
+        totals[currency] = round_money(
+            totals.get(
+                currency,
+                0.0,
+            )
             + value
         )
 
@@ -387,7 +534,6 @@ def format_currency_totals(
     """Format currency totals for display."""
 
     if not totals:
-
         return "0.00"
 
     parts = []
@@ -397,10 +543,13 @@ def format_currency_totals(
     ):
 
         parts.append(
-            f"{currency} {amount:,.2f}"
+            f"{currency} "
+            f"{amount:,.2f}"
         )
 
-    return " | ".join(parts)
+    return " | ".join(
+        parts
+    )
 
 
 # ============================================================
@@ -409,7 +558,9 @@ def format_currency_totals(
 
 def show_placements():
 
-    st.title("Placements")
+    st.title(
+        "Placements"
+    )
 
     st.caption(
         "Manage active and historical employee placements."
@@ -426,14 +577,18 @@ def show_placements():
         not in st.session_state
     ):
 
-        st.session_state.editing_placement_id = None
+        st.session_state.editing_placement_id = (
+            None
+        )
 
     if (
         "confirm_delete_placement_id"
         not in st.session_state
     ):
 
-        st.session_state.confirm_delete_placement_id = None
+        st.session_state.confirm_delete_placement_id = (
+            None
+        )
 
     try:
 
@@ -462,6 +617,15 @@ def show_placements():
             session.query(Job)
             .order_by(
                 Job.position.asc()
+            )
+            .all()
+        )
+
+        placements = (
+            session.query(Placement)
+            .order_by(
+                Placement.start_date.desc(),
+                Placement.id.desc(),
             )
             .all()
         )
@@ -505,7 +669,9 @@ def show_placements():
 
             if editing_placement is None:
 
-                st.session_state.editing_placement_id = None
+                st.session_state.editing_placement_id = (
+                    None
+                )
 
         # ====================================================
         # ADD / EDIT PLACEMENT
@@ -540,7 +706,9 @@ def show_placements():
                 f"(ID: {client.id})"
             )
 
-            client_options[label] = client.id
+            client_options[
+                label
+            ] = client.id
 
         client_labels = list(
             client_options.keys()
@@ -567,7 +735,9 @@ def show_placements():
                 f"(ID: {employee.id})"
             )
 
-            employee_options[label] = employee.id
+            employee_options[
+                label
+            ] = employee.id
 
         employee_labels = list(
             employee_options.keys()
@@ -590,7 +760,9 @@ def show_placements():
                 f"(ID: {job.id})"
             )
 
-            job_options[label] = job.id
+            job_options[
+                label
+            ] = job.id
 
         job_labels = list(
             job_options.keys()
@@ -610,7 +782,8 @@ def show_placements():
                 client_ids.index(
                     current_client_id
                 )
-                if current_client_id in client_ids
+                if current_client_id
+                in client_ids
                 else 0
             )
 
@@ -632,7 +805,8 @@ def show_placements():
                 employee_ids.index(
                     current_employee_id
                 )
-                if current_employee_id in employee_ids
+                if current_employee_id
+                in employee_ids
                 else 0
             )
 
@@ -685,13 +859,17 @@ def show_placements():
             else "add_placement_form"
         )
 
-        with st.form(form_key):
+        with st.form(
+            form_key
+        ):
 
             # =================================================
             # CLIENT / EMPLOYEE / JOB
             # =================================================
 
-            col1, col2 = st.columns(2)
+            col1, col2 = st.columns(
+                2
+            )
 
             with col1:
 
@@ -730,10 +908,12 @@ def show_placements():
                 )
 
             # =================================================
-            # DATES / STATUS
+            # DATES
             # =================================================
 
-            col1, col2 = st.columns(2)
+            col1, col2 = st.columns(
+                2
+            )
 
             with col1:
 
@@ -751,19 +931,41 @@ def show_placements():
 
             with col2:
 
-                end_date = st.date_input(
-                    "End Date",
+                has_end_date = st.checkbox(
+                    "Set End Date",
                     value=(
-                        editing_placement.end_date
-                        if (
+                        bool(
                             editing_placement
                             and editing_placement.end_date
                         )
-                        else None
                     ),
                 )
 
-            col1, col2 = st.columns(2)
+                if has_end_date:
+
+                    end_date = st.date_input(
+                        "End Date",
+                        value=(
+                            editing_placement.end_date
+                            if (
+                                editing_placement
+                                and editing_placement.end_date
+                            )
+                            else date.today()
+                        ),
+                    )
+
+                else:
+
+                    end_date = None
+
+            # =================================================
+            # STATUS / BILLING
+            # =================================================
+
+            col1, col2 = st.columns(
+                2
+            )
 
             with col1:
 
@@ -823,7 +1025,9 @@ def show_placements():
                 "Financials"
             )
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3 = st.columns(
+                3
+            )
 
             with col1:
 
@@ -904,367 +1108,454 @@ def show_placements():
                 "Save Changes"
                 if editing_placement
                 else "Create Placement",
+                type="primary",
                 use_container_width=True,
             )
 
-            if submitted:
+        # ====================================================
+        # PROCESS FORM
+        # ====================================================
 
-                position_clean = position.strip()
-                notes_clean = notes.strip()
+        if submitted:
 
-                selected_client_id = (
-                    client_options[
-                        selected_client
+            errors = []
+
+            position_clean = clean_text(
+                position
+            )
+
+            notes_clean = clean_text(
+                notes
+            )
+
+            selected_client_id = (
+                client_options[
+                    selected_client
+                ]
+            )
+
+            selected_employee_id = (
+                employee_options[
+                    selected_employee
+                ]
+            )
+
+            selected_job_id = None
+
+            if selected_job != "No Job":
+
+                selected_job_id = (
+                    job_options[
+                        selected_job
                     ]
                 )
 
-                selected_employee_id = (
-                    employee_options[
-                        selected_employee
-                    ]
+            client_monthly_fee = round_money(
+                client_monthly_fee
+            )
+
+            worker_monthly_cost = round_money(
+                worker_monthly_cost
+            )
+
+            # ================================================
+            # BASIC VALIDATION
+            # ================================================
+
+            if not position_clean:
+
+                errors.append(
+                    "Position is required."
                 )
 
-                selected_job_id = None
+            if start_date > date.today():
 
-                if selected_job != "No Job":
+                if status == "Active":
 
-                    selected_job_id = (
-                        job_options[
-                            selected_job
-                        ]
+                    errors.append(
+                        "An Active placement cannot have "
+                        "a future Start Date."
                     )
 
-                # =============================================
-                # VALIDATION
-                # =============================================
+            if (
+                end_date
+                and end_date < start_date
+            ):
 
-                if not position_clean:
+                errors.append(
+                    "End Date cannot be before Start Date."
+                )
 
-                    st.error(
-                        "Position is required."
-                    )
+            if (
+                status == "Completed"
+                and not end_date
+            ):
 
-                elif start_date > date.today():
+                errors.append(
+                    "A Completed placement must have an End Date."
+                )
 
-                    st.error(
-                        "Start Date cannot be in the future."
-                    )
+            if (
+                status == "Terminated"
+                and not end_date
+            ):
 
-                elif end_date and (
-                    end_date < start_date
-                ):
+                errors.append(
+                    "A Terminated placement must have an End Date."
+                )
 
-                    st.error(
-                        "End Date cannot be before Start Date."
+            if (
+                status == "Scheduled"
+                and end_date
+                and end_date < date.today()
+            ):
+
+                errors.append(
+                    "A Scheduled placement cannot have an End Date "
+                    that has already passed."
+                )
+
+            if client_monthly_fee < 0:
+
+                errors.append(
+                    "Client monthly fee cannot be negative."
+                )
+
+            if worker_monthly_cost < 0:
+
+                errors.append(
+                    "Worker monthly cost cannot be negative."
+                )
+
+            # ================================================
+            # CLIENT / JOB INTEGRITY
+            # ================================================
+
+            selected_job_object = None
+
+            if selected_job_id:
+
+                selected_job_object = session.get(
+                    Job,
+                    selected_job_id,
+                )
+
+                if selected_job_object is None:
+
+                    errors.append(
+                        "The selected job could not be found."
                     )
 
                 elif (
-                    status == "Active"
-                    and start_date > date.today()
+                    selected_job_object.client_id
+                    != selected_client_id
                 ):
 
-                    st.error(
-                        "An Active placement must have "
-                        "a Start Date of today or earlier."
+                    errors.append(
+                        "The selected job belongs to a different "
+                        "client. Please select a matching client and job."
                     )
 
-                elif (
-                    status == "Completed"
-                    and not end_date
+            # ================================================
+            # EXISTING HISTORY
+            # ================================================
+
+            attached_contracts = []
+
+            attached_invoices = []
+
+            attached_payments = []
+
+            if editing_placement:
+
+                attached_contracts = get_contracts(
+                    editing_placement
+                )
+
+                attached_invoices = get_invoices(
+                    editing_placement
+                )
+
+                attached_payments = (
+                    get_payments_for_placement(
+                        session,
+                        editing_placement,
+                    )
+                )
+
+            # ================================================
+            # CURRENCY PROTECTION
+            # ================================================
+
+            if editing_placement:
+
+                old_currency = get_currency(
+                    editing_placement
+                )
+
+                if (
+                    currency
+                    != old_currency
+                    and (
+                        attached_contracts
+                        or attached_invoices
+                        or attached_payments
+                    )
                 ):
 
-                    st.error(
-                        "A Completed placement should "
-                        "have an End Date."
+                    errors.append(
+                        "Currency cannot be changed because "
+                        "this placement has financial history attached."
                     )
 
-                elif (
-                    status == "Terminated"
-                    and not end_date
-                ):
+            # ================================================
+            # CLIENT PROTECTION
+            # ================================================
 
-                    st.error(
-                        "A Terminated placement should "
-                        "have an End Date."
+            if (
+                editing_placement
+                and (
+                    editing_placement.client_id
+                    != selected_client_id
+                )
+                and (
+                    attached_contracts
+                    or attached_invoices
+                    or attached_payments
+                )
+            ):
+
+                errors.append(
+                    "Client cannot be changed because this placement "
+                    "already has financial history attached."
+                )
+
+            # ================================================
+            # EMPLOYEE PROTECTION
+            # ================================================
+
+            if (
+                editing_placement
+                and (
+                    editing_placement.employee_id
+                    != selected_employee_id
+                )
+                and (
+                    attached_contracts
+                    or attached_invoices
+                    or attached_payments
+                )
+            ):
+
+                errors.append(
+                    "Employee cannot be changed because this placement "
+                    "already has financial history attached."
+                )
+
+            # ================================================
+            # DUPLICATE ACTIVE PLACEMENT
+            # ================================================
+
+            if (
+                selected_job_id
+                and status
+                in [
+                    "Active",
+                    "Scheduled",
+                ]
+            ):
+
+                existing_query = (
+                    session.query(
+                        Placement
                     )
+                    .filter(
+                        Placement.employee_id
+                        == selected_employee_id,
 
-                elif client_monthly_fee < 0:
+                        Placement.job_id
+                        == selected_job_id,
 
-                    st.error(
-                        "Client monthly fee "
-                        "cannot be negative."
-                    )
-
-                elif worker_monthly_cost < 0:
-
-                    st.error(
-                        "Worker monthly cost "
-                        "cannot be negative."
-                    )
-
-                else:
-
-                    # =========================================
-                    # JOB / CLIENT VALIDATION
-                    # =========================================
-
-                    selected_job_object = None
-
-                    if selected_job_id:
-
-                        selected_job_object = session.get(
-                            Job,
-                            selected_job_id,
-                        )
-
-                    if (
-                        selected_job_object
-                        and selected_job_object.client_id
-                        != selected_client_id
-                    ):
-
-                        st.error(
-                            "The selected job belongs "
-                            "to a different client. "
-                            "Please select a matching client "
-                            "and job."
-                        )
-
-                    else:
-
-                        # =====================================
-                        # DUPLICATE ACTIVE PLACEMENT CHECK
-                        # =====================================
-
-                        duplicate_placement = None
-
-                        if (
-                            selected_job_id
-                            and status
-                            in [
+                        Placement.status.in_(
+                            [
                                 "Active",
                                 "Scheduled",
                             ]
-                        ):
+                        ),
+                    )
+                )
 
-                            existing_query = (
-                                session.query(
-                                    Placement
-                                )
-                                .filter(
-                                    Placement.employee_id
-                                    == selected_employee_id,
+                if editing_placement:
 
-                                    Placement.job_id
-                                    == selected_job_id,
+                    existing_query = (
+                        existing_query.filter(
+                            Placement.id
+                            != editing_placement.id
+                        )
+                    )
 
-                                    Placement.status.in_(
-                                        [
-                                            "Active",
-                                            "Scheduled",
-                                        ]
-                                    ),
-                                )
-                            )
+                duplicate_placement = (
+                    existing_query.first()
+                )
 
-                            if editing_placement:
+                if duplicate_placement:
 
-                                existing_query = (
-                                    existing_query.filter(
-                                        Placement.id
-                                        != editing_placement.id
-                                    )
-                                )
+                    errors.append(
+                        "This employee already has an active "
+                        "or scheduled placement for this job."
+                    )
 
-                            duplicate_placement = (
-                                existing_query.first()
-                            )
+            # ================================================
+            # SAVE
+            # ================================================
 
-                        if duplicate_placement:
+            if errors:
 
-                            st.error(
-                                "This employee already has "
-                                "an active or scheduled "
-                                "placement for this job."
-                            )
+                for error in errors:
 
-                        else:
+                    st.error(
+                        error
+                    )
 
-                            # =================================
-                            # FINANCIAL CURRENCY PROTECTION
-                            # =================================
+            else:
 
-                            currency_change_blocked = False
+                try:
 
-                            if editing_placement:
+                    # ========================================
+                    # UPDATE
+                    # ========================================
 
-                                old_currency = get_currency(
-                                    editing_placement
-                                )
+                    if editing_placement:
 
-                                attached_contracts = (
-                                    get_contracts(
-                                        editing_placement
-                                    )
-                                )
+                        editing_placement.client_id = (
+                            selected_client_id
+                        )
 
-                                if (
-                                    attached_contracts
-                                    and currency
-                                    != old_currency
-                                ):
+                        editing_placement.employee_id = (
+                            selected_employee_id
+                        )
 
-                                    currency_change_blocked = True
+                        editing_placement.job_id = (
+                            selected_job_id
+                        )
 
-                                    st.error(
-                                        "The currency cannot "
-                                        "be changed because "
-                                        "this placement has "
-                                        "contracts attached."
-                                    )
+                        editing_placement.position = (
+                            position_clean
+                        )
 
-                            if not currency_change_blocked:
+                        editing_placement.start_date = (
+                            start_date
+                        )
 
-                                # =============================
-                                # UPDATE
-                                # =============================
+                        editing_placement.end_date = (
+                            end_date
+                        )
 
-                                if editing_placement:
+                        editing_placement.status = (
+                            status
+                        )
 
-                                    editing_placement.client_id = (
-                                        selected_client_id
-                                    )
+                        editing_placement.billing_frequency = (
+                            billing_frequency
+                        )
 
-                                    editing_placement.employee_id = (
-                                        selected_employee_id
-                                    )
+                        editing_placement.client_monthly_fee = (
+                            client_monthly_fee
+                        )
 
-                                    editing_placement.job_id = (
-                                        selected_job_id
-                                    )
+                        editing_placement.worker_monthly_cost = (
+                            worker_monthly_cost
+                        )
 
-                                    editing_placement.position = (
-                                        position_clean
-                                    )
+                        editing_placement.currency = (
+                            currency
+                        )
 
-                                    editing_placement.start_date = (
-                                        start_date
-                                    )
+                        editing_placement.notes = (
+                            notes_clean
+                        )
 
-                                    editing_placement.end_date = (
-                                        end_date
-                                    )
+                        session.commit()
 
-                                    editing_placement.status = (
-                                        status
-                                    )
+                        st.session_state.editing_placement_id = (
+                            None
+                        )
 
-                                    editing_placement.billing_frequency = (
-                                        billing_frequency
-                                    )
+                        st.session_state.confirm_delete_placement_id = (
+                            None
+                        )
 
-                                    editing_placement.client_monthly_fee = (
-                                        client_monthly_fee
-                                    )
+                        st.success(
+                            "Placement updated successfully."
+                        )
 
-                                    editing_placement.worker_monthly_cost = (
-                                        worker_monthly_cost
-                                    )
+                        st.rerun()
 
-                                    editing_placement.currency = (
-                                        currency
-                                    )
+                    # ========================================
+                    # CREATE
+                    # ========================================
 
-                                    editing_placement.notes = (
-                                        notes_clean
-                                    )
+                    else:
 
-                                    try:
+                        placement = Placement(
+                            client_id=(
+                                selected_client_id
+                            ),
+                            employee_id=(
+                                selected_employee_id
+                            ),
+                            job_id=(
+                                selected_job_id
+                            ),
+                            position=(
+                                position_clean
+                            ),
+                            start_date=(
+                                start_date
+                            ),
+                            end_date=(
+                                end_date
+                            ),
+                            client_monthly_fee=(
+                                client_monthly_fee
+                            ),
+                            worker_monthly_cost=(
+                                worker_monthly_cost
+                            ),
+                            currency=(
+                                currency
+                            ),
+                            billing_frequency=(
+                                billing_frequency
+                            ),
+                            status=(
+                                status
+                            ),
+                            notes=(
+                                notes_clean
+                            ),
+                        )
 
-                                        session.commit()
+                        session.add(
+                            placement
+                        )
 
-                                        st.session_state.editing_placement_id = (
-                                            None
-                                        )
+                        session.commit()
 
-                                        st.success(
-                                            "Placement updated successfully."
-                                        )
+                        st.success(
+                            "Placement created successfully."
+                        )
 
-                                        st.rerun()
+                        st.rerun()
 
-                                    except Exception as e:
+                except Exception:
 
-                                        session.rollback()
+                    session.rollback()
 
-                                        st.error(
-                                            "Could not update "
-                                            f"placement: {e}"
-                                        )
-
-                                # =============================
-                                # CREATE
-                                # =============================
-
-                                else:
-
-                                    placement = Placement(
-                                        client_id=(
-                                            selected_client_id
-                                        ),
-                                        employee_id=(
-                                            selected_employee_id
-                                        ),
-                                        job_id=(
-                                            selected_job_id
-                                        ),
-                                        position=(
-                                            position_clean
-                                        ),
-                                        start_date=(
-                                            start_date
-                                        ),
-                                        end_date=(
-                                            end_date
-                                        ),
-                                        client_monthly_fee=(
-                                            client_monthly_fee
-                                        ),
-                                        worker_monthly_cost=(
-                                            worker_monthly_cost
-                                        ),
-                                        currency=(
-                                            currency
-                                        ),
-                                        billing_frequency=(
-                                            billing_frequency
-                                        ),
-                                        status=status,
-                                        notes=notes_clean,
-                                    )
-
-                                    try:
-
-                                        session.add(
-                                            placement
-                                        )
-
-                                        session.commit()
-
-                                        st.success(
-                                            "Placement created successfully."
-                                        )
-
-                                        st.rerun()
-
-                                    except Exception as e:
-
-                                        session.rollback()
-
-                                        st.error(
-                                            "Could not create "
-                                            f"placement: {e}"
-                                        )
+                    st.error(
+                        "The placement could not be saved. "
+                        "Please check the information and try again."
+                    )
 
         # ====================================================
         # CANCEL EDITING
@@ -1277,7 +1568,9 @@ def show_placements():
                 use_container_width=True,
             ):
 
-                st.session_state.editing_placement_id = None
+                st.session_state.editing_placement_id = (
+                    None
+                )
 
                 st.rerun()
 
@@ -1289,15 +1582,6 @@ def show_placements():
 
         st.subheader(
             "Placement Register"
-        )
-
-        placements = (
-            session.query(Placement)
-            .order_by(
-                Placement.start_date.desc(),
-                Placement.id.desc(),
-            )
-            .all()
         )
 
         if not placements:
@@ -1319,32 +1603,79 @@ def show_placements():
         active_placements = sum(
             1
             for placement in placements
-            if get_status(placement) == "Active"
+            if get_status(
+                placement
+            ) == "Active"
         )
 
         scheduled_placements = sum(
             1
             for placement in placements
-            if get_status(placement) == "Scheduled"
+            if get_status(
+                placement
+            ) == "Scheduled"
         )
 
         completed_placements = sum(
             1
             for placement in placements
-            if get_status(placement) == "Completed"
+            if get_status(
+                placement
+            ) == "Completed"
         )
 
         terminated_placements = sum(
             1
             for placement in placements
-            if get_status(placement) == "Terminated"
+            if get_status(
+                placement
+            ) == "Terminated"
+        )
+
+        currently_active = sum(
+            1
+            for placement in placements
+            if is_currently_active(
+                placement
+            )
+        )
+
+        future_starts = sum(
+            1
+            for placement in placements
+            if is_future_start(
+                placement
+            )
+        )
+
+        expired_active = sum(
+            1
+            for placement in placements
+            if is_expired_active_placement(
+                placement
+            )
+        )
+
+        negative_margin_placements = sum(
+            1
+            for placement in placements
+            if (
+                get_status(
+                    placement
+                ) == "Active"
+                and calculate_margin(
+                    placement
+                ) < 0
+            )
         )
 
         active_client_fee_totals = (
             get_currency_totals(
                 placements,
                 get_client_fee,
-                statuses=["Active"],
+                statuses=[
+                    "Active"
+                ],
             )
         )
 
@@ -1352,7 +1683,9 @@ def show_placements():
             get_currency_totals(
                 placements,
                 get_worker_cost,
-                statuses=["Active"],
+                statuses=[
+                    "Active"
+                ],
             )
         )
 
@@ -1360,18 +1693,20 @@ def show_placements():
             get_currency_totals(
                 placements,
                 calculate_margin,
-                statuses=["Active"],
+                statuses=[
+                    "Active"
+                ],
             )
         )
 
-        k1, k2, k3, k4, k5 = (
-            st.columns(5)
+        k1, k2, k3, k4, k5 = st.columns(
+            5
         )
 
         with k1:
 
             st.metric(
-                "Total Placements",
+                "Total",
                 total_placements,
             )
 
@@ -1402,6 +1737,41 @@ def show_placements():
                 "Terminated",
                 terminated_placements,
             )
+
+        # ====================================================
+        # OPERATIONAL ALERTS
+        # ====================================================
+
+        alert_col1, alert_col2, alert_col3 = (
+            st.columns(3)
+        )
+
+        with alert_col1:
+
+            if future_starts:
+
+                st.info(
+                    f"{future_starts} placement(s) "
+                    "have future start dates."
+                )
+
+        with alert_col2:
+
+            if expired_active:
+
+                st.warning(
+                    f"{expired_active} Active placement(s) "
+                    "have an end date that has already passed."
+                )
+
+        with alert_col3:
+
+            if negative_margin_placements:
+
+                st.error(
+                    f"{negative_margin_placements} Active placement(s) "
+                    "have negative gross margin."
+                )
 
         # ====================================================
         # FINANCIAL SUMMARY
@@ -1466,7 +1836,10 @@ def show_placements():
 
             status_filter = st.selectbox(
                 "Status",
-                ["All"] + PLACEMENT_STATUSES,
+                [
+                    "All",
+                    *PLACEMENT_STATUSES,
+                ],
             )
 
         with filter_col2:
@@ -1478,7 +1851,9 @@ def show_placements():
             for client in clients:
 
                 client_filter_options[
-                    get_client_name(client)
+                    get_client_name(
+                        client
+                    )
                     + f" (ID: {client.id})"
                 ] = client.id
 
@@ -1493,7 +1868,10 @@ def show_placements():
 
             currency_filter = st.selectbox(
                 "Currency",
-                ["All"] + CURRENCIES,
+                [
+                    "All",
+                    *CURRENCIES,
+                ],
             )
 
         with filter_col4:
@@ -1507,10 +1885,30 @@ def show_placements():
             )
 
         # ====================================================
+        # ADDITIONAL OPERATIONAL FILTER
+        # ====================================================
+
+        operational_filter = st.selectbox(
+            "Operational View",
+            [
+                "All Placements",
+                "Currently Active",
+                "Future Starts",
+                "Expired Active",
+                "Negative Margin",
+                "With Contracts",
+                "With Invoices",
+                "With Payments",
+            ],
+        )
+
+        # ====================================================
         # APPLY FILTERS
         # ====================================================
 
-        filtered_placements = placements
+        filtered_placements = list(
+            placements
+        )
 
         # ----------------------------------------------------
         # STATUS
@@ -1537,7 +1935,10 @@ def show_placements():
             ]
         )
 
-        if selected_client_filter_id is not None:
+        if (
+            selected_client_filter_id
+            is not None
+        ):
 
             filtered_placements = [
                 placement
@@ -1566,11 +1967,11 @@ def show_placements():
         # SEARCH
         # ----------------------------------------------------
 
-        if search.strip():
+        search_lower = clean_text(
+            search
+        ).lower()
 
-            search_lower = (
-                search.strip().lower()
-            )
+        if search_lower:
 
             filtered_placements = [
                 placement
@@ -1616,6 +2017,88 @@ def show_placements():
                 )
             ]
 
+        # ----------------------------------------------------
+        # OPERATIONAL FILTER
+        # ----------------------------------------------------
+
+        if operational_filter == "Currently Active":
+
+            filtered_placements = [
+                placement
+                for placement
+                in filtered_placements
+                if is_currently_active(
+                    placement
+                )
+            ]
+
+        elif operational_filter == "Future Starts":
+
+            filtered_placements = [
+                placement
+                for placement
+                in filtered_placements
+                if is_future_start(
+                    placement
+                )
+            ]
+
+        elif operational_filter == "Expired Active":
+
+            filtered_placements = [
+                placement
+                for placement
+                in filtered_placements
+                if is_expired_active_placement(
+                    placement
+                )
+            ]
+
+        elif operational_filter == "Negative Margin":
+
+            filtered_placements = [
+                placement
+                for placement
+                in filtered_placements
+                if calculate_margin(
+                    placement
+                ) < 0
+            ]
+
+        elif operational_filter == "With Contracts":
+
+            filtered_placements = [
+                placement
+                for placement
+                in filtered_placements
+                if has_contracts(
+                    placement
+                )
+            ]
+
+        elif operational_filter == "With Invoices":
+
+            filtered_placements = [
+                placement
+                for placement
+                in filtered_placements
+                if has_invoices(
+                    placement
+                )
+            ]
+
+        elif operational_filter == "With Payments":
+
+            filtered_placements = [
+                placement
+                for placement
+                in filtered_placements
+                if has_payments(
+                    session,
+                    placement,
+                )
+            ]
+
         # ====================================================
         # RESULT COUNT
         # ====================================================
@@ -1635,6 +2118,41 @@ def show_placements():
             )
 
             return
+
+        # ====================================================
+        # FILTERED FINANCIAL SUMMARY
+        # ====================================================
+
+        filtered_active = [
+            placement
+            for placement
+            in filtered_placements
+            if get_status(
+                placement
+            ) == "Active"
+        ]
+
+        if filtered_active:
+
+            filtered_margin_totals = (
+                get_currency_totals(
+                    filtered_active,
+                    calculate_margin,
+                    statuses=[
+                        "Active"
+                    ],
+                )
+            )
+
+            st.caption(
+                "Filtered active gross margin:"
+            )
+
+            st.write(
+                format_currency_totals(
+                    filtered_margin_totals
+                )
+            )
 
         # ====================================================
         # DISPLAY PLACEMENTS
@@ -1680,6 +2198,12 @@ def show_placements():
                 )
             )
 
+            margin_status = (
+                get_margin_status(
+                    placement
+                )
+            )
+
             with st.container(
                 border=True
             ):
@@ -1690,7 +2214,13 @@ def show_placements():
 
                 col1, col2, col3, col4, col5 = (
                     st.columns(
-                        [2.2, 2.3, 2, 2, 1.8]
+                        [
+                            2.2,
+                            2.3,
+                            2,
+                            2,
+                            1.8,
+                        ]
                     )
                 )
 
@@ -1708,6 +2238,14 @@ def show_placements():
                     st.caption(
                         employee_name
                     )
+
+                    if is_currently_active(
+                        placement
+                    ):
+
+                        st.caption(
+                            "Currently active"
+                        )
 
                 # ------------------------------------------
                 # CLIENT / JOB
@@ -1756,6 +2294,14 @@ def show_placements():
                             f"{placement.end_date.strftime('%d %b %Y')}"
                         )
 
+                    if is_expired_active_placement(
+                        placement
+                    ):
+
+                        st.warning(
+                            "End date passed"
+                        )
+
                 # ------------------------------------------
                 # FINANCIALS
                 # ------------------------------------------
@@ -1775,11 +2321,21 @@ def show_placements():
                         f"{worker_cost:,.2f}"
                     )
 
-                    st.caption(
-                        f"Margin: "
-                        f"{currency} "
-                        f"{margin:,.2f}"
-                    )
+                    if margin < 0:
+
+                        st.error(
+                            f"Margin: "
+                            f"{currency} "
+                            f"{margin:,.2f}"
+                        )
+
+                    else:
+
+                        st.caption(
+                            f"Margin: "
+                            f"{currency} "
+                            f"{margin:,.2f}"
+                        )
 
                 # ------------------------------------------
                 # ACTIONS
@@ -1850,12 +2406,16 @@ def show_placements():
                     == placement.id
                 ):
 
-                    placement_contracts = get_contracts(
-                        placement
+                    placement_contracts = (
+                        get_contracts(
+                            placement
+                        )
                     )
 
-                    placement_invoices = get_invoices(
-                        placement
+                    placement_invoices = (
+                        get_invoices(
+                            placement
+                        )
                     )
 
                     placement_payments = (
@@ -1884,7 +2444,7 @@ def show_placements():
                         close_button = st.button(
                             "Close",
                             key=(
-                                f"close_delete_"
+                                f"close_delete_contract_"
                                 f"{placement.id}"
                             ),
                             use_container_width=True,
@@ -1971,18 +2531,15 @@ def show_placements():
                     else:
 
                         st.warning(
-                            f"Are you sure you want "
-                            f"to delete placement "
-                            f"**#{placement.id} — "
+                            f"Are you sure you want to delete "
+                            f"placement **#{placement.id} — "
                             f"{clean_text(placement.position)}**?"
                         )
 
                         st.caption(
                             "Deletion is permanent. "
-                            "Once a placement has contracts, "
-                            "invoices or payments, it should "
-                            "normally be retained as historical "
-                            "business records."
+                            "Placements with contracts, invoices "
+                            "or payments are protected from deletion."
                         )
 
                         confirm_col1, confirm_col2 = (
@@ -2040,7 +2597,7 @@ def show_placements():
 
                                 st.rerun()
 
-                            except Exception as e:
+                            except Exception:
 
                                 session.rollback()
 
@@ -2049,8 +2606,7 @@ def show_placements():
                                 )
 
                                 st.error(
-                                    "Could not delete "
-                                    f"placement: {e}"
+                                    "The placement could not be deleted."
                                 )
 
                 # ==========================================
@@ -2154,6 +2710,11 @@ def show_placements():
                         )
 
                         st.write(
+                            "**Margin Status:** "
+                            f"{margin_status}"
+                        )
+
+                        st.write(
                             "**Contracts:** "
                             f"{len(get_contracts(placement))}"
                         )
@@ -2163,6 +2724,11 @@ def show_placements():
                             f"{len(get_invoices(placement))}"
                         )
 
+                        st.write(
+                            "**Payments:** "
+                            f"{len(get_payments_for_placement(session, placement))}"
+                        )
+
                     if placement.notes:
 
                         st.write(
@@ -2170,17 +2736,15 @@ def show_placements():
                             f"{clean_text(placement.notes)}"
                         )
 
-    except Exception as e:
+    except Exception:
 
         session.rollback()
 
         st.error(
-            "An error occurred while loading placements."
+            "An error occurred while loading placements. "
+            "Please check the placement data."
         )
-
-        st.exception(e)
 
     finally:
 
         session.close()
-
