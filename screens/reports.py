@@ -1,11 +1,10 @@
 import csv
 import io
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import streamlit as st
 
 from database import get_session
-
 from models import (
     Client,
     Employee,
@@ -29,11 +28,6 @@ PLACEMENT_ACTIVE_STATUSES = [
 PLACEMENT_PIPELINE_STATUSES = [
     "Active",
     "Scheduled",
-]
-
-PLACEMENT_COMPLETED_STATUSES = [
-    "Completed",
-    "Terminated",
 ]
 
 JOB_OPEN_STATUSES = [
@@ -66,182 +60,286 @@ CURRENCIES = [
 
 REPORT_PERIODS = [
     "All Time",
-    "This Month",
+    "Current Month",
     "Last 30 Days",
-    "Last 90 Days",
-    "This Year",
-    "Custom",
+    "Next 30 Days",
 ]
 
-DATA_QUALITY_LEVELS = [
-    "All",
-    "Issues Only",
-    "Clean Only",
+CLIENT_SORT_OPTIONS = [
+    "Client A-Z",
+    "Revenue - Highest",
+    "Outstanding - Highest",
+    "Margin - Highest",
+    "Jobs - Highest",
+    "Placements - Highest",
+]
+
+QUALITY_SCOPES = [
+    "Current Filters",
+    "All Records",
 ]
 
 
 # ============================================================
-# BASIC HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 def clean_text(value):
-    """Safely return cleaned text."""
-
     if value is None:
         return ""
 
-    return str(value).strip()
-
-
-def safe_float(value):
-    """Safely convert a value to float."""
-
     try:
-        return float(value or 0)
+        return str(value).strip()
+    except Exception:
+        return ""
+
+
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+
+        return float(value)
 
     except (TypeError, ValueError):
-        return 0.0
+        return default
 
 
-def safe_int(value):
-    """Safely convert a value to integer."""
-
+def safe_int(value, default=0):
     try:
-        return int(value or 0)
+        if value is None:
+            return default
+
+        return int(value)
 
     except (TypeError, ValueError):
-        return 0
+        return default
 
 
-def get_client_name(client):
-    """Return client company name safely."""
+def to_date(value):
+    """
+    Safely convert datetime/date/string values into date.
+    """
 
-    if not client:
-        return "Unknown Client"
+    if value is None:
+        return None
 
-    return (
-        clean_text(
-            getattr(
-                client,
-                "company_name",
-                "",
-            )
-        )
-        or "Unknown Client"
-    )
+    if isinstance(value, datetime):
+        return value.date()
 
+    if isinstance(value, date):
+        return value
 
-def get_employee_name(employee):
-    """Return employee full name safely."""
+    if isinstance(value, str):
+        text = value.strip()
 
-    if not employee:
-        return "Unknown Employee"
+        if not text:
+            return None
 
-    first_name = clean_text(
-        getattr(
-            employee,
-            "first_name",
-            "",
-        )
-    )
-
-    last_name = clean_text(
-        getattr(
-            employee,
-            "last_name",
-            "",
-        )
-    )
-
-    name = " ".join(
-        part
-        for part in [
-            first_name,
-            last_name,
+        formats = [
+            "%Y-%m-%d",
+            "%d/%m/%Y",
+            "%d-%m-%Y",
+            "%Y/%m/%d",
         ]
-        if part
-    )
 
-    return name or "Unknown Employee"
+        for fmt in formats:
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
 
-
-def get_job_label(job):
-    """Return readable job label."""
-
-    if not job:
-        return "No Job"
-
-    position = (
-        clean_text(
-            getattr(
-                job,
-                "position",
-                "",
-            )
-        )
-        or f"Job #{getattr(job, 'id', '?')}"
-    )
-
-    return position
-
-
-def get_status(record):
-    """Safely return a record status."""
-
-    return (
-        clean_text(
-            getattr(
-                record,
-                "status",
-                "",
-            )
-        )
-        or "Unknown"
-    )
-
-
-def get_currency(record):
-    """Safely return record currency."""
-
-    return (
-        clean_text(
-            getattr(
-                record,
-                "currency",
-                "",
-            )
-        )
-        or "GBP"
-    )
+    return None
 
 
 def format_date(value):
-    """Format dates safely."""
+    parsed = to_date(value)
 
-    if not value:
-        return "—"
+    if parsed is None:
+        return "-"
 
-    try:
-        return value.strftime(
-            "%d %b %Y"
+    return parsed.strftime("%d/%m/%Y")
+
+
+def format_number(value, decimals=2):
+    value = safe_float(value)
+
+    return f"{value:,.{decimals}f}"
+
+
+def format_currency(value, currency="GBP"):
+    value = safe_float(value)
+
+    return f"{currency} {value:,.2f}"
+
+
+def get_status(record, default=""):
+    return clean_text(
+        getattr(record, "status", default)
+    ) or default
+
+
+def get_currency(record, default="GBP"):
+    return (
+        clean_text(
+            getattr(record, "currency", default)
+        )
+        or default
+    )
+
+
+# ============================================================
+# NAME / LABEL HELPERS
+# ============================================================
+
+def get_client_name(client):
+    if client is None:
+        return "Unknown Client"
+
+    for field in [
+        "company_name",
+        "name",
+        "company",
+        "client_name",
+    ]:
+        value = clean_text(getattr(client, field, None))
+
+        if value:
+            return value
+
+    return f"Client #{getattr(client, 'id', '?')}"
+
+
+def get_employee_name(employee):
+    if employee is None:
+        return "Unknown Employee"
+
+    full_name = clean_text(
+        getattr(employee, "full_name", None)
+    )
+
+    if full_name:
+        return full_name
+
+    first_name = clean_text(
+        getattr(employee, "first_name", None)
+    )
+
+    last_name = clean_text(
+        getattr(employee, "last_name", None)
+    )
+
+    combined = f"{first_name} {last_name}".strip()
+
+    if combined:
+        return combined
+
+    name = clean_text(
+        getattr(employee, "name", None)
+    )
+
+    if name:
+        return name
+
+    return f"Employee #{getattr(employee, 'id', '?')}"
+
+
+def get_job_label(job):
+    if job is None:
+        return "Unknown Job"
+
+    position = clean_text(
+        getattr(job, "position", None)
+    )
+
+    if position:
+        job_id = getattr(job, "id", None)
+
+        if job_id is not None:
+            return f"{position} #{job_id}"
+
+        return position
+
+    title = clean_text(
+        getattr(job, "title", None)
+    )
+
+    if title:
+        return title
+
+    return f"Job #{getattr(job, 'id', '?')}"
+
+
+def get_candidate_name(candidate):
+    if candidate is None:
+        return "Unknown Candidate"
+
+    full_name = clean_text(
+        getattr(candidate, "full_name", None)
+    )
+
+    if full_name:
+        return full_name
+
+    first_name = clean_text(
+        getattr(candidate, "first_name", None)
+    )
+
+    last_name = clean_text(
+        getattr(candidate, "last_name", None)
+    )
+
+    combined = f"{first_name} {last_name}".strip()
+
+    if combined:
+        return combined
+
+    name = clean_text(
+        getattr(candidate, "name", None)
+    )
+
+    if name:
+        return name
+
+    return f"Candidate #{getattr(candidate, 'id', '?')}"
+
+
+def get_invoice_number(invoice):
+    if invoice is None:
+        return "Unknown Invoice"
+
+    for field in [
+        "invoice_number",
+        "number",
+        "reference",
+    ]:
+        value = clean_text(
+            getattr(invoice, field, None)
         )
 
-    except AttributeError:
-        return clean_text(
-            value
+        if value:
+            return value
+
+    return f"Invoice #{getattr(invoice, 'id', '?')}"
+
+
+def get_contract_number(contract):
+    if contract is None:
+        return "Unknown Contract"
+
+    for field in [
+        "contract_number",
+        "number",
+        "reference",
+    ]:
+        value = clean_text(
+            getattr(contract, field, None)
         )
 
+        if value:
+            return value
 
-def format_percentage(value):
-    """Format percentage."""
-
-    return f"{safe_float(value):.1f}%"
-
-
-def format_number(value):
-    """Format number safely."""
-
-    return f"{safe_float(value):,.2f}"
+    return f"Contract #{getattr(contract, 'id', '?')}"
 
 
 # ============================================================
@@ -249,26 +347,14 @@ def format_number(value):
 # ============================================================
 
 def get_client_id_from_job(job):
-    """Safely return job client ID."""
-
-    if not job:
+    if job is None:
         return None
 
-    return getattr(
-        job,
-        "client_id",
-        None,
-    )
+    return getattr(job, "client_id", None)
 
 
 def get_client_id_from_candidate(candidate):
-    """
-    Safely determine candidate client through:
-
-        Candidate -> Job -> Client
-    """
-
-    if not candidate:
+    if candidate is None:
         return None
 
     direct_client_id = getattr(
@@ -277,35 +363,46 @@ def get_client_id_from_candidate(candidate):
         None,
     )
 
-    if direct_client_id:
+    if direct_client_id is not None:
         return direct_client_id
 
-    job = getattr(
-        candidate,
-        "job",
+    job = getattr(candidate, "job", None)
+
+    if job is not None:
+        return getattr(job, "client_id", None)
+
+    job_id = getattr(candidate, "job_id", None)
+
+    return None if job_id is None else None
+
+
+def get_client_id_from_placement(placement):
+    if placement is None:
+        return None
+
+    direct_client_id = getattr(
+        placement,
+        "client_id",
         None,
     )
 
-    if job:
-        return getattr(
-            job,
-            "client_id",
-            None,
-        )
+    if direct_client_id is not None:
+        return direct_client_id
+
+    client = getattr(
+        placement,
+        "client",
+        None,
+    )
+
+    if client is not None:
+        return getattr(client, "id", None)
 
     return None
 
 
 def get_client_id_from_contract(contract):
-    """
-    Determine contract client.
-
-    Supports:
-        Contract.client_id
-        Contract.placement.client_id
-    """
-
-    if not contract:
+    if contract is None:
         return None
 
     direct_client_id = getattr(
@@ -314,8 +411,17 @@ def get_client_id_from_contract(contract):
         None,
     )
 
-    if direct_client_id:
+    if direct_client_id is not None:
         return direct_client_id
+
+    client = getattr(
+        contract,
+        "client",
+        None,
+    )
+
+    if client is not None:
+        return getattr(client, "id", None)
 
     placement = getattr(
         contract,
@@ -323,26 +429,16 @@ def get_client_id_from_contract(contract):
         None,
     )
 
-    if placement:
-        return getattr(
-            placement,
-            "client_id",
-            None,
+    if placement is not None:
+        return get_client_id_from_placement(
+            placement
         )
 
     return None
 
 
 def get_client_id_from_invoice(invoice):
-    """
-    Determine invoice client.
-
-    Supports:
-        Invoice.client_id
-        Invoice.placement.client_id
-    """
-
-    if not invoice:
+    if invoice is None:
         return None
 
     direct_client_id = getattr(
@@ -351,8 +447,17 @@ def get_client_id_from_invoice(invoice):
         None,
     )
 
-    if direct_client_id:
+    if direct_client_id is not None:
         return direct_client_id
+
+    client = getattr(
+        invoice,
+        "client",
+        None,
+    )
+
+    if client is not None:
+        return getattr(client, "id", None)
 
     placement = getattr(
         invoice,
@@ -360,24 +465,16 @@ def get_client_id_from_invoice(invoice):
         None,
     )
 
-    if placement:
-        return getattr(
-            placement,
-            "client_id",
-            None,
+    if placement is not None:
+        return get_client_id_from_placement(
+            placement
         )
 
     return None
 
 
 def get_client_id_from_payment(payment):
-    """
-    Determine payment client through:
-
-        Payment -> Invoice -> Client
-    """
-
-    if not payment:
+    if payment is None:
         return None
 
     direct_client_id = getattr(
@@ -386,7 +483,7 @@ def get_client_id_from_payment(payment):
         None,
     )
 
-    if direct_client_id:
+    if direct_client_id is not None:
         return direct_client_id
 
     invoice = getattr(
@@ -395,7 +492,7 @@ def get_client_id_from_payment(payment):
         None,
     )
 
-    if invoice:
+    if invoice is not None:
         return get_client_id_from_invoice(
             invoice
         )
@@ -403,86 +500,69 @@ def get_client_id_from_payment(payment):
     return None
 
 
-def get_placement_job(placement):
-    """Return placement job safely."""
-
-    return getattr(
-        placement,
-        "job",
-        None,
-    )
-
-
-def get_placement_client(placement):
-    """Return placement client safely."""
-
-    return getattr(
-        placement,
-        "client",
-        None,
-    )
-
-
-def get_placement_employee(placement):
-    """Return placement employee safely."""
-
-    return getattr(
-        placement,
-        "employee",
-        None,
-    )
-
-
 # ============================================================
 # PLACEMENT FINANCIAL HELPERS
 # ============================================================
 
 def get_placement_client_fee(placement):
-    """Return placement client monthly fee."""
+    if placement is None:
+        return 0.0
 
-    return max(
-        safe_float(
-            getattr(
-                placement,
-                "client_monthly_fee",
-                0,
-            )
-        ),
-        0.0,
-    )
+    for field in [
+        "client_monthly_fee",
+        "client_fee",
+        "monthly_fee",
+        "billing_amount",
+        "revenue",
+    ]:
+        value = getattr(
+            placement,
+            field,
+            None,
+        )
+
+        if value is not None:
+            return safe_float(value)
+
+    return 0.0
 
 
 def get_placement_worker_cost(placement):
-    """Return placement worker monthly cost."""
+    if placement is None:
+        return 0.0
 
-    return max(
-        safe_float(
-            getattr(
-                placement,
-                "worker_monthly_cost",
-                0,
-            )
-        ),
-        0.0,
-    )
+    for field in [
+        "worker_monthly_cost",
+        "worker_cost",
+        "employee_cost",
+        "monthly_cost",
+        "cost",
+    ]:
+        value = getattr(
+            placement,
+            field,
+            None,
+        )
+
+        if value is not None:
+            return safe_float(value)
+
+    return 0.0
 
 
 def get_placement_margin(placement):
-    """Calculate placement gross margin."""
-
-    return (
-        get_placement_client_fee(
-            placement
-        )
-        - get_placement_worker_cost(
-            placement
-        )
+    revenue = get_placement_client_fee(
+        placement
     )
+
+    cost = get_placement_worker_cost(
+        placement
+    )
+
+    return revenue - cost
 
 
 def get_placement_margin_percentage(placement):
-    """Calculate placement gross margin percentage."""
-
     revenue = get_placement_client_fee(
         placement
     )
@@ -490,35 +570,13 @@ def get_placement_margin_percentage(placement):
     if revenue <= 0:
         return 0.0
 
-    return (
-        get_placement_margin(
-            placement
-        )
-        / revenue
-    ) * 100
-
-
-def get_margin_status(placement):
-    """Return placement margin classification."""
-
     margin = get_placement_margin(
         placement
     )
 
-    revenue = get_placement_client_fee(
-        placement
-    )
-
-    if revenue <= 0:
-        return "No Revenue"
-
-    if margin < 0:
-        return "Negative"
-
-    if margin == 0:
-        return "Break-even"
-
-    return "Positive"
+    return (
+        margin / revenue
+    ) * 100
 
 
 # ============================================================
@@ -526,177 +584,207 @@ def get_margin_status(placement):
 # ============================================================
 
 def get_invoice_total(invoice):
-    """Return invoice total."""
+    """
+    Safely get invoice total.
 
-    for field in [
-        "total",
+    IMPORTANT:
+    This function deliberately does NOT access
+    invoice.balance_due.
+    """
+
+    if invoice is None:
+        return 0.0
+
+    field_names = [
         "total_amount",
+        "total",
         "grand_total",
         "amount",
-    ]:
+    ]
 
-        if hasattr(
-            invoice,
-            field,
-        ):
+    for field_name in field_names:
 
-            value = safe_float(
-                getattr(
-                    invoice,
-                    field,
-                )
+        try:
+            value = getattr(
+                invoice,
+                field_name,
+                None,
             )
+        except Exception:
+            value = None
 
-            if value != 0:
-                return value
+        if value is not None:
+
+            try:
+                return float(
+                    value or 0
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
 
     return 0.0
 
 
 def get_invoice_paid(invoice):
-    """Return invoice amount paid."""
+    """
+    Safely get amount paid.
 
-    return max(
-        safe_float(
-            getattr(
+    Does not access invoice.balance_due.
+    """
+
+    if invoice is None:
+        return 0.0
+
+    field_names = [
+        "amount_paid",
+        "paid_amount",
+        "payments_received",
+    ]
+
+    for field_name in field_names:
+
+        try:
+            value = getattr(
                 invoice,
-                "amount_paid",
-                0,
+                field_name,
+                None,
             )
-        ),
-        0.0,
-    )
+        except Exception:
+            value = None
+
+        if value is not None:
+
+            try:
+                return float(
+                    value or 0
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+    return 0.0
 
 
 def get_invoice_balance(invoice):
-    """Return invoice outstanding balance."""
+    """
+    Calculate outstanding invoice balance.
 
-    stored_balance = getattr(
-        invoice,
-        "balance_due",
-        None,
+    Balance = total - paid.
+
+    This function intentionally avoids the Invoice.balance_due
+    model property because the current model implementation
+    has an incompatible calculate_invoice_balance() call.
+    """
+
+    if invoice is None:
+        return 0.0
+
+    total = get_invoice_total(
+        invoice
     )
 
-    if stored_balance is not None:
+    paid = get_invoice_paid(
+        invoice
+    )
 
-        return max(
-            safe_float(
-                stored_balance
-            ),
-            0.0,
-        )
+    balance = total - paid
+
+    if abs(balance) < 0.005:
+        balance = 0.0
 
     return max(
-        get_invoice_total(
-            invoice
-        )
-        - get_invoice_paid(
-            invoice
-        ),
+        balance,
         0.0,
     )
 
 
-def get_invoice_date(invoice):
-    """
-    Safely determine the most relevant invoice date.
+def is_invoice_open(invoice):
+    if invoice is None:
+        return False
 
-    Supports common invoice date fields.
-    """
+    status = get_status(
+        invoice
+    ).lower()
 
-    for field in [
-        "invoice_date",
-        "issue_date",
-        "date_issued",
-        "date",
-        "due_date",
-    ]:
-
-        value = getattr(
-            invoice,
-            field,
-            None,
-        )
-
-        if value:
-            return value
-
-    return None
-
-
-def get_invoice_due_date(invoice):
-    """Return invoice due date safely."""
-
-    for field in [
-        "due_date",
-        "payment_due_date",
-    ]:
-
-        value = getattr(
-            invoice,
-            field,
-            None,
-        )
-
-        if value:
-            return value
-
-    return None
-
-
-def get_invoice_age_days(invoice):
-    """Calculate invoice age."""
-
-    invoice_date = get_invoice_date(
+    balance = get_invoice_balance(
         invoice
     )
 
-    if not invoice_date:
-        return None
+    if status in {
+        "cancelled",
+        "paid",
+    }:
+        return False
 
-    try:
+    if status in {
+        value.lower()
+        for value in INVOICE_OPEN_STATUSES
+    }:
+        return True
 
-        return max(
-            (
-                date.today()
-                - invoice_date
-            ).days,
-            0,
-        )
-
-    except TypeError:
-
-        return None
+    return balance > 0
 
 
-def get_invoice_overdue_days(invoice):
-    """Calculate overdue days."""
+def get_invoice_overdue_days(
+    invoice,
+    today=None,
+):
+    """
+    Return number of overdue days.
 
-    due_date = get_invoice_due_date(
+    Returns zero when invoice is not overdue.
+    """
+
+    if invoice is None:
+        return 0
+
+    if today is None:
+        today = date.today()
+
+    balance = get_invoice_balance(
         invoice
     )
 
-    if not due_date:
+    if balance <= 0:
         return 0
 
-    if get_invoice_balance(
-        invoice
-    ) <= 0:
+    due_date = getattr(
+        invoice,
+        "due_date",
+        None,
+    )
+
+    due_date = to_date(
+        due_date
+    )
+
+    if due_date is None:
         return 0
 
-    try:
+    if due_date >= today:
+        return 0
 
-        return max(
-            (
-                date.today()
-                - due_date
-            ).days,
-            0,
+    return (
+        today - due_date
+    ).days
+
+
+def is_invoice_overdue(
+    invoice,
+    today=None,
+):
+    return (
+        get_invoice_overdue_days(
+            invoice,
+            today,
         )
-
-    except TypeError:
-
-        return 0
+        > 0
+    )
 
 
 # ============================================================
@@ -704,154 +792,119 @@ def get_invoice_overdue_days(invoice):
 # ============================================================
 
 def get_payment_amount(payment):
-    """Return payment amount safely."""
+    if payment is None:
+        return 0.0
 
     for field in [
         "amount",
         "payment_amount",
         "value",
     ]:
-
-        if hasattr(
-            payment,
-            field,
-        ):
-
-            return max(
-                safe_float(
-                    getattr(
-                        payment,
-                        field,
-                    )
-                ),
-                0.0,
-            )
-
-    return 0.0
-
-
-def get_payment_date(payment):
-    """Return payment date safely."""
-
-    for field in [
-        "payment_date",
-        "date_received",
-        "received_date",
-        "date",
-    ]:
-
         value = getattr(
             payment,
             field,
             None,
         )
 
-        if value:
-            return value
+        if value is not None:
+            return safe_float(
+                value
+            )
+
+    return 0.0
+
+
+def get_payment_status(payment):
+    return get_status(
+        payment,
+        default="Pending",
+    )
+
+
+def get_payment_date(payment):
+    for field in [
+        "payment_date",
+        "date",
+        "received_date",
+    ]:
+        value = getattr(
+            payment,
+            field,
+            None,
+        )
+
+        if value is not None:
+            return to_date(
+                value
+            )
 
     return None
 
 
 # ============================================================
-# AGGREGATION HELPERS
+# DATE HELPERS
 # ============================================================
 
-def count_by_status(records):
-    """Return status counts."""
-
-    result = {}
-
-    for record in records:
-
-        status = get_status(
-            record
-        )
-
-        result[status] = (
-            result.get(
-                status,
-                0,
-            )
-            + 1
-        )
-
-    return result
-
-
-def add_currency_value(
-    totals,
-    currency,
-    value,
-):
-    """Add value while keeping currencies separate."""
-
-    currency = (
-        clean_text(currency)
-        or "GBP"
-    )
-
-    totals[currency] = (
-        totals.get(
-            currency,
-            0.0,
-        )
-        + safe_float(
-            value
-        )
-    )
-
-
-def format_currency_amounts(totals):
-    """Format currency totals."""
-
-    if not totals:
-        return "0.00"
-
-    parts = []
-
-    for currency, amount in sorted(
-        totals.items()
-    ):
-
-        parts.append(
-            f"{currency} {amount:,.2f}"
-        )
-
-    return " | ".join(
-        parts
-    )
-
-
-def get_currency_totals(
-    records,
-    value_function,
-):
-    """Create currency totals from records."""
-
-    totals = {}
-
-    for record in records:
-
-        add_currency_value(
-            totals,
-            get_currency(record),
-            value_function(record),
-        )
-
-    return totals
-
-
-# ============================================================
-# DATE FILTER HELPERS
-# ============================================================
-
-def get_record_date(
+def get_primary_date(
     record,
-    fields,
+    record_type,
 ):
-    """Return first available date from a list of fields."""
+    field_map = {
 
-    for field in fields:
+        "client": [
+            "created_at",
+            "date_created",
+        ],
+
+        "employee": [
+            "hire_date",
+            "start_date",
+            "created_at",
+        ],
+
+        "job": [
+            "date_opened",
+            "created_at",
+            "closing_date",
+        ],
+
+        "candidate": [
+            "application_date",
+            "created_at",
+            "interview_date",
+        ],
+
+        "placement": [
+            "start_date",
+            "created_at",
+            "end_date",
+        ],
+
+        "contract": [
+            "start_date",
+            "signed_date",
+            "created_at",
+            "renewal_date",
+        ],
+
+        "invoice": [
+            "issue_date",
+            "created_at",
+            "due_date",
+        ],
+
+        "payment": [
+            "payment_date",
+            "received_date",
+            "date",
+            "created_at",
+        ],
+    }
+
+    for field in field_map.get(
+        record_type,
+        [],
+    ):
 
         value = getattr(
             record,
@@ -859,532 +912,362 @@ def get_record_date(
             None,
         )
 
-        if value:
-            return value
+        parsed = to_date(
+            value
+        )
+
+        if parsed is not None:
+            return parsed
 
     return None
 
 
-def date_in_period(
+def matches_period(
     record,
+    record_type,
     period,
-    fields,
-    custom_start=None,
-    custom_end=None,
+    today,
 ):
-    """Determine whether record date belongs to report period."""
-
     if period == "All Time":
         return True
 
-    record_date = get_record_date(
+    record_date = get_primary_date(
         record,
-        fields,
+        record_type,
     )
 
-    if not record_date:
-        return period == "All Time"
+    # Do not remove records when the model does not
+    # have a usable date field.
+    if record_date is None:
+        return True
 
-    today = date.today()
+    if period == "Current Month":
 
-    if period == "This Month":
+        first_day = today.replace(
+            day=1
+        )
 
         return (
-            record_date.year == today.year
-            and record_date.month == today.month
+            first_day
+            <= record_date
+            <= today
         )
 
     if period == "Last 30 Days":
 
+        start_date = (
+            today
+            - timedelta(days=30)
+        )
+
         return (
-            today - timedelta(days=30)
+            start_date
             <= record_date
             <= today
         )
 
-    if period == "Last 90 Days":
+    if period == "Next 30 Days":
 
-        return (
-            today - timedelta(days=90)
-            <= record_date
-            <= today
+        end_date = (
+            today
+            + timedelta(days=30)
         )
 
-    if period == "This Year":
-
         return (
-            record_date.year
-            == today.year
-        )
-
-    if period == "Custom":
-
-        if not custom_start or not custom_end:
-            return True
-
-        return (
-            custom_start
+            today
             <= record_date
-            <= custom_end
+            <= end_date
         )
 
     return True
 
 
 # ============================================================
-# DATA QUALITY HELPERS
+# SEARCH HELPERS
 # ============================================================
 
-def get_placement_quality_issues(
-    placement,
-):
-    """Return data-quality issues for a placement."""
-
-    issues = []
-
-    client_id = getattr(
-        placement,
-        "client_id",
-        None,
-    )
-
-    employee_id = getattr(
-        placement,
-        "employee_id",
-        None,
-    )
-
-    position = clean_text(
-        getattr(
-            placement,
-            "position",
-            "",
-        )
-    )
-
-    start_date = getattr(
-        placement,
-        "start_date",
-        None,
-    )
-
-    end_date = getattr(
-        placement,
-        "end_date",
-        None,
-    )
-
-    status = get_status(
-        placement
-    )
-
-    client_fee = get_placement_client_fee(
-        placement
-    )
-
-    worker_cost = get_placement_worker_cost(
-        placement
-    )
-
-    job = get_placement_job(
-        placement
-    )
-
-    employee = get_placement_employee(
-        placement
-    )
-
-    if client_id is None:
-        issues.append(
-            "No client linked."
-        )
-
-    if employee_id is None:
-        issues.append(
-            "No employee linked."
-        )
-
-    if not position:
-        issues.append(
-            "No position recorded."
-        )
-
-    if not start_date:
-        issues.append(
-            "No start date."
-        )
-
-    if (
-        start_date
-        and end_date
-        and end_date < start_date
-    ):
-        issues.append(
-            "End date is before start date."
-        )
-
-    if (
-        status == "Active"
-        and start_date
-        and start_date > date.today()
-    ):
-        issues.append(
-            "Active placement has a future start date."
-        )
-
-    if (
-        status == "Scheduled"
-        and start_date
-        and start_date <= date.today()
-    ):
-        issues.append(
-            "Scheduled placement has already reached its start date."
-        )
-
-    if (
-        status == "Active"
-        and end_date
-        and end_date < date.today()
-    ):
-        issues.append(
-            "Active placement has already ended."
-        )
-
-    if (
-        status in PLACEMENT_COMPLETED_STATUSES
-        and not end_date
-    ):
-        issues.append(
-            "Completed/terminated placement has no end date."
-        )
-
-    if (
-        status in PLACEMENT_COMPLETED_STATUSES
-        and end_date
-        and end_date > date.today()
-    ):
-        issues.append(
-            "Completed/terminated placement has a future end date."
-        )
-
-    if client_fee <= 0:
-        issues.append(
-            "Client monthly fee is zero."
-        )
-
-    if worker_cost < 0:
-        issues.append(
-            "Worker cost is negative."
-        )
-
-    if client_fee > 0 and worker_cost > client_fee:
-        issues.append(
-            "Gross margin is negative."
-        )
-
-    if job:
-
-        job_client_id = getattr(
-            job,
-            "client_id",
-            None,
-        )
-
-        if (
-            job_client_id is not None
-            and client_id is not None
-            and job_client_id
-            != client_id
-        ):
-            issues.append(
-                "Placement client does not match job client."
-            )
-
-        job_status = get_status(
-            job
-        )
-
-        if (
-            status in PLACEMENT_PIPELINE_STATUSES
-            and job_status == "Cancelled"
-        ):
-            issues.append(
-                "Placement is linked to a cancelled job."
-            )
-
-    if employee:
-
-        employee_status = get_status(
-            employee
-        )
-
-        if employee_status in [
-            "Former Employee",
-            "Unavailable",
-        ]:
-            issues.append(
-                f"Employee status is {employee_status}."
-            )
-
-    return issues
-
-
-def get_quality_issues_for_record(
-    record_type,
+def record_search_text(
     record,
+    record_type,
 ):
-    """Generic quality helper."""
+    values = []
 
-    if record_type == "placement":
-        return get_placement_quality_issues(
-            record
-        )
+    if record is None:
+        return ""
 
-    return []
+    if record_type == "client":
 
-
-# ============================================================
-# CSV EXPORT HELPERS
-# ============================================================
-
-def build_placement_csv(
-    placements,
-):
-    """Build placement CSV."""
-
-    output = io.StringIO()
-
-    writer = csv.writer(
-        output
-    )
-
-    writer.writerow(
-        [
-            "Placement ID",
-            "Client",
-            "Employee",
-            "Job",
-            "Position",
-            "Status",
-            "Start Date",
-            "End Date",
-            "Currency",
-            "Billing Frequency",
-            "Client Monthly Fee",
-            "Worker Monthly Cost",
-            "Gross Margin",
-            "Margin %",
-            "Margin Status",
-            "Data Quality Issues",
-        ]
-    )
-
-    for placement in placements:
-
-        client = get_placement_client(
-            placement
-        )
-
-        employee = get_placement_employee(
-            placement
-        )
-
-        job = get_placement_job(
-            placement
-        )
-
-        issues = get_placement_quality_issues(
-            placement
-        )
-
-        writer.writerow(
+        values.extend(
             [
                 getattr(
-                    placement,
-                    "id",
+                    record,
+                    "company_name",
                     "",
                 ),
-                get_client_name(client),
-                get_employee_name(employee),
-                get_job_label(job),
-                clean_text(
-                    getattr(
-                        placement,
-                        "position",
-                        "",
-                    )
+                getattr(
+                    record,
+                    "name",
+                    "",
                 ),
-                get_status(placement),
-                format_date(
-                    getattr(
-                        placement,
-                        "start_date",
-                        None,
-                    )
+                getattr(
+                    record,
+                    "email",
+                    "",
                 ),
-                format_date(
-                    getattr(
-                        placement,
-                        "end_date",
-                        None,
-                    )
+                getattr(
+                    record,
+                    "website",
+                    "",
                 ),
-                get_currency(placement),
-                clean_text(
-                    getattr(
-                        placement,
-                        "billing_frequency",
-                        "",
-                    )
+                getattr(
+                    record,
+                    "country",
+                    "",
                 ),
-                f"{get_placement_client_fee(placement):.2f}",
-                f"{get_placement_worker_cost(placement):.2f}",
-                f"{get_placement_margin(placement):.2f}",
-                f"{get_placement_margin_percentage(placement):.2f}",
-                get_margin_status(placement),
-                " | ".join(issues),
             ]
         )
 
-    return output.getvalue()
+    elif record_type == "employee":
 
+        values.extend(
+            [
+                get_employee_name(
+                    record
+                ),
+                getattr(
+                    record,
+                    "email",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "role",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "job_title",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "country",
+                    "",
+                ),
+            ]
+        )
 
-def build_invoice_csv(
-    invoices,
-):
-    """Build invoice CSV."""
+    elif record_type == "job":
 
-    output = io.StringIO()
+        values.extend(
+            [
+                getattr(
+                    record,
+                    "position",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "department",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "skills_required",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "remote_country",
+                    "",
+                ),
+            ]
+        )
 
-    writer = csv.writer(
-        output
-    )
+    elif record_type == "candidate":
 
-    writer.writerow(
-        [
-            "Invoice ID",
-            "Invoice Number",
-            "Client",
-            "Status",
-            "Currency",
-            "Invoice Total",
-            "Amount Paid",
-            "Outstanding",
-            "Invoice Date",
-            "Due Date",
-            "Age Days",
-            "Overdue Days",
-        ]
-    )
+        values.extend(
+            [
+                get_candidate_name(
+                    record
+                ),
+                getattr(
+                    record,
+                    "email",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "phone",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "skills",
+                    "",
+                ),
+            ]
+        )
 
-    for invoice in invoices:
+        job = getattr(
+            record,
+            "job",
+            None,
+        )
 
-        client_id = get_client_id_from_invoice(
-            invoice
+        if job:
+            values.append(
+                get_job_label(
+                    job
+                )
+            )
+
+    elif record_type == "placement":
+
+        values.extend(
+            [
+                getattr(
+                    record,
+                    "position",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "notes",
+                    "",
+                ),
+            ]
         )
 
         client = getattr(
-            invoice,
+            record,
             "client",
             None,
         )
 
-        if not client and client_id:
-            client = None
+        employee = getattr(
+            record,
+            "employee",
+            None,
+        )
 
-        writer.writerow(
+        job = getattr(
+            record,
+            "job",
+            None,
+        )
+
+        if client:
+            values.append(
+                get_client_name(
+                    client
+                )
+            )
+
+        if employee:
+            values.append(
+                get_employee_name(
+                    employee
+                )
+            )
+
+        if job:
+            values.append(
+                get_job_label(
+                    job
+                )
+            )
+
+    elif record_type == "contract":
+
+        values.extend(
             [
+                get_contract_number(
+                    record
+                ),
                 getattr(
-                    invoice,
-                    "id",
+                    record,
+                    "contract_type",
                     "",
                 ),
-                clean_text(
-                    getattr(
-                        invoice,
-                        "invoice_number",
-                        "",
-                    )
-                ),
-                get_client_name(client),
-                get_status(invoice),
-                get_currency(invoice),
-                f"{get_invoice_total(invoice):.2f}",
-                f"{get_invoice_paid(invoice):.2f}",
-                f"{get_invoice_balance(invoice):.2f}",
-                format_date(
-                    get_invoice_date(invoice)
-                ),
-                format_date(
-                    get_invoice_due_date(invoice)
-                ),
-                get_invoice_age_days(invoice)
-                if get_invoice_age_days(invoice)
-                is not None
-                else "",
-                get_invoice_overdue_days(
-                    invoice
+                getattr(
+                    record,
+                    "notes",
+                    "",
                 ),
             ]
         )
 
-    return output.getvalue()
+    elif record_type == "invoice":
+
+        values.extend(
+            [
+                get_invoice_number(
+                    record
+                ),
+                getattr(
+                    record,
+                    "description",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "notes",
+                    "",
+                ),
+            ]
+        )
+
+    elif record_type == "payment":
+
+        values.extend(
+            [
+                getattr(
+                    record,
+                    "reference",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "payment_reference",
+                    "",
+                ),
+                getattr(
+                    record,
+                    "notes",
+                    "",
+                ),
+            ]
+        )
+
+    return " ".join(
+        clean_text(value)
+        for value in values
+        if clean_text(value)
+    ).lower()
 
 
-def build_payment_csv(
-    payments,
+def matches_search(
+    record,
+    record_type,
+    search_text,
 ):
-    """Build payment CSV."""
+    search_text = clean_text(
+        search_text
+    ).lower()
 
-    output = io.StringIO()
+    if not search_text:
+        return True
 
-    writer = csv.writer(
-        output
+    haystack = record_search_text(
+        record,
+        record_type,
     )
 
-    writer.writerow(
-        [
-            "Payment ID",
-            "Invoice ID",
-            "Status",
-            "Currency",
-            "Amount",
-            "Payment Date",
-            "Reference",
-        ]
+    return (
+        search_text
+        in haystack
     )
-
-    for payment in payments:
-
-        writer.writerow(
-            [
-                getattr(
-                    payment,
-                    "id",
-                    "",
-                ),
-                getattr(
-                    payment,
-                    "invoice_id",
-                    "",
-                ),
-                get_status(payment),
-                get_currency(payment),
-                f"{get_payment_amount(payment):.2f}",
-                format_date(
-                    get_payment_date(payment)
-                ),
-                clean_text(
-                    getattr(
-                        payment,
-                        "reference",
-                        "",
-                    )
-                ),
-            ]
-        )
-
-    return output.getvalue()
 
 
 # ============================================================
@@ -1392,54 +1275,898 @@ def build_payment_csv(
 # ============================================================
 
 def matches_client(
-    record_client_id,
+    record,
+    record_type,
     selected_client_id,
 ):
-    """Return whether record matches selected client."""
-
-    if selected_client_id is None:
+    if selected_client_id == "All Clients":
         return True
 
-    return (
-        record_client_id
-        == selected_client_id
-    )
+    try:
+        selected_id = int(
+            selected_client_id
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return True
+
+    if record_type == "client":
+
+        return (
+            getattr(
+                record,
+                "id",
+                None,
+            )
+            == selected_id
+        )
+
+    if record_type == "job":
+        return (
+            get_client_id_from_job(
+                record
+            )
+            == selected_id
+        )
+
+    if record_type == "candidate":
+        return (
+            get_client_id_from_candidate(
+                record
+            )
+            == selected_id
+        )
+
+    if record_type == "placement":
+        return (
+            get_client_id_from_placement(
+                record
+            )
+            == selected_id
+        )
+
+    if record_type == "contract":
+        return (
+            get_client_id_from_contract(
+                record
+            )
+            == selected_id
+        )
+
+    if record_type == "invoice":
+        return (
+            get_client_id_from_invoice(
+                record
+            )
+            == selected_id
+        )
+
+    if record_type == "payment":
+        return (
+            get_client_id_from_payment(
+                record
+            )
+            == selected_id
+        )
+
+    # Employees do not currently have a
+    # reliable client relationship in the model.
+    if record_type == "employee":
+        return True
+
+    return True
 
 
 def matches_currency(
     record,
-    currency_filter,
+    selected_currency,
 ):
-    """Return whether record matches currency filter."""
-
-    if currency_filter == "All":
+    if selected_currency == "All Currencies":
         return True
 
     return (
         get_currency(record)
-        == currency_filter
+        == selected_currency
     )
 
 
+def filter_records(
+    records,
+    record_type,
+    selected_client,
+    selected_currency,
+    search_text,
+    period,
+    today,
+    financial=False,
+):
+    result = []
+
+    for record in records:
+
+        if not matches_client(
+            record,
+            record_type,
+            selected_client,
+        ):
+            continue
+
+        if financial:
+
+            if not matches_currency(
+                record,
+                selected_currency,
+            ):
+                continue
+
+        if not matches_search(
+            record,
+            record_type,
+            search_text,
+        ):
+            continue
+
+        if not matches_period(
+            record,
+            record_type,
+            period,
+            today,
+        ):
+            continue
+
+        result.append(
+            record
+        )
+
+    return result
+
+
 # ============================================================
-# MAIN REPORTS SCREEN
+# AGGREGATION HELPERS
+# ============================================================
+
+def count_by_status(records):
+    counts = {}
+
+    for record in records:
+
+        status = get_status(
+            record,
+            default="Unknown",
+        )
+
+        counts[status] = (
+            counts.get(
+                status,
+                0,
+            )
+            + 1
+        )
+
+    return counts
+
+
+def add_currency_value(
+    container,
+    currency,
+    value,
+):
+    currency = (
+        clean_text(currency)
+        or "GBP"
+    )
+
+    container[currency] = (
+        container.get(
+            currency,
+            0.0,
+        )
+        + safe_float(value)
+    )
+
+
+def format_currency_amounts(
+    amounts,
+):
+    if not amounts:
+        return "0.00"
+
+    parts = []
+
+    for currency in sorted(
+        amounts.keys()
+    ):
+        parts.append(
+            f"{currency} "
+            f"{amounts[currency]:,.2f}"
+        )
+
+    return " | ".join(
+        parts
+    )
+
+
+def build_csv(
+    headers,
+    rows,
+):
+    output = io.StringIO()
+
+    writer = csv.writer(
+        output
+    )
+
+    writer.writerow(
+        headers
+    )
+
+    for row in rows:
+        writer.writerow(
+            row
+        )
+
+    return output.getvalue()
+
+
+# ============================================================
+# OPERATIONAL HELPERS
+# ============================================================
+
+def get_placement_start_date(
+    placement
+):
+    return to_date(
+        getattr(
+            placement,
+            "start_date",
+            None,
+        )
+    )
+
+
+def get_placement_end_date(
+    placement
+):
+    return to_date(
+        getattr(
+            placement,
+            "end_date",
+            None,
+        )
+    )
+
+
+def get_contract_renewal_date(
+    contract
+):
+    return to_date(
+        getattr(
+            contract,
+            "renewal_date",
+            None,
+        )
+    )
+
+
+def get_job_closing_date(
+    job
+):
+    return to_date(
+        getattr(
+            job,
+            "closing_date",
+            None,
+        )
+    )
+
+
+def is_ending_soon(
+    end_date,
+    today,
+    days=30,
+):
+    if end_date is None:
+        return False
+
+    return (
+        today
+        <= end_date
+        <= today
+        + timedelta(days=days)
+    )
+
+
+def is_past_date(value, today):
+    parsed = to_date(value)
+
+    if parsed is None:
+        return False
+
+    return parsed < today
+
+
+# ============================================================
+# DATA QUALITY
+# ============================================================
+
+def collect_quality_issues(
+    clients,
+    employees,
+    jobs,
+    candidates,
+    placements,
+    contracts,
+    invoices,
+    payments,
+    today,
+):
+    issues = {
+        "Clients": [],
+        "Employees": [],
+        "Jobs": [],
+        "Candidates": [],
+        "Placements": [],
+        "Contracts": [],
+        "Invoices": [],
+        "Payments": [],
+    }
+
+    # --------------------------------------------------------
+    # CLIENTS
+    # --------------------------------------------------------
+
+    for client in clients:
+
+        name = get_client_name(
+            client
+        )
+
+        if name.startswith(
+            "Client #"
+        ):
+            issues[
+                "Clients"
+            ].append(
+                f"{name}: missing company name"
+            )
+
+    # --------------------------------------------------------
+    # EMPLOYEES
+    # --------------------------------------------------------
+
+    for employee in employees:
+
+        name = get_employee_name(
+            employee
+        )
+
+        if name.startswith(
+            "Employee #"
+        ):
+            issues[
+                "Employees"
+            ].append(
+                f"{name}: missing employee name"
+            )
+
+    # --------------------------------------------------------
+    # JOBS
+    # --------------------------------------------------------
+
+    for job in jobs:
+
+        label = get_job_label(
+            job
+        )
+
+        client_id = (
+            get_client_id_from_job(
+                job
+            )
+        )
+
+        if client_id is None:
+            issues[
+                "Jobs"
+            ].append(
+                f"{label}: missing client"
+            )
+
+        position = clean_text(
+            getattr(
+                job,
+                "position",
+                None,
+            )
+        )
+
+        if not position:
+            issues[
+                "Jobs"
+            ].append(
+                f"Job #{getattr(job, 'id', '?')}: missing position"
+            )
+
+        opened = to_date(
+            getattr(
+                job,
+                "date_opened",
+                None,
+            )
+        )
+
+        closing = get_job_closing_date(
+            job
+        )
+
+        if (
+            opened is not None
+            and closing is not None
+            and closing < opened
+        ):
+            issues[
+                "Jobs"
+            ].append(
+                f"{label}: closing date before opening date"
+            )
+
+        budget = getattr(
+            job,
+            "client_budget",
+            None,
+        )
+
+        if budget is not None:
+            budget_value = safe_float(
+                budget
+            )
+
+            if budget_value < 0:
+                issues[
+                    "Jobs"
+                ].append(
+                    f"{label}: negative client budget"
+                )
+
+        openings = getattr(
+            job,
+            "openings",
+            None,
+        )
+
+        if openings is not None:
+
+            openings_value = safe_int(
+                openings,
+                default=0,
+            )
+
+            if openings_value <= 0:
+                issues[
+                    "Jobs"
+                ].append(
+                    f"{label}: openings should be greater than zero"
+                )
+
+    # --------------------------------------------------------
+    # CANDIDATES
+    # --------------------------------------------------------
+
+    for candidate in candidates:
+
+        label = get_candidate_name(
+            candidate
+        )
+
+        job = getattr(
+            candidate,
+            "job",
+            None,
+        )
+
+        job_id = getattr(
+            candidate,
+            "job_id",
+            None,
+        )
+
+        if job is None and job_id is None:
+            issues[
+                "Candidates"
+            ].append(
+                f"{label}: missing job"
+            )
+
+        employee = getattr(
+            candidate,
+            "employee",
+            None,
+        )
+
+        employee_id = getattr(
+            candidate,
+            "employee_id",
+            None,
+        )
+
+        if (
+            employee is None
+            and employee_id is None
+        ):
+            issues[
+                "Candidates"
+            ].append(
+                f"{label}: missing employee"
+            )
+
+        application_date = to_date(
+            getattr(
+                candidate,
+                "application_date",
+                None,
+            )
+        )
+
+        interview_date = to_date(
+            getattr(
+                candidate,
+                "interview_date",
+                None,
+            )
+        )
+
+        if (
+            application_date is not None
+            and interview_date is not None
+            and interview_date
+            < application_date
+        ):
+            issues[
+                "Candidates"
+            ].append(
+                f"{label}: interview date before application date"
+            )
+
+    # --------------------------------------------------------
+    # PLACEMENTS
+    # --------------------------------------------------------
+
+    for placement in placements:
+
+        placement_id = getattr(
+            placement,
+            "id",
+            "?",
+        )
+
+        client_id = (
+            get_client_id_from_placement(
+                placement
+            )
+        )
+
+        employee_id = getattr(
+            placement,
+            "employee_id",
+            None,
+        )
+
+        position = clean_text(
+            getattr(
+                placement,
+                "position",
+                None,
+            )
+        )
+
+        if client_id is None:
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: missing client"
+            )
+
+        if employee_id is None:
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: missing employee"
+            )
+
+        if not position:
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: missing position"
+            )
+
+        start_date = get_placement_start_date(
+            placement
+        )
+
+        end_date = get_placement_end_date(
+            placement
+        )
+
+        if (
+            start_date is not None
+            and end_date is not None
+            and end_date < start_date
+        ):
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: end date before start date"
+            )
+
+        status = get_status(
+            placement
+        )
+
+        if (
+            status == "Active"
+            and end_date is not None
+            and end_date < today
+        ):
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: Active placement has passed end date"
+            )
+
+        if (
+            status == "Scheduled"
+            and start_date is not None
+            and start_date < today
+        ):
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: Scheduled placement has passed start date"
+            )
+
+        revenue = get_placement_client_fee(
+            placement
+        )
+
+        cost = get_placement_worker_cost(
+            placement
+        )
+
+        margin = revenue - cost
+
+        if margin < 0:
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: negative margin"
+            )
+
+        if revenue < 0:
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: negative client fee"
+            )
+
+        if cost < 0:
+            issues[
+                "Placements"
+            ].append(
+                f"Placement #{placement_id}: negative worker cost"
+            )
+
+    # --------------------------------------------------------
+    # CONTRACTS
+    # --------------------------------------------------------
+
+    for contract in contracts:
+
+        label = get_contract_number(
+            contract
+        )
+
+        start_date = to_date(
+            getattr(
+                contract,
+                "start_date",
+                None,
+            )
+        )
+
+        end_date = to_date(
+            getattr(
+                contract,
+                "end_date",
+                None,
+            )
+        )
+
+        renewal_date = get_contract_renewal_date(
+            contract
+        )
+
+        if (
+            start_date is not None
+            and end_date is not None
+            and end_date < start_date
+        ):
+            issues[
+                "Contracts"
+            ].append(
+                f"{label}: end date before start date"
+            )
+
+        if (
+            renewal_date is not None
+            and start_date is not None
+            and renewal_date < start_date
+        ):
+            issues[
+                "Contracts"
+            ].append(
+                f"{label}: renewal date before contract start"
+            )
+
+        if (
+            renewal_date is not None
+            and end_date is not None
+            and renewal_date > end_date
+        ):
+            issues[
+                "Contracts"
+            ].append(
+                f"{label}: renewal date after contract end"
+            )
+
+    # --------------------------------------------------------
+    # INVOICES
+    # --------------------------------------------------------
+
+    for invoice in invoices:
+
+        label = get_invoice_number(
+            invoice
+        )
+
+        client_id = (
+            get_client_id_from_invoice(
+                invoice
+            )
+        )
+
+        if client_id is None:
+            issues[
+                "Invoices"
+            ].append(
+                f"{label}: missing client"
+            )
+
+        total = get_invoice_total(
+            invoice
+        )
+
+        paid = get_invoice_paid(
+            invoice
+        )
+
+        if paid < 0:
+            issues[
+                "Invoices"
+            ].append(
+                f"{label}: negative amount paid"
+            )
+
+        if paid > total + 0.01:
+            issues[
+                "Invoices"
+            ].append(
+                f"{label}: amount paid exceeds invoice total"
+            )
+
+        issue_date = to_date(
+            getattr(
+                invoice,
+                "issue_date",
+                None,
+            )
+        )
+
+        due_date = to_date(
+            getattr(
+                invoice,
+                "due_date",
+                None,
+            )
+        )
+
+        if (
+            issue_date is not None
+            and due_date is not None
+            and due_date < issue_date
+        ):
+            issues[
+                "Invoices"
+            ].append(
+                f"{label}: due date before issue date"
+            )
+
+        invoice_number = clean_text(
+            getattr(
+                invoice,
+                "invoice_number",
+                None,
+            )
+        )
+
+        if not invoice_number:
+            issues[
+                "Invoices"
+            ].append(
+                f"Invoice #{getattr(invoice, 'id', '?')}: missing invoice number"
+            )
+
+    # --------------------------------------------------------
+    # PAYMENTS
+    # --------------------------------------------------------
+
+    for payment in payments:
+
+        payment_id = getattr(
+            payment,
+            "id",
+            "?",
+        )
+
+        amount = get_payment_amount(
+            payment
+        )
+
+        invoice = getattr(
+            payment,
+            "invoice",
+            None,
+        )
+
+        invoice_id = getattr(
+            payment,
+            "invoice_id",
+            None,
+        )
+
+        if (
+            invoice is None
+            and invoice_id is None
+        ):
+            issues[
+                "Payments"
+            ].append(
+                f"Payment #{payment_id}: missing invoice"
+            )
+
+        if amount <= 0:
+            issues[
+                "Payments"
+            ].append(
+                f"Payment #{payment_id}: amount should be greater than zero"
+            )
+
+    return issues
+
+
+# ============================================================
+# SHOW REPORTS
 # ============================================================
 
 def show_reports():
 
-    st.title(
-        "Reports & Analytics"
-    )
-
-    st.caption(
-        "AVERRA management dashboard covering "
-        "clients, recruitment, placements, contracts, "
-        "invoices, payments and data quality."
-    )
-
     session = get_session()
 
     try:
+
+        today = date.today()
 
         # ====================================================
         # LOAD DATA
@@ -1448,7 +2175,7 @@ def show_reports():
         clients = (
             session.query(Client)
             .order_by(
-                Client.company_name.asc()
+                Client.id
             )
             .all()
         )
@@ -1456,8 +2183,7 @@ def show_reports():
         employees = (
             session.query(Employee)
             .order_by(
-                Employee.first_name.asc(),
-                Employee.last_name.asc(),
+                Employee.id
             )
             .all()
         )
@@ -1511,36 +2237,77 @@ def show_reports():
         )
 
         # ====================================================
-        # REPORT FILTERS
+        # HEADER
+        # ====================================================
+
+        st.title(
+            "AVERRA Reports & Analytics"
+        )
+
+        st.caption(
+            "Management dashboard covering recruitment, jobs, "
+            "placements, contracts, invoicing, payments and data quality."
+        )
+
+        # ====================================================
+        # GLOBAL FILTERS
         # ====================================================
 
         st.subheader(
             "Report Filters"
         )
 
-        filter_col1, filter_col2, filter_col3 = st.columns(
-            3
+        filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(
+            4
         )
 
-        client_filter_options = {
-            "All Clients": None
-        }
+        client_options = [
+            "All Clients"
+        ]
+
+        client_map = {}
 
         for client in clients:
 
-            client_filter_options[
-                f"{get_client_name(client)} "
-                f"(ID: {client.id})"
-            ] = client.id
+            client_name = get_client_name(
+                client
+            )
+
+            client_id = getattr(
+                client,
+                "id",
+                None,
+            )
+
+            if client_id is not None:
+
+                label = (
+                    f"{client_name} "
+                    f"(#{client_id})"
+                )
+
+                client_options.append(
+                    label
+                )
+
+                client_map[
+                    label
+                ] = client_id
 
         with filter_col1:
 
             selected_client_label = st.selectbox(
                 "Client",
-                list(
-                    client_filter_options.keys()
-                ),
+                client_options,
                 key="reports_client_filter",
+            )
+
+        if selected_client_label == "All Clients":
+            selected_client = "All Clients"
+        else:
+            selected_client = client_map.get(
+                selected_client_label,
+                "All Clients",
             )
 
         with filter_col2:
@@ -1548,9 +2315,8 @@ def show_reports():
             selected_currency = st.selectbox(
                 "Currency",
                 [
-                    "All",
-                    *CURRENCIES,
-                ],
+                    "All Currencies"
+                ] + CURRENCIES,
                 key="reports_currency_filter",
             )
 
@@ -1562,269 +2328,181 @@ def show_reports():
                 key="reports_period_filter",
             )
 
-        selected_client_id = (
-            client_filter_options[
-                selected_client_label
-            ]
+        with filter_col4:
+
+            search_text = st.text_input(
+                "Search",
+                placeholder=(
+                    "Client, employee, job, invoice..."
+                ),
+                key="reports_search_filter",
+            )
+
+        st.caption(
+            "The report period uses the primary date available "
+            "for each record type. Records without a usable date "
+            "are retained."
         )
 
-        custom_start = None
-        custom_end = None
-
-        if selected_period == "Custom":
-
-            date_col1, date_col2 = st.columns(2)
-
-            with date_col1:
-
-                custom_start = st.date_input(
-                    "Start Date",
-                    value=date.today()
-                    - timedelta(days=30),
-                    key="reports_custom_start",
-                )
-
-            with date_col2:
-
-                custom_end = st.date_input(
-                    "End Date",
-                    value=date.today(),
-                    key="reports_custom_end",
-                )
-
-            if custom_start > custom_end:
-
-                st.warning(
-                    "Custom start date cannot be after "
-                    "the custom end date."
-                )
-
         # ====================================================
-        # FILTER RECORDS
+        # APPLY FILTERS
         # ====================================================
 
-        filtered_clients = [
-            client
-            for client in clients
-            if (
-                selected_client_id is None
-                or client.id
-                == selected_client_id
-            )
-        ]
+        filtered_clients = filter_records(
+            clients,
+            "client",
+            selected_client,
+            "All Currencies",
+            search_text,
+            selected_period,
+            today,
+        )
 
-        if selected_client_id is None:
+        filtered_employees = filter_records(
+            employees,
+            "employee",
+            selected_client,
+            "All Currencies",
+            search_text,
+            selected_period,
+            today,
+        )
 
-            filtered_employees = employees
+        filtered_jobs = filter_records(
+            jobs,
+            "job",
+            selected_client,
+            "All Currencies",
+            search_text,
+            selected_period,
+            today,
+        )
 
-        else:
+        filtered_candidates = filter_records(
+            candidates,
+            "candidate",
+            selected_client,
+            "All Currencies",
+            search_text,
+            selected_period,
+            today,
+        )
 
-            employee_ids = {
-                getattr(
-                    placement,
-                    "employee_id",
-                    None,
-                )
-                for placement in placements
-                if getattr(
-                    placement,
-                    "client_id",
-                    None,
-                )
-                == selected_client_id
-            }
+        filtered_placements = filter_records(
+            placements,
+            "placement",
+            selected_client,
+            selected_currency,
+            search_text,
+            selected_period,
+            today,
+            financial=True,
+        )
 
-            filtered_employees = [
-                employee
-                for employee in employees
-                if employee.id
-                in employee_ids
-            ]
+        filtered_contracts = filter_records(
+            contracts,
+            "contract",
+            selected_client,
+            selected_currency,
+            search_text,
+            selected_period,
+            today,
+            financial=True,
+        )
 
-        filtered_jobs = [
-            job
-            for job in jobs
-            if matches_client(
-                get_client_id_from_job(job),
-                selected_client_id,
-            )
-        ]
+        filtered_invoices = filter_records(
+            invoices,
+            "invoice",
+            selected_client,
+            selected_currency,
+            search_text,
+            selected_period,
+            today,
+            financial=True,
+        )
 
-        filtered_candidates = [
-            candidate
-            for candidate in candidates
-            if matches_client(
-                get_client_id_from_candidate(
-                    candidate
-                ),
-                selected_client_id,
-            )
-        ]
-
-        filtered_placements = [
-            placement
-            for placement in placements
-            if matches_client(
-                getattr(
-                    placement,
-                    "client_id",
-                    None,
-                ),
-                selected_client_id,
-            )
-            and matches_currency(
-                placement,
-                selected_currency,
-            )
-            and date_in_period(
-                placement,
-                selected_period,
-                [
-                    "start_date",
-                    "created_at",
-                ],
-                custom_start,
-                custom_end,
-            )
-        ]
-
-        filtered_contracts = [
-            contract
-            for contract in contracts
-            if matches_client(
-                get_client_id_from_contract(
-                    contract
-                ),
-                selected_client_id,
-            )
-            and date_in_period(
-                contract,
-                selected_period,
-                [
-                    "start_date",
-                    "signed_date",
-                    "created_at",
-                ],
-                custom_start,
-                custom_end,
-            )
-        ]
-
-        filtered_invoices = [
-            invoice
-            for invoice in invoices
-            if matches_client(
-                get_client_id_from_invoice(
-                    invoice
-                ),
-                selected_client_id,
-            )
-            and matches_currency(
-                invoice,
-                selected_currency,
-            )
-            and date_in_period(
-                invoice,
-                selected_period,
-                [
-                    "invoice_date",
-                    "issue_date",
-                    "date_issued",
-                    "date",
-                    "due_date",
-                    "created_at",
-                ],
-                custom_start,
-                custom_end,
-            )
-        ]
-
-        filtered_payments = [
-            payment
-            for payment in payments
-            if matches_client(
-                get_client_id_from_payment(
-                    payment
-                ),
-                selected_client_id,
-            )
-            and matches_currency(
-                payment,
-                selected_currency,
-            )
-            and date_in_period(
-                payment,
-                selected_period,
-                [
-                    "payment_date",
-                    "date_received",
-                    "received_date",
-                    "date",
-                    "created_at",
-                ],
-                custom_start,
-                custom_end,
-            )
-        ]
+        filtered_payments = filter_records(
+            payments,
+            "payment",
+            selected_client,
+            selected_currency,
+            search_text,
+            selected_period,
+            today,
+            financial=True,
+        )
 
         # ====================================================
-        # FILTER SUMMARY
+        # EXPORT SUMMARY
         # ====================================================
 
-        active_filter_count = 0
+        export_rows = [
+            [
+                "Metric",
+                "Value",
+            ],
+            [
+                "Clients",
+                len(filtered_clients),
+            ],
+            [
+                "Employees",
+                len(filtered_employees),
+            ],
+            [
+                "Jobs",
+                len(filtered_jobs),
+            ],
+            [
+                "Candidates",
+                len(filtered_candidates),
+            ],
+            [
+                "Placements",
+                len(filtered_placements),
+            ],
+            [
+                "Contracts",
+                len(filtered_contracts),
+            ],
+            [
+                "Invoices",
+                len(filtered_invoices),
+            ],
+            [
+                "Payments",
+                len(filtered_payments),
+            ],
+        ]
 
-        if selected_client_id is not None:
-            active_filter_count += 1
+        export_csv = build_csv(
+            export_rows[0],
+            export_rows[1:],
+        )
 
-        if selected_currency != "All":
-            active_filter_count += 1
-
-        if selected_period != "All Time":
-            active_filter_count += 1
-
-        if active_filter_count:
-
-            filter_parts = []
-
-            if selected_client_id is not None:
-                filter_parts.append(
-                    selected_client_label.split(
-                        " (ID:"
-                    )[0]
-                )
-
-            if selected_currency != "All":
-                filter_parts.append(
-                    selected_currency
-                )
-
-            if selected_period != "All Time":
-                filter_parts.append(
-                    selected_period
-                )
-
-            st.info(
-                " | ".join(
-                    filter_parts
-                )
-            )
-
-        # ====================================================
-        # EXECUTIVE SUMMARY
-        # ====================================================
+        st.download_button(
+            "Download Report Summary CSV",
+            data=export_csv,
+            file_name=(
+                "averra_report_summary.csv"
+            ),
+            mime="text/csv",
+            key="reports_summary_csv",
+        )
 
         st.divider()
 
-        st.subheader(
-            "Executive Summary"
-        )
+        # ====================================================
+        # EXECUTIVE KPI CALCULATIONS
+        # ====================================================
 
         active_placements = [
             placement
             for placement in filtered_placements
             if get_status(
                 placement
-            ) == "Active"
+            )
+            == "Active"
         ]
 
         scheduled_placements = [
@@ -1832,23 +2510,8 @@ def show_reports():
             for placement in filtered_placements
             if get_status(
                 placement
-            ) == "Scheduled"
-        ]
-
-        completed_placements = [
-            placement
-            for placement in filtered_placements
-            if get_status(
-                placement
-            ) == "Completed"
-        ]
-
-        terminated_placements = [
-            placement
-            for placement in filtered_placements
-            if get_status(
-                placement
-            ) == "Terminated"
+            )
+            == "Scheduled"
         ]
 
         open_jobs = [
@@ -1856,71 +2519,135 @@ def show_reports():
             for job in filtered_jobs
             if get_status(
                 job
-            ) in JOB_OPEN_STATUSES
+            )
+            in JOB_OPEN_STATUSES
         ]
 
         open_invoices = [
             invoice
             for invoice in filtered_invoices
-            if get_status(
+            if is_invoice_open(
                 invoice
-            ) in INVOICE_OPEN_STATUSES
+            )
         ]
 
         overdue_invoices = [
             invoice
             for invoice in filtered_invoices
-            if (
-                get_status(invoice)
-                == "Overdue"
-                or get_invoice_overdue_days(
-                    invoice
-                ) > 0
+            if is_invoice_overdue(
+                invoice,
+                today,
             )
         ]
 
         received_payments = [
             payment
             for payment in filtered_payments
-            if get_status(
+            if get_payment_status(
                 payment
-            ) in PAYMENT_SUCCESS_STATUSES
+            )
+            in PAYMENT_SUCCESS_STATUSES
         ]
 
-        outstanding_totals = (
-            get_currency_totals(
-                open_invoices,
-                get_invoice_balance,
-            )
-        )
+        # ----------------------------------------------------
+        # FINANCIAL TOTALS
+        # ----------------------------------------------------
 
-        received_payment_totals = (
-            get_currency_totals(
-                received_payments,
-                get_payment_amount,
-            )
-        )
+        outstanding_by_currency = {}
+        invoice_total_by_currency = {}
+        paid_by_currency = {}
+        payment_received_by_currency = {}
+        placement_revenue_by_currency = {}
+        placement_cost_by_currency = {}
+        placement_margin_by_currency = {}
 
-        active_revenue_totals = (
-            get_currency_totals(
-                active_placements,
-                get_placement_client_fee,
-            )
-        )
+        for invoice in filtered_invoices:
 
-        active_cost_totals = (
-            get_currency_totals(
-                active_placements,
-                get_placement_worker_cost,
+            currency = get_currency(
+                invoice
             )
-        )
 
-        active_margin_totals = (
-            get_currency_totals(
-                active_placements,
-                get_placement_margin,
+            total = get_invoice_total(
+                invoice
             )
-        )
+
+            paid = get_invoice_paid(
+                invoice
+            )
+
+            balance = get_invoice_balance(
+                invoice
+            )
+
+            add_currency_value(
+                invoice_total_by_currency,
+                currency,
+                total,
+            )
+
+            add_currency_value(
+                paid_by_currency,
+                currency,
+                paid,
+            )
+
+            add_currency_value(
+                outstanding_by_currency,
+                currency,
+                balance,
+            )
+
+        for payment in received_payments:
+
+            currency = get_currency(
+                payment
+            )
+
+            amount = get_payment_amount(
+                payment
+            )
+
+            add_currency_value(
+                payment_received_by_currency,
+                currency,
+                amount,
+            )
+
+        for placement in active_placements:
+
+            currency = get_currency(
+                placement
+            )
+
+            revenue = get_placement_client_fee(
+                placement
+            )
+
+            cost = get_placement_worker_cost(
+                placement
+            )
+
+            margin = (
+                revenue - cost
+            )
+
+            add_currency_value(
+                placement_revenue_by_currency,
+                currency,
+                revenue,
+            )
+
+            add_currency_value(
+                placement_cost_by_currency,
+                currency,
+                cost,
+            )
+
+            add_currency_value(
+                placement_margin_by_currency,
+                currency,
+                margin,
+            )
 
         negative_margin_placements = [
             placement
@@ -1930,261 +2657,318 @@ def show_reports():
             ) < 0
         ]
 
-        quality_issue_count = sum(
-            len(
-                get_placement_quality_issues(
+        ending_soon_placements = [
+            placement
+            for placement in filtered_placements
+            if (
+                get_status(
                     placement
                 )
-            )
-            for placement in placements
-        )
-
-        e1, e2, e3, e4, e5, e6 = st.columns(
-            6
-        )
-
-        e1.metric(
-            "Clients",
-            len(
-                filtered_clients
-            ),
-        )
-
-        e2.metric(
-            "Employees",
-            len(
-                filtered_employees
-            ),
-        )
-
-        e3.metric(
-            "Open Jobs",
-            len(
-                open_jobs
-            ),
-        )
-
-        e4.metric(
-            "Active Placements",
-            len(
-                active_placements
-            ),
-        )
-
-        e5.metric(
-            "Candidates",
-            len(
-                filtered_candidates
-            ),
-        )
-
-        e6.metric(
-            "Open Invoices",
-            len(
-                open_invoices
-            ),
-        )
-
-        f1, f2, f3, f4 = st.columns(4)
-
-        with f1:
-
-            st.write(
-                "**Active Monthly Revenue**"
-            )
-
-            st.write(
-                format_currency_amounts(
-                    active_revenue_totals
+                in PLACEMENT_PIPELINE_STATUSES
+                and is_ending_soon(
+                    get_placement_end_date(
+                        placement
+                    ),
+                    today,
+                    30,
                 )
             )
+        ]
 
-        with f2:
-
-            st.write(
-                "**Active Monthly Cost**"
+        contracts_renewing_soon = [
+            contract
+            for contract in filtered_contracts
+            if is_ending_soon(
+                get_contract_renewal_date(
+                    contract
+                ),
+                today,
+                30,
             )
+        ]
 
-            st.write(
-                format_currency_amounts(
-                    active_cost_totals
+        jobs_closing_soon = [
+            job
+            for job in filtered_jobs
+            if (
+                get_status(
+                    job
+                )
+                in [
+                    "Open",
+                    "On Hold",
+                ]
+                and is_ending_soon(
+                    get_job_closing_date(
+                        job
+                    ),
+                    today,
+                    30,
                 )
             )
-
-        with f3:
-
-            st.write(
-                "**Active Gross Margin**"
-            )
-
-            st.write(
-                format_currency_amounts(
-                    active_margin_totals
-                )
-            )
-
-        with f4:
-
-            st.write(
-                "**Outstanding Invoices**"
-            )
-
-            st.write(
-                format_currency_amounts(
-                    outstanding_totals
-                )
-            )
-
-        st.caption(
-            f"Received payments: "
-            f"{format_currency_amounts(received_payment_totals)}"
-            f" | Overdue invoices: {len(overdue_invoices)}"
-            f" | Negative-margin placements: "
-            f"{len(negative_margin_placements)}"
-            f" | Placement quality issues: "
-            f"{quality_issue_count}"
-        )
+        ]
 
         # ====================================================
-        # MANAGEMENT ALERTS
+        # EXECUTIVE SUMMARY
         # ====================================================
 
-        alerts = []
+        st.subheader(
+            "Executive Summary"
+        )
 
-        today = date.today()
+        kpi1, kpi2, kpi3, kpi4 = st.columns(
+            4
+        )
 
-        for placement in filtered_placements:
-
-            start_date = getattr(
-                placement,
-                "start_date",
-                None,
+        with kpi1:
+            st.metric(
+                "Clients",
+                len(filtered_clients),
             )
 
-            end_date = getattr(
-                placement,
-                "end_date",
-                None,
+        with kpi2:
+            st.metric(
+                "Employees",
+                len(filtered_employees),
             )
 
-            status = get_status(
-                placement
+        with kpi3:
+            st.metric(
+                "Open Jobs",
+                len(open_jobs),
             )
 
-            if (
-                status == "Scheduled"
-                and start_date
-                and 0
-                <= (
-                    start_date
-                    - today
-                ).days
-                <= 30
-            ):
-
-                alerts.append(
-                    (
-                        "Scheduled start",
-                        placement,
-                        f"Starts in "
-                        f"{(start_date - today).days} days."
-                    )
-                )
-
-            if (
-                status == "Active"
-                and end_date
-                and 0
-                <= (
-                    end_date
-                    - today
-                ).days
-                <= 30
-            ):
-
-                alerts.append(
-                    (
-                        "Ending soon",
-                        placement,
-                        f"Ends in "
-                        f"{(end_date - today).days} days."
-                    )
-                )
-
-            if (
-                status == "Active"
-                and end_date
-                and end_date < today
-            ):
-
-                alerts.append(
-                    (
-                        "Expired active placement",
-                        placement,
-                        "End date has passed."
-                    )
-                )
-
-        if overdue_invoices:
-
-            alerts.append(
-                (
-                    "Overdue invoices",
-                    None,
-                    f"{len(overdue_invoices)} invoice(s) "
-                    "require collection review."
-                )
+        with kpi4:
+            st.metric(
+                "Candidates",
+                len(filtered_candidates),
             )
 
-        if negative_margin_placements:
+        kpi5, kpi6, kpi7, kpi8 = st.columns(
+            4
+        )
 
-            alerts.append(
-                (
-                    "Negative margins",
-                    None,
-                    f"{len(negative_margin_placements)} "
-                    "placement(s) have negative gross margin."
-                )
+        with kpi5:
+            st.metric(
+                "Active Placements",
+                len(active_placements),
             )
 
-        if alerts:
+        with kpi6:
+            st.metric(
+                "Scheduled Placements",
+                len(scheduled_placements),
+            )
 
-            with st.expander(
-                f"Management Alerts ({len(alerts)})",
-                expanded=False,
-            ):
+        with kpi7:
+            st.metric(
+                "Open Invoices",
+                len(open_invoices),
+            )
 
-                for alert_type, placement, message in alerts:
+        with kpi8:
+            st.metric(
+                "Overdue Invoices",
+                len(overdue_invoices),
+            )
 
-                    if placement:
+        # ====================================================
+        # FINANCIAL SUMMARY
+        # ====================================================
 
-                        employee_name = get_employee_name(
-                            get_placement_employee(
-                                placement
-                            )
+        st.subheader(
+            "Financial Overview"
+        )
+
+        finance1, finance2, finance3, finance4 = st.columns(
+            4
+        )
+
+        with finance1:
+            st.metric(
+                "Invoice Total",
+                format_currency_amounts(
+                    invoice_total_by_currency
+                ),
+            )
+
+        with finance2:
+            st.metric(
+                "Paid",
+                format_currency_amounts(
+                    paid_by_currency
+                ),
+            )
+
+        with finance3:
+            st.metric(
+                "Outstanding",
+                format_currency_amounts(
+                    outstanding_by_currency
+                ),
+            )
+
+        with finance4:
+            st.metric(
+                "Received Payments",
+                format_currency_amounts(
+                    payment_received_by_currency
+                ),
+            )
+
+        # ====================================================
+        # ATTENTION REQUIRED
+        # ====================================================
+
+        st.subheader(
+            "Attention Required"
+        )
+
+        attention1, attention2, attention3, attention4 = st.columns(
+            4
+        )
+
+        with attention1:
+
+            st.metric(
+                "Negative Margin",
+                len(
+                    negative_margin_placements
+                ),
+            )
+
+            if negative_margin_placements:
+
+                with st.expander(
+                    "View negative-margin placements"
+                ):
+
+                    for placement in negative_margin_placements[
+                        :10
+                    ]:
+
+                        employee = getattr(
+                            placement,
+                            "employee",
+                            None,
                         )
 
-                        st.warning(
-                            f"**{alert_type}:** "
-                            f"Placement #{placement.id} "
-                            f"({employee_name}) — "
-                            f"{message}"
+                        st.write(
+                            f"• Placement #{getattr(placement, 'id', '?')} — "
+                            f"{clean_text(getattr(placement, 'position', '')) or 'No position'} — "
+                            f"Margin: "
+                            f"{format_currency("
+                                get_placement_margin(
+                                    placement
+                                ),
+                                get_currency(
+                                    placement
+                                ),
+                            )}"
                         )
 
-                    else:
+        with attention2:
 
-                        st.warning(
-                            f"**{alert_type}:** "
-                            f"{message}"
+            st.metric(
+                "Overdue Invoices",
+                len(
+                    overdue_invoices
+                ),
+            )
+
+            if overdue_invoices:
+
+                with st.expander(
+                    "View overdue invoices"
+                ):
+
+                    for invoice in overdue_invoices[
+                        :10
+                    ]:
+
+                        st.write(
+                            f"• {get_invoice_number(invoice)} — "
+                            f"Outstanding: "
+                            f"{format_currency("
+                                get_invoice_balance(
+                                    invoice
+                                ),
+                                get_currency(
+                                    invoice
+                                ),
+                            )} — "
+                            f"{get_invoice_overdue_days("
+                                invoice,
+                                today,
+                            )} days overdue"
                         )
+
+        with attention3:
+
+            st.metric(
+                "Contracts Renewing",
+                len(
+                    contracts_renewing_soon
+                ),
+            )
+
+            if contracts_renewing_soon:
+
+                with st.expander(
+                    "View upcoming renewals"
+                ):
+
+                    for contract in contracts_renewing_soon[
+                        :10
+                    ]:
+
+                        st.write(
+                            f"• {get_contract_number(contract)} — "
+                            f"Renewal: "
+                            f"{format_date("
+                                get_contract_renewal_date(
+                                    contract
+                                )
+                            )}"
+                        )
+
+        with attention4:
+
+            st.metric(
+                "Jobs Closing Soon",
+                len(
+                    jobs_closing_soon
+                ),
+            )
+
+            if jobs_closing_soon:
+
+                with st.expander(
+                    "View jobs closing soon"
+                ):
+
+                    for job in jobs_closing_soon[
+                        :10
+                    ]:
+
+                        st.write(
+                            f"• {get_job_label(job)} — "
+                            f"Closing: "
+                            f"{format_date("
+                                get_job_closing_date(
+                                    job
+                                )
+                            )}"
+                        )
+
+        st.divider()
 
         # ====================================================
         # TABS
         # ====================================================
 
         (
-            tab_dashboard,
-            tab_pipeline,
+            tab_recruitment,
             tab_jobs,
             tab_placements,
             tab_financials,
@@ -2193,10 +2977,8 @@ def show_reports():
             tab_payments,
             tab_clients,
             tab_quality,
-            tab_exports,
         ) = st.tabs(
             [
-                "Dashboard",
                 "Recruitment Pipeline",
                 "Jobs",
                 "Placements",
@@ -2206,95 +2988,175 @@ def show_reports():
                 "Payments",
                 "Client Performance",
                 "Data Quality",
-                "Exports",
             ]
         )
 
         # ====================================================
-        # DASHBOARD
+        # RECRUITMENT PIPELINE
         # ====================================================
 
-        with tab_dashboard:
+        with tab_recruitment:
 
             st.subheader(
-                "Management Dashboard"
+                "Recruitment Pipeline"
             )
 
-            d1, d2, d3, d4 = st.columns(4)
-
-            d1.metric(
-                "Scheduled Placements",
-                len(
-                    scheduled_placements
-                ),
+            candidate_counts = count_by_status(
+                filtered_candidates
             )
 
-            d2.metric(
-                "Completed",
-                len(
-                    completed_placements
-                ),
-            )
-
-            d3.metric(
-                "Terminated",
-                len(
-                    terminated_placements
-                ),
-            )
-
-            d4.metric(
-                "Overdue Invoices",
-                len(
-                    overdue_invoices
-                ),
-            )
-
-            st.markdown(
-                "### Operational Overview"
-            )
-
-            overview_data = {
-                "Metric": [
-                    "Clients",
-                    "Employees",
-                    "Jobs",
-                    "Candidates",
-                    "Placements",
-                    "Contracts",
-                    "Invoices",
-                    "Payments",
-                ],
-                "Count": [
-                    len(filtered_clients),
-                    len(filtered_employees),
-                    len(filtered_jobs),
-                    len(filtered_candidates),
-                    len(filtered_placements),
-                    len(filtered_contracts),
-                    len(filtered_invoices),
-                    len(filtered_payments),
-                ],
-            }
-
-            st.dataframe(
-                overview_data,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            st.markdown(
-                "### Placement Status"
-            )
-
-            placement_statuses = count_by_status(
+            placement_counts = count_by_status(
                 filtered_placements
             )
 
-            if placement_statuses:
+            col1, col2 = st.columns(
+                2
+            )
+
+            with col1:
+
+                st.markdown(
+                    "### Candidate Status"
+                )
+
+                if candidate_counts:
+
+                    for status, count in sorted(
+                        candidate_counts.items()
+                    ):
+
+                        st.write(
+                            f"**{status}:** {count}"
+                        )
+
+                    st.bar_chart(
+                        candidate_counts
+                    )
+
+                else:
+                    st.info(
+                        "No candidate records found."
+                    )
+
+            with col2:
+
+                st.markdown(
+                    "### Placement Status"
+                )
+
+                if placement_counts:
+
+                    for status, count in sorted(
+                        placement_counts.items()
+                    ):
+
+                        st.write(
+                            f"**{status}:** {count}"
+                        )
+
+                    st.bar_chart(
+                        placement_counts
+                    )
+
+                else:
+                    st.info(
+                        "No placement records found."
+                    )
+
+            st.markdown(
+                "### Candidate Register"
+            )
+
+            candidate_rows = []
+
+            for candidate in filtered_candidates:
+
+                job = getattr(
+                    candidate,
+                    "job",
+                    None,
+                )
+
+                employee = getattr(
+                    candidate,
+                    "employee",
+                    None,
+                )
+
+                candidate_rows.append(
+                    [
+                        get_candidate_name(
+                            candidate
+                        ),
+                        get_status(
+                            candidate
+                        ),
+                        get_job_label(
+                            job
+                        ),
+                        get_employee_name(
+                            employee
+                        ),
+                        format_date(
+                            getattr(
+                                candidate,
+                                "application_date",
+                                None,
+                            )
+                        ),
+                        format_date(
+                            getattr(
+                                candidate,
+                                "interview_date",
+                                None,
+                            )
+                        ),
+                    ]
+                )
+
+            if candidate_rows:
+
+                st.dataframe(
+                    candidate_rows,
+                    column_config={
+                        0: "Candidate",
+                        1: "Status",
+                        2: "Job",
+                        3: "Employee",
+                        4: "Application Date",
+                        5: "Interview Date",
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            else:
+                st.info(
+                    "No candidates match the current filters."
+                )
+
+        # ====================================================
+        # JOBS
+        # ====================================================
+
+        with tab_jobs:
+
+            st.subheader(
+                "Jobs"
+            )
+
+            job_counts = count_by_status(
+                filtered_jobs
+            )
+
+            if job_counts:
+
+                st.bar_chart(
+                    job_counts
+                )
 
                 for status, count in sorted(
-                    placement_statuses.items()
+                    job_counts.items()
                 ):
 
                     st.write(
@@ -2302,805 +3164,437 @@ def show_reports():
                     )
 
             else:
-
                 st.info(
-                    "No placements found."
-                )
-
-            st.markdown(
-                "### Financial Snapshot"
-            )
-
-            financial_snapshot = {
-                "Metric": [
-                    "Active Revenue",
-                    "Active Worker Cost",
-                    "Active Gross Margin",
-                    "Outstanding Invoices",
-                    "Received Payments",
-                ],
-                "Value": [
-                    format_currency_amounts(
-                        active_revenue_totals
-                    ),
-                    format_currency_amounts(
-                        active_cost_totals
-                    ),
-                    format_currency_amounts(
-                        active_margin_totals
-                    ),
-                    format_currency_amounts(
-                        outstanding_totals
-                    ),
-                    format_currency_amounts(
-                        received_payment_totals
-                    ),
-                ],
-            }
-
-            st.dataframe(
-                financial_snapshot,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        # ====================================================
-        # RECRUITMENT PIPELINE
-        # ====================================================
-
-        with tab_pipeline:
-
-            st.subheader(
-                "Recruitment Pipeline"
-            )
-
-            candidate_statuses = count_by_status(
-                filtered_candidates
-            )
-
-            pipeline_columns = st.columns(4)
-
-            pipeline_status_order = [
-                "Submitted",
-                "Shortlisted",
-                "Interview",
-                "Offer",
-            ]
-
-            for index, status in enumerate(
-                pipeline_status_order
-            ):
-
-                pipeline_columns[index].metric(
-                    status,
-                    candidate_statuses.get(
-                        status,
-                        0,
-                    ),
-                )
-
-            placement_columns = st.columns(4)
-
-            placement_columns[0].metric(
-                "Placed",
-                candidate_statuses.get(
-                    "Placed",
-                    0,
-                ),
-            )
-
-            placement_columns[1].metric(
-                "Rejected",
-                candidate_statuses.get(
-                    "Rejected",
-                    0,
-                ),
-            )
-
-            placement_columns[2].metric(
-                "Withdrawn",
-                candidate_statuses.get(
-                    "Withdrawn",
-                    0,
-                ),
-            )
-
-            placement_columns[3].metric(
-                "Total Candidates",
-                len(
-                    filtered_candidates
-                ),
-            )
-
-            st.markdown(
-                "### Candidate Status Breakdown"
-            )
-
-            if candidate_statuses:
-
-                pipeline_rows = []
-
-                for status, count in sorted(
-                    candidate_statuses.items()
-                ):
-
-                    pipeline_rows.append(
-                        {
-                            "Status": status,
-                            "Candidates": count,
-                        }
-                    )
-
-                st.dataframe(
-                    pipeline_rows,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            else:
-
-                st.info(
-                    "No candidates found for the selected filters."
-                )
-
-            st.markdown(
-                "### Pipeline Placements"
-            )
-
-            pp1, pp2 = st.columns(2)
-
-            with pp1:
-
-                st.metric(
-                    "Active",
-                    len(
-                        active_placements
-                    ),
-                )
-
-            with pp2:
-
-                st.metric(
-                    "Scheduled",
-                    len(
-                        scheduled_placements
-                    ),
-                )
-
-            st.markdown(
-                "### Recruitment Conversion Indicators"
-            )
-
-            total_candidates = len(
-                filtered_candidates
-            )
-
-            conversion_rows = []
-
-            if total_candidates > 0:
-
-                conversion_rows = [
-                    {
-                        "Stage": "Shortlisted",
-                        "Count": candidate_statuses.get(
-                            "Shortlisted",
-                            0,
-                        ),
-                        "Share": format_percentage(
-                            (
-                                candidate_statuses.get(
-                                    "Shortlisted",
-                                    0,
-                                )
-                                / total_candidates
-                            )
-                            * 100
-                        ),
-                    },
-                    {
-                        "Stage": "Interview",
-                        "Count": candidate_statuses.get(
-                            "Interview",
-                            0,
-                        ),
-                        "Share": format_percentage(
-                            (
-                                candidate_statuses.get(
-                                    "Interview",
-                                    0,
-                                )
-                                / total_candidates
-                            )
-                            * 100
-                        ),
-                    },
-                    {
-                        "Stage": "Offer",
-                        "Count": candidate_statuses.get(
-                            "Offer",
-                            0,
-                        ),
-                        "Share": format_percentage(
-                            (
-                                candidate_statuses.get(
-                                    "Offer",
-                                    0,
-                                )
-                                / total_candidates
-                            )
-                            * 100
-                        ),
-                    },
-                    {
-                        "Stage": "Placed",
-                        "Count": candidate_statuses.get(
-                            "Placed",
-                            0,
-                        ),
-                        "Share": format_percentage(
-                            (
-                                candidate_statuses.get(
-                                    "Placed",
-                                    0,
-                                )
-                                / total_candidates
-                            )
-                            * 100
-                        ),
-                    },
-                ]
-
-            if conversion_rows:
-
-                st.dataframe(
-                    conversion_rows,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-        # ====================================================
-        # JOB REPORT
-        # ====================================================
-
-        with tab_jobs:
-
-            st.subheader(
-                "Job Report"
-            )
-
-            job_statuses = count_by_status(
-                filtered_jobs
-            )
-
-            j1, j2, j3, j4 = st.columns(4)
-
-            j1.metric(
-                "Total Jobs",
-                len(
-                    filtered_jobs
-                ),
-            )
-
-            j2.metric(
-                "Open",
-                sum(
-                    1
-                    for job in filtered_jobs
-                    if get_status(job)
-                    in JOB_OPEN_STATUSES
-                ),
-            )
-
-            j3.metric(
-                "On Hold",
-                sum(
-                    1
-                    for job in filtered_jobs
-                    if get_status(job)
-                    == "On Hold"
-                ),
-            )
-
-            j4.metric(
-                "Filled / Closed",
-                sum(
-                    1
-                    for job in filtered_jobs
-                    if get_status(job)
-                    in [
-                        "Filled",
-                        "Closed",
-                    ]
-                ),
-            )
-
-            st.markdown(
-                "### Job Status Breakdown"
-            )
-
-            if job_statuses:
-
-                rows = []
-
-                for status, count in sorted(
-                    job_statuses.items()
-                ):
-
-                    rows.append(
-                        {
-                            "Status": status,
-                            "Jobs": count,
-                        }
-                    )
-
-                st.dataframe(
-                    rows,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            else:
-
-                st.info(
-                    "No jobs found."
+                    "No jobs match the current filters."
                 )
 
             st.markdown(
                 "### Job Register"
             )
 
+            job_rows = []
+
             for job in filtered_jobs:
 
-                job_position = (
-                    clean_text(
-                        getattr(
-                            job,
-                            "position",
-                            "",
-                        )
-                    )
-                    or f"Job #{job.id}"
+                client = getattr(
+                    job,
+                    "client",
+                    None,
                 )
 
-                client_name = get_client_name(
-                    getattr(
-                        job,
-                        "client",
-                        None,
-                    )
-                )
-
-                status = get_status(
-                    job
-                )
-
-                job_candidate_count = sum(
-                    1
-                    for candidate
-                    in filtered_candidates
-                    if getattr(
-                        candidate,
-                        "job_id",
-                        None,
-                    )
-                    == job.id
-                )
-
-                job_placement_count = sum(
-                    1
-                    for placement
-                    in filtered_placements
-                    if getattr(
-                        placement,
-                        "job_id",
-                        None,
-                    )
-                    == job.id
-                )
-
-                with st.container(
-                    border=True
-                ):
-
-                    c1, c2, c3, c4 = st.columns(4)
-
-                    with c1:
-
-                        st.write(
-                            f"**#{job.id} — "
-                            f"{job_position}**"
-                        )
-
-                        st.caption(
-                            client_name
-                        )
-
-                    with c2:
-
-                        st.write(
-                            f"Status: **{status}**"
-                        )
-
-                        openings = getattr(
-                            job,
-                            "openings",
-                            None,
-                        )
-
-                        if openings is not None:
-
-                            st.caption(
-                                f"Openings: {openings}"
+                job_rows.append(
+                    [
+                        get_job_label(
+                            job
+                        ),
+                        get_client_name(
+                            client
+                        ),
+                        get_status(
+                            job
+                        ),
+                        clean_text(
+                            getattr(
+                                job,
+                                "department",
+                                "",
                             )
-
-                    with c3:
-
-                        st.write(
-                            "Candidates"
-                        )
-
-                        st.caption(
-                            str(
-                                job_candidate_count
+                        ),
+                        safe_int(
+                            getattr(
+                                job,
+                                "openings",
+                                0,
                             )
-                        )
-
-                    with c4:
-
-                        st.write(
-                            "Placements"
-                        )
-
-                        st.caption(
-                            str(
-                                job_placement_count
+                        ),
+                        clean_text(
+                            getattr(
+                                job,
+                                "currency",
+                                "",
                             )
-                        )
+                        ),
+                        safe_float(
+                            getattr(
+                                job,
+                                "client_budget",
+                                0,
+                            )
+                        ),
+                        format_date(
+                            getattr(
+                                job,
+                                "date_opened",
+                                None,
+                            )
+                        ),
+                        format_date(
+                            getattr(
+                                job,
+                                "closing_date",
+                                None,
+                            )
+                        ),
+                    ]
+                )
+
+            if job_rows:
+
+                st.dataframe(
+                    job_rows,
+                    column_config={
+                        0: "Job",
+                        1: "Client",
+                        2: "Status",
+                        3: "Department",
+                        4: "Openings",
+                        5: "Currency",
+                        6: "Budget",
+                        7: "Opened",
+                        8: "Closing",
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                csv_data = build_csv(
+                    [
+                        "Job",
+                        "Client",
+                        "Status",
+                        "Department",
+                        "Openings",
+                        "Currency",
+                        "Budget",
+                        "Opened",
+                        "Closing",
+                    ],
+                    job_rows,
+                )
+
+                st.download_button(
+                    "Download Jobs CSV",
+                    data=csv_data,
+                    file_name="averra_jobs_report.csv",
+                    mime="text/csv",
+                    key="reports_jobs_csv",
+                )
+
+            else:
+                st.info(
+                    "No jobs match the current filters."
+                )
 
         # ====================================================
-        # PLACEMENT REPORT
+        # PLACEMENTS
         # ====================================================
 
         with tab_placements:
 
             st.subheader(
-                "Placement Report"
+                "Placements"
             )
 
-            r1, r2, r3, r4, r5, r6 = st.columns(
-                6
+            total_placements = len(
+                filtered_placements
             )
 
-            r1.metric(
-                "Total",
-                len(
-                    filtered_placements
-                ),
+            active_count = len(
+                [
+                    p
+                    for p in filtered_placements
+                    if get_status(p)
+                    == "Active"
+                ]
             )
 
-            r2.metric(
-                "Active",
-                len(
-                    active_placements
-                ),
+            scheduled_count = len(
+                [
+                    p
+                    for p in filtered_placements
+                    if get_status(p)
+                    == "Scheduled"
+                ]
             )
 
-            r3.metric(
-                "Scheduled",
-                len(
-                    scheduled_placements
-                ),
+            completed_count = len(
+                [
+                    p
+                    for p in filtered_placements
+                    if get_status(p)
+                    == "Completed"
+                ]
             )
 
-            r4.metric(
-                "Completed",
-                len(
-                    completed_placements
-                ),
+            terminated_count = len(
+                [
+                    p
+                    for p in filtered_placements
+                    if get_status(p)
+                    == "Terminated"
+                ]
             )
 
-            r5.metric(
-                "Terminated",
-                len(
-                    terminated_placements
-                ),
+            p1, p2, p3, p4, p5 = st.columns(
+                5
             )
 
-            r6.metric(
-                "Negative Margin",
-                len(
-                    negative_margin_placements
-                ),
-            )
+            with p1:
+                st.metric(
+                    "Total",
+                    total_placements,
+                )
+
+            with p2:
+                st.metric(
+                    "Active",
+                    active_count,
+                )
+
+            with p3:
+                st.metric(
+                    "Scheduled",
+                    scheduled_count,
+                )
+
+            with p4:
+                st.metric(
+                    "Completed",
+                    completed_count,
+                )
+
+            with p5:
+                st.metric(
+                    "Terminated",
+                    terminated_count,
+                )
 
             st.markdown(
                 "### Placement Register"
             )
 
-            if not filtered_placements:
+            placement_rows = []
 
-                st.info(
-                    "No placements found for the selected filters."
+            for placement in filtered_placements:
+
+                client = getattr(
+                    placement,
+                    "client",
+                    None,
                 )
 
-            else:
+                employee = getattr(
+                    placement,
+                    "employee",
+                    None,
+                )
 
-                placement_rows = []
+                job = getattr(
+                    placement,
+                    "job",
+                    None,
+                )
 
-                for placement in filtered_placements:
+                currency = get_currency(
+                    placement
+                )
 
-                    employee_name = get_employee_name(
-                        get_placement_employee(
-                            placement
-                        )
+                revenue = get_placement_client_fee(
+                    placement
+                )
+
+                cost = get_placement_worker_cost(
+                    placement
+                )
+
+                margin = (
+                    revenue - cost
+                )
+
+                margin_pct = (
+                    (
+                        margin
+                        / revenue
+                        * 100
                     )
+                    if revenue > 0
+                    else 0
+                )
 
-                    client_name = get_client_name(
-                        get_placement_client(
-                            placement
-                        )
-                    )
-
-                    job_label = get_job_label(
-                        get_placement_job(
-                            placement
-                        )
-                    )
-
-                    placement_rows.append(
-                        {
-                            "ID": getattr(
+                placement_rows.append(
+                    [
+                        getattr(
+                            placement,
+                            "id",
+                            "",
+                        ),
+                        get_client_name(
+                            client
+                        ),
+                        get_employee_name(
+                            employee
+                        ),
+                        clean_text(
+                            getattr(
                                 placement,
-                                "id",
+                                "position",
                                 "",
-                            ),
-                            "Client": client_name,
-                            "Employee": employee_name,
-                            "Job": job_label,
-                            "Position": clean_text(
-                                getattr(
-                                    placement,
-                                    "position",
-                                    "",
-                                )
-                            ),
-                            "Status": get_status(
-                                placement
-                            ),
-                            "Start": format_date(
-                                getattr(
-                                    placement,
-                                    "start_date",
-                                    None,
-                                )
-                            ),
-                            "End": format_date(
-                                getattr(
-                                    placement,
-                                    "end_date",
-                                    None,
-                                )
-                            ),
-                            "Revenue": (
-                                f"{get_currency(placement)} "
-                                f"{get_placement_client_fee(placement):,.2f}"
-                            ),
-                            "Cost": (
-                                f"{get_currency(placement)} "
-                                f"{get_placement_worker_cost(placement):,.2f}"
-                            ),
-                            "Margin": (
-                                f"{get_currency(placement)} "
-                                f"{get_placement_margin(placement):,.2f}"
-                            ),
-                            "Margin %": format_percentage(
-                                get_placement_margin_percentage(
-                                    placement
-                                )
-                            ),
-                            "Quality": (
-                                "Review"
-                                if get_placement_quality_issues(
-                                    placement
-                                )
-                                else "OK"
-                            ),
-                        }
-                    )
+                            )
+                        ),
+                        get_job_label(
+                            job
+                        ),
+                        get_status(
+                            placement
+                        ),
+                        format_date(
+                            getattr(
+                                placement,
+                                "start_date",
+                                None,
+                            )
+                        ),
+                        format_date(
+                            getattr(
+                                placement,
+                                "end_date",
+                                None,
+                            )
+                        ),
+                        currency,
+                        revenue,
+                        cost,
+                        margin,
+                        f"{margin_pct:.1f}%",
+                    ]
+                )
+
+            if placement_rows:
 
                 st.dataframe(
                     placement_rows,
+                    column_config={
+                        0: "ID",
+                        1: "Client",
+                        2: "Employee",
+                        3: "Position",
+                        4: "Job",
+                        5: "Status",
+                        6: "Start",
+                        7: "End",
+                        8: "Currency",
+                        9: "Revenue",
+                        10: "Worker Cost",
+                        11: "Margin",
+                        12: "Margin %",
+                    },
                     use_container_width=True,
                     hide_index=True,
                 )
 
+                csv_data = build_csv(
+                    [
+                        "ID",
+                        "Client",
+                        "Employee",
+                        "Position",
+                        "Job",
+                        "Status",
+                        "Start",
+                        "End",
+                        "Currency",
+                        "Revenue",
+                        "Worker Cost",
+                        "Margin",
+                        "Margin %",
+                    ],
+                    placement_rows,
+                )
+
                 st.download_button(
-                    "Download Placement Register CSV",
-                    data=build_placement_csv(
-                        filtered_placements
+                    "Download Placements CSV",
+                    data=csv_data,
+                    file_name=(
+                        "averra_placements_report.csv"
                     ),
-                    file_name="averra_placement_report.csv",
                     mime="text/csv",
-                    key="download_placement_report",
+                    key="reports_placements_csv",
+                )
+
+            else:
+                st.info(
+                    "No placements match the current filters."
                 )
 
         # ====================================================
-        # FINANCIAL REPORTS
+        # FINANCIALS
         # ====================================================
 
         with tab_financials:
 
             st.subheader(
-                "Financial Performance"
+                "Financial Overview"
             )
 
-            revenue_totals = get_currency_totals(
-                active_placements,
-                get_placement_client_fee,
+            st.markdown(
+                "### Active Placement Economics"
             )
 
-            cost_totals = get_currency_totals(
-                active_placements,
-                get_placement_worker_cost,
+            revenue_col, cost_col, margin_col = st.columns(
+                3
             )
 
-            margin_totals = get_currency_totals(
-                active_placements,
-                get_placement_margin,
-            )
-
-            invoice_total_totals = (
-                get_currency_totals(
-                    filtered_invoices,
-                    get_invoice_total,
-                )
-            )
-
-            invoice_paid_totals = (
-                get_currency_totals(
-                    filtered_invoices,
-                    get_invoice_paid,
-                )
-            )
-
-            invoice_balance_totals = (
-                get_currency_totals(
-                    filtered_invoices,
-                    get_invoice_balance,
-                )
-            )
-
-            c1, c2, c3 = st.columns(3)
-
-            with c1:
-
-                st.write(
-                    "**Active Client Revenue**"
-                )
-
-                st.write(
+            with revenue_col:
+                st.metric(
+                    "Active Revenue",
                     format_currency_amounts(
-                        revenue_totals
-                    )
+                        placement_revenue_by_currency
+                    ),
                 )
 
-            with c2:
-
-                st.write(
-                    "**Active Worker Cost**"
-                )
-
-                st.write(
+            with cost_col:
+                st.metric(
+                    "Active Worker Cost",
                     format_currency_amounts(
-                        cost_totals
-                    )
+                        placement_cost_by_currency
+                    ),
                 )
 
-            with c3:
-
-                st.write(
-                    "**Active Gross Margin**"
-                )
-
-                st.write(
+            with margin_col:
+                st.metric(
+                    "Active Margin",
                     format_currency_amounts(
-                        margin_totals
-                    )
+                        placement_margin_by_currency
+                    ),
                 )
 
             st.markdown(
-                "### Margin by Placement"
+                "### Invoice Collection"
             )
 
-            if active_placements:
+            collection_rows = []
 
-                margin_rows = []
+            for currency in CURRENCIES:
 
-                for placement in active_placements:
-
-                    margin_rows.append(
-                        {
-                            "Placement": (
-                                f"#{placement.id}"
-                            ),
-                            "Employee": get_employee_name(
-                                get_placement_employee(
-                                    placement
-                                )
-                            ),
-                            "Client": get_client_name(
-                                get_placement_client(
-                                    placement
-                                )
-                            ),
-                            "Revenue": (
-                                f"{get_currency(placement)} "
-                                f"{get_placement_client_fee(placement):,.2f}"
-                            ),
-                            "Cost": (
-                                f"{get_currency(placement)} "
-                                f"{get_placement_worker_cost(placement):,.2f}"
-                            ),
-                            "Margin": (
-                                f"{get_currency(placement)} "
-                                f"{get_placement_margin(placement):,.2f}"
-                            ),
-                            "Margin %": format_percentage(
-                                get_placement_margin_percentage(
-                                    placement
-                                )
-                            ),
-                            "Status": get_margin_status(
-                                placement
-                            ),
-                        }
-                    )
-
-                st.dataframe(
-                    margin_rows,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            else:
-
-                st.info(
-                    "No active placements found."
-                )
-
-            st.markdown(
-                "### Invoice Financial Position"
-            )
-
-            invoice_financial_rows = []
-
-            for currency in sorted(
-                set(
-                    list(
-                        invoice_total_totals.keys()
-                    )
-                    + list(
-                        invoice_paid_totals.keys()
-                    )
-                    + list(
-                        invoice_balance_totals.keys()
+                total = (
+                    invoice_total_by_currency.get(
+                        currency,
+                        0.0,
                     )
                 )
-            ):
 
-                total = invoice_total_totals.get(
-                    currency,
-                    0.0,
+                paid = (
+                    paid_by_currency.get(
+                        currency,
+                        0.0,
+                    )
                 )
 
-                paid = invoice_paid_totals.get(
-                    currency,
-                    0.0,
-                )
-
-                balance = invoice_balance_totals.get(
-                    currency,
-                    0.0,
+                outstanding = (
+                    outstanding_by_currency.get(
+                        currency,
+                        0.0,
+                    )
                 )
 
                 collection_rate = (
@@ -3109,339 +3603,330 @@ def show_reports():
                     else 0
                 )
 
-                invoice_financial_rows.append(
-                    {
-                        "Currency": currency,
-                        "Invoice Value": f"{total:,.2f}",
-                        "Paid": f"{paid:,.2f}",
-                        "Outstanding": f"{balance:,.2f}",
-                        "Collection %": format_percentage(
-                            collection_rate
-                        ),
-                    }
+                collection_rows.append(
+                    [
+                        currency,
+                        total,
+                        paid,
+                        outstanding,
+                        f"{collection_rate:.1f}%",
+                    ]
                 )
 
-            if invoice_financial_rows:
+            st.dataframe(
+                collection_rows,
+                column_config={
+                    0: "Currency",
+                    1: "Invoice Total",
+                    2: "Paid",
+                    3: "Outstanding",
+                    4: "Collection Rate",
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.markdown(
+                "### Margin Analysis"
+            )
+
+            margin_rows = []
+
+            for placement in filtered_placements:
+
+                revenue = get_placement_client_fee(
+                    placement
+                )
+
+                cost = get_placement_worker_cost(
+                    placement
+                )
+
+                margin = (
+                    revenue - cost
+                )
+
+                margin_pct = (
+                    margin / revenue * 100
+                    if revenue > 0
+                    else 0
+                )
+
+                margin_rows.append(
+                    [
+                        getattr(
+                            placement,
+                            "id",
+                            "",
+                        ),
+                        clean_text(
+                            getattr(
+                                placement,
+                                "position",
+                                "",
+                            )
+                        ),
+                        get_currency(
+                            placement
+                        ),
+                        revenue,
+                        cost,
+                        margin,
+                        f"{margin_pct:.1f}%",
+                    ]
+                )
+
+            if margin_rows:
 
                 st.dataframe(
-                    invoice_financial_rows,
+                    margin_rows,
+                    column_config={
+                        0: "Placement ID",
+                        1: "Position",
+                        2: "Currency",
+                        3: "Revenue",
+                        4: "Cost",
+                        5: "Margin",
+                        6: "Margin %",
+                    },
                     use_container_width=True,
                     hide_index=True,
                 )
 
             else:
-
                 st.info(
-                    "No invoice financial data available."
-                )
-
-            st.markdown(
-                "### Negative Margin Placements"
-            )
-
-            if negative_margin_placements:
-
-                for placement in negative_margin_placements:
-
-                    employee_name = get_employee_name(
-                        get_placement_employee(
-                            placement
-                        )
-                    )
-
-                    st.error(
-                        f"Placement #{placement.id} — "
-                        f"{employee_name} — "
-                        f"{get_currency(placement)} "
-                        f"{get_placement_margin(placement):,.2f} "
-                        f"margin"
-                    )
-
-            else:
-
-                st.success(
-                    "No negative-margin placements found "
-                    "within the selected report."
+                    "No placement financial data available."
                 )
 
         # ====================================================
-        # CONTRACT REPORT
+        # CONTRACTS
         # ====================================================
 
         with tab_contracts:
 
             st.subheader(
-                "Contract Report"
+                "Contracts"
             )
 
-            contract_statuses = count_by_status(
+            contract_counts = count_by_status(
                 filtered_contracts
             )
 
-            c1, c2, c3, c4 = st.columns(4)
+            if contract_counts:
 
-            c1.metric(
-                "Total Contracts",
-                len(
-                    filtered_contracts
-                ),
-            )
-
-            c2.metric(
-                "Active",
-                contract_statuses.get(
-                    "Active",
-                    0,
-                ),
-            )
-
-            c3.metric(
-                "Signed",
-                contract_statuses.get(
-                    "Signed",
-                    0,
-                ),
-            )
-
-            c4.metric(
-                "Expired",
-                contract_statuses.get(
-                    "Expired",
-                    0,
-                ),
-            )
-
-            if contract_statuses:
-
-                contract_rows = []
+                st.bar_chart(
+                    contract_counts
+                )
 
                 for status, count in sorted(
-                    contract_statuses.items()
+                    contract_counts.items()
                 ):
 
-                    contract_rows.append(
-                        {
-                            "Status": status,
-                            "Contracts": count,
-                        }
+                    st.write(
+                        f"**{status}:** {count}"
                     )
 
-                st.dataframe(
-                    contract_rows,
-                    use_container_width=True,
-                    hide_index=True,
+            else:
+                st.info(
+                    "No contracts match the current filters."
                 )
 
             st.markdown(
                 "### Contract Register"
             )
 
+            contract_rows = []
+
             for contract in filtered_contracts:
 
-                contract_number = clean_text(
-                    getattr(
-                        contract,
-                        "contract_number",
-                        "",
-                    )
-                )
-
-                contract_type = clean_text(
-                    getattr(
-                        contract,
-                        "contract_type",
-                        "",
-                    )
-                )
-
-                status = get_status(
-                    contract
-                )
-
-                start_date = getattr(
+                client = getattr(
                     contract,
-                    "start_date",
+                    "client",
                     None,
                 )
 
-                end_date = getattr(
+                placement = getattr(
                     contract,
-                    "end_date",
+                    "placement",
                     None,
                 )
 
-                renewal_date = getattr(
-                    contract,
-                    "renewal_date",
-                    None,
-                )
-
-                with st.container(
-                    border=True
-                ):
-
-                    c1, c2, c3 = st.columns(3)
-
-                    with c1:
-
-                        st.write(
-                            f"**{contract_number or f'Contract #{contract.id}'}**"
-                        )
-
-                        st.caption(
-                            f"Type: "
-                            f"{contract_type or 'Not specified'}"
-                        )
-
-                    with c2:
-
-                        st.write(
-                            f"Status: **{status}**"
-                        )
-
-                        st.caption(
-                            f"Start: {format_date(start_date)} "
-                            f"| End: {format_date(end_date)}"
-                        )
-
-                    with c3:
-
-                        st.write(
-                            "Renewal"
-                        )
-
-                        st.caption(
-                            format_date(
-                                renewal_date
+                contract_rows.append(
+                    [
+                        get_contract_number(
+                            contract
+                        ),
+                        get_client_name(
+                            client
+                        ),
+                        getattr(
+                            contract,
+                            "contract_type",
+                            "",
+                        ),
+                        get_status(
+                            contract
+                        ),
+                        getattr(
+                            contract,
+                            "currency",
+                            "",
+                        ),
+                        safe_float(
+                            getattr(
+                                contract,
+                                "contract_value",
+                                0,
                             )
+                        ),
+                        format_date(
+                            getattr(
+                                contract,
+                                "start_date",
+                                None,
+                            )
+                        ),
+                        format_date(
+                            getattr(
+                                contract,
+                                "end_date",
+                                None,
+                            )
+                        ),
+                        format_date(
+                            getattr(
+                                contract,
+                                "signed_date",
+                                None,
+                            )
+                        ),
+                        format_date(
+                            getattr(
+                                contract,
+                                "renewal_date",
+                                None,
+                            )
+                        ),
+                        getattr(
+                            placement,
+                            "id",
+                            "",
                         )
+                        if placement
+                        else "",
+                    ]
+                )
+
+            if contract_rows:
+
+                st.dataframe(
+                    contract_rows,
+                    column_config={
+                        0: "Contract",
+                        1: "Client",
+                        2: "Type",
+                        3: "Status",
+                        4: "Currency",
+                        5: "Value",
+                        6: "Start",
+                        7: "End",
+                        8: "Signed",
+                        9: "Renewal",
+                        10: "Placement ID",
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            else:
+                st.info(
+                    "No contracts match the current filters."
+                )
 
         # ====================================================
-        # INVOICE REPORT
+        # INVOICES
         # ====================================================
 
         with tab_invoices:
 
             st.subheader(
-                "Invoice Report"
+                "Invoices"
             )
 
-            invoice_statuses = count_by_status(
+            invoice_total = sum(
+                get_invoice_total(
+                    invoice
+                )
+                for invoice in filtered_invoices
+            )
+
+            invoice_paid = sum(
+                get_invoice_paid(
+                    invoice
+                )
+                for invoice in filtered_invoices
+            )
+
+            invoice_outstanding = sum(
+                get_invoice_balance(
+                    invoice
+                )
+                for invoice in filtered_invoices
+            )
+
+            i1, i2, i3 = st.columns(
+                3
+            )
+
+            with i1:
+                st.metric(
+                    "Invoice Total",
+                    format_currency_amounts(
+                        invoice_total_by_currency
+                    ),
+                )
+
+            with i2:
+                st.metric(
+                    "Paid",
+                    format_currency_amounts(
+                        paid_by_currency
+                    ),
+                )
+
+            with i3:
+                st.metric(
+                    "Outstanding",
+                    format_currency_amounts(
+                        outstanding_by_currency
+                    ),
+                )
+
+            invoice_counts = count_by_status(
                 filtered_invoices
             )
 
-            total_invoice_value = (
-                get_currency_totals(
-                    filtered_invoices,
-                    get_invoice_total,
-                )
-            )
-
-            paid_invoice_value = (
-                get_currency_totals(
-                    filtered_invoices,
-                    get_invoice_paid,
-                )
-            )
-
-            outstanding_invoice_value = (
-                get_currency_totals(
-                    filtered_invoices,
-                    get_invoice_balance,
-                )
-            )
-
-            inv1, inv2, inv3, inv4 = st.columns(4)
-
-            inv1.metric(
-                "Invoices",
-                len(
-                    filtered_invoices
-                ),
-            )
-
-            inv2.metric(
-                "Open",
-                len(
-                    open_invoices
-                ),
-            )
-
-            inv3.metric(
-                "Overdue",
-                len(
-                    overdue_invoices
-                ),
-            )
-
-            inv4.metric(
-                "Statuses",
-                len(
-                    invoice_statuses
-                ),
-            )
-
-            ic1, ic2, ic3 = st.columns(3)
-
-            with ic1:
-
-                st.write(
-                    "**Invoice Value**"
-                )
-
-                st.write(
-                    format_currency_amounts(
-                        total_invoice_value
-                    )
-                )
-
-            with ic2:
-
-                st.write(
-                    "**Paid**"
-                )
-
-                st.write(
-                    format_currency_amounts(
-                        paid_invoice_value
-                    )
-                )
-
-            with ic3:
-
-                st.write(
-                    "**Outstanding**"
-                )
-
-                st.write(
-                    format_currency_amounts(
-                        outstanding_invoice_value
-                    )
-                )
-
             st.markdown(
-                "### Invoice Status Breakdown"
+                "### Invoice Status"
             )
 
-            if invoice_statuses:
+            if invoice_counts:
 
-                rows = []
+                st.bar_chart(
+                    invoice_counts
+                )
 
                 for status, count in sorted(
-                    invoice_statuses.items()
+                    invoice_counts.items()
                 ):
 
-                    rows.append(
-                        {
-                            "Status": status,
-                            "Invoices": count,
-                        }
+                    st.write(
+                        f"**{status}:** {count}"
                     )
 
-                st.dataframe(
-                    rows,
-                    use_container_width=True,
-                    hide_index=True,
+            else:
+                st.info(
+                    "No invoices match the current filters."
                 )
 
             st.markdown(
@@ -3452,180 +3937,226 @@ def show_reports():
 
             for invoice in filtered_invoices:
 
-                invoice_number = clean_text(
-                    getattr(
-                        invoice,
-                        "invoice_number",
-                        "",
-                    )
+                client = getattr(
+                    invoice,
+                    "client",
+                    None,
+                )
+
+                placement = getattr(
+                    invoice,
+                    "placement",
+                    None,
+                )
+
+                total = get_invoice_total(
+                    invoice
+                )
+
+                paid = get_invoice_paid(
+                    invoice
+                )
+
+                balance = get_invoice_balance(
+                    invoice
+                )
+
+                overdue_days = get_invoice_overdue_days(
+                    invoice,
+                    today,
                 )
 
                 invoice_rows.append(
-                    {
-                        "ID": getattr(
+                    [
+                        get_invoice_number(
+                            invoice
+                        ),
+                        get_client_name(
+                            client
+                        ),
+                        getattr(
                             invoice,
-                            "id",
+                            "description",
                             "",
                         ),
-                        "Invoice": (
-                            invoice_number
-                            or f"Invoice #{invoice.id}"
-                        ),
-                        "Status": get_status(
+                        get_status(
                             invoice
                         ),
-                        "Currency": get_currency(
+                        get_currency(
                             invoice
                         ),
-                        "Total": f"{get_invoice_total(invoice):,.2f}",
-                        "Paid": f"{get_invoice_paid(invoice):,.2f}",
-                        "Balance": f"{get_invoice_balance(invoice):,.2f}",
-                        "Invoice Date": format_date(
-                            get_invoice_date(
-                                invoice
+                        total,
+                        paid,
+                        balance,
+                        format_date(
+                            getattr(
+                                invoice,
+                                "issue_date",
+                                None,
                             )
                         ),
-                        "Due Date": format_date(
-                            get_invoice_due_date(
-                                invoice
+                        format_date(
+                            getattr(
+                                invoice,
+                                "due_date",
+                                None,
                             )
                         ),
-                        "Overdue Days": get_invoice_overdue_days(
-                            invoice
-                        ),
-                    }
+                        overdue_days,
+                        getattr(
+                            placement,
+                            "id",
+                            "",
+                        )
+                        if placement
+                        else "",
+                    ]
                 )
 
             if invoice_rows:
 
                 st.dataframe(
                     invoice_rows,
+                    column_config={
+                        0: "Invoice",
+                        1: "Client",
+                        2: "Description",
+                        3: "Status",
+                        4: "Currency",
+                        5: "Total",
+                        6: "Paid",
+                        7: "Outstanding",
+                        8: "Issue Date",
+                        9: "Due Date",
+                        10: "Overdue Days",
+                        11: "Placement ID",
+                    },
                     use_container_width=True,
                     hide_index=True,
                 )
 
-            else:
+                csv_data = build_csv(
+                    [
+                        "Invoice",
+                        "Client",
+                        "Description",
+                        "Status",
+                        "Currency",
+                        "Total",
+                        "Paid",
+                        "Outstanding",
+                        "Issue Date",
+                        "Due Date",
+                        "Overdue Days",
+                        "Placement ID",
+                    ],
+                    invoice_rows,
+                )
 
+                st.download_button(
+                    "Download Invoices CSV",
+                    data=csv_data,
+                    file_name=(
+                        "averra_invoices_report.csv"
+                    ),
+                    mime="text/csv",
+                    key="reports_invoices_csv",
+                )
+
+            else:
                 st.info(
-                    "No invoices found."
+                    "No invoices match the current filters."
                 )
 
         # ====================================================
-        # PAYMENT REPORT
+        # PAYMENTS
         # ====================================================
 
         with tab_payments:
 
             st.subheader(
-                "Payment Report"
+                "Payments"
             )
 
-            received_payments = [
-                payment
-                for payment in filtered_payments
-                if get_status(
+            received_total = {}
+
+            non_received_total = {}
+
+            for payment in filtered_payments:
+
+                currency = get_currency(
                     payment
-                ) in PAYMENT_SUCCESS_STATUSES
-            ]
+                )
 
-            non_received_payments = [
-                payment
-                for payment in filtered_payments
-                if get_status(
+                amount = get_payment_amount(
                     payment
-                ) in PAYMENT_NON_SUCCESS_STATUSES
-            ]
-
-            received_totals = (
-                get_currency_totals(
-                    received_payments,
-                    get_payment_amount,
-                )
-            )
-
-            non_received_totals = (
-                get_currency_totals(
-                    non_received_payments,
-                    get_payment_amount,
-                )
-            )
-
-            pm1, pm2, pm3 = st.columns(3)
-
-            pm1.metric(
-                "Payment Records",
-                len(
-                    filtered_payments
-                ),
-            )
-
-            pm2.metric(
-                "Received",
-                len(
-                    received_payments
-                ),
-            )
-
-            pm3.metric(
-                "Pending / Failed / Reversed",
-                len(
-                    non_received_payments
-                ),
-            )
-
-            pc1, pc2 = st.columns(2)
-
-            with pc1:
-
-                st.write(
-                    "**Received Value**"
                 )
 
-                st.write(
-                    format_currency_amounts(
-                        received_totals
+                status = get_payment_status(
+                    payment
+                )
+
+                if status in PAYMENT_SUCCESS_STATUSES:
+
+                    add_currency_value(
+                        received_total,
+                        currency,
+                        amount,
                     )
-                )
 
-            with pc2:
+                else:
 
-                st.write(
-                    "**Non-Received Value**"
-                )
-
-                st.write(
-                    format_currency_amounts(
-                        non_received_totals
+                    add_currency_value(
+                        non_received_total,
+                        currency,
+                        amount,
                     )
+
+            p1, p2 = st.columns(
+                2
+            )
+
+            with p1:
+                st.metric(
+                    "Received",
+                    format_currency_amounts(
+                        received_total
+                    ),
                 )
 
-            payment_statuses = count_by_status(
+            with p2:
+                st.metric(
+                    "Pending / Failed / Reversed",
+                    format_currency_amounts(
+                        non_received_total
+                    ),
+                )
+
+            payment_counts = count_by_status(
                 filtered_payments
             )
 
             st.markdown(
-                "### Payment Status Breakdown"
+                "### Payment Status"
             )
 
-            if payment_statuses:
+            if payment_counts:
 
-                rows = []
+                st.bar_chart(
+                    payment_counts
+                )
 
                 for status, count in sorted(
-                    payment_statuses.items()
+                    payment_counts.items()
                 ):
 
-                    rows.append(
-                        {
-                            "Status": status,
-                            "Payments": count,
-                        }
+                    st.write(
+                        f"**{status}:** {count}"
                     )
 
-                st.dataframe(
-                    rows,
-                    use_container_width=True,
-                    hide_index=True,
+            else:
+                st.info(
+                    "No payments match the current filters."
                 )
 
             st.markdown(
@@ -3636,54 +4167,97 @@ def show_reports():
 
             for payment in filtered_payments:
 
+                invoice = getattr(
+                    payment,
+                    "invoice",
+                    None,
+                )
+
                 payment_rows.append(
-                    {
-                        "ID": getattr(
+                    [
+                        getattr(
                             payment,
                             "id",
                             "",
                         ),
-                        "Invoice ID": getattr(
+                        get_invoice_number(
+                            invoice
+                        ),
+                        get_status(
                             payment,
-                            "invoice_id",
-                            "",
+                            "Pending",
                         ),
-                        "Status": get_status(
+                        get_currency(
                             payment
                         ),
-                        "Currency": get_currency(
+                        get_payment_amount(
                             payment
                         ),
-                        "Amount": (
-                            f"{get_payment_amount(payment):,.2f}"
-                        ),
-                        "Date": format_date(
+                        format_date(
                             get_payment_date(
                                 payment
                             )
                         ),
-                        "Reference": clean_text(
+                        clean_text(
                             getattr(
                                 payment,
                                 "reference",
                                 "",
                             )
-                        ) or "—",
-                    }
+                        )
+                        or clean_text(
+                            getattr(
+                                payment,
+                                "payment_reference",
+                                "",
+                            )
+                        ),
+                    ]
                 )
 
             if payment_rows:
 
                 st.dataframe(
                     payment_rows,
+                    column_config={
+                        0: "ID",
+                        1: "Invoice",
+                        2: "Status",
+                        3: "Currency",
+                        4: "Amount",
+                        5: "Payment Date",
+                        6: "Reference",
+                    },
                     use_container_width=True,
                     hide_index=True,
                 )
 
-            else:
+                csv_data = build_csv(
+                    [
+                        "ID",
+                        "Invoice",
+                        "Status",
+                        "Currency",
+                        "Amount",
+                        "Payment Date",
+                        "Reference",
+                    ],
+                    payment_rows,
+                )
 
+                st.download_button(
+                    "Download Payments CSV",
+                    data=csv_data,
+                    file_name=(
+                        "averra_payments_report.csv"
+                    ),
+                    mime="text/csv",
+                    key="reports_payments_csv",
+                )
+
+            else:
                 st.info(
-                    "No payments found."
+                    "No payments match the current filters."
                 )
 
         # ====================================================
@@ -3696,223 +4270,309 @@ def show_reports():
                 "Client Performance"
             )
 
-            if not filtered_clients:
+            sort_option = st.selectbox(
+                "Sort Clients",
+                CLIENT_SORT_OPTIONS,
+                key="reports_client_sort",
+            )
 
-                st.info(
-                    "No clients found."
+            client_performance = []
+
+            for client in filtered_clients:
+
+                client_id = getattr(
+                    client,
+                    "id",
+                    None,
                 )
 
-            else:
-
-                client_rows = []
-
-                for client in filtered_clients:
-
-                    client_id = client.id
-
-                    client_jobs = [
+                client_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if get_client_id_from_job(
                         job
-                        for job in filtered_jobs
-                        if get_client_id_from_job(
-                            job
-                        )
-                        == client_id
-                    ]
+                    )
+                    == client_id
+                ]
 
-                    client_candidates = [
+                client_candidates = [
+                    candidate
+                    for candidate in filtered_candidates
+                    if get_client_id_from_candidate(
                         candidate
-                        for candidate
-                        in filtered_candidates
-                        if get_client_id_from_candidate(
-                            candidate
-                        )
-                        == client_id
-                    ]
+                    )
+                    == client_id
+                ]
 
-                    client_placements = [
+                client_placements = [
+                    placement
+                    for placement in filtered_placements
+                    if get_client_id_from_placement(
                         placement
-                        for placement
-                        in filtered_placements
-                        if getattr(
-                            placement,
-                            "client_id",
-                            None,
-                        )
-                        == client_id
-                    ]
+                    )
+                    == client_id
+                ]
 
-                    client_invoices = [
+                client_active_placements = [
+                    placement
+                    for placement in client_placements
+                    if get_status(
+                        placement
+                    )
+                    == "Active"
+                ]
+
+                client_invoices = [
+                    invoice
+                    for invoice in filtered_invoices
+                    if get_client_id_from_invoice(
                         invoice
-                        for invoice
-                        in filtered_invoices
-                        if get_client_id_from_invoice(
-                            invoice
-                        )
-                        == client_id
-                    ]
+                    )
+                    == client_id
+                ]
 
-                    client_active_placements = [
+                client_payments = [
+                    payment
+                    for payment in filtered_payments
+                    if get_client_id_from_payment(
+                        payment
+                    )
+                    == client_id
+                ]
+
+                revenue_by_currency = {}
+                margin_by_currency = {}
+                outstanding_by_currency_client = {}
+                received_by_currency_client = {}
+
+                for placement in client_active_placements:
+
+                    currency = get_currency(
                         placement
-                        for placement
-                        in client_placements
-                        if get_status(
-                            placement
-                        ) == "Active"
+                    )
+
+                    revenue = get_placement_client_fee(
+                        placement
+                    )
+
+                    margin = get_placement_margin(
+                        placement
+                    )
+
+                    add_currency_value(
+                        revenue_by_currency,
+                        currency,
+                        revenue,
+                    )
+
+                    add_currency_value(
+                        margin_by_currency,
+                        currency,
+                        margin,
+                    )
+
+                for invoice in client_invoices:
+
+                    currency = get_currency(
+                        invoice
+                    )
+
+                    balance = get_invoice_balance(
+                        invoice
+                    )
+
+                    add_currency_value(
+                        outstanding_by_currency_client,
+                        currency,
+                        balance,
+                    )
+
+                for payment in client_payments:
+
+                    status = get_payment_status(
+                        payment
+                    )
+
+                    if status not in PAYMENT_SUCCESS_STATUSES:
+                        continue
+
+                    currency = get_currency(
+                        payment
+                    )
+
+                    amount = get_payment_amount(
+                        payment
+                    )
+
+                    add_currency_value(
+                        received_by_currency_client,
+                        currency,
+                        amount,
+                    )
+
+                client_performance.append(
+                    {
+                        "name": get_client_name(
+                            client
+                        ),
+                        "jobs": len(
+                            client_jobs
+                        ),
+                        "candidates": len(
+                            client_candidates
+                        ),
+                        "placements": len(
+                            client_placements
+                        ),
+                        "active_placements": len(
+                            client_active_placements
+                        ),
+                        "invoices": len(
+                            client_invoices
+                        ),
+                        "revenue": revenue_by_currency,
+                        "margin": margin_by_currency,
+                        "outstanding": outstanding_by_currency_client,
+                        "received": received_by_currency_client,
+                    }
+                )
+
+            if sort_option == "Client A-Z":
+
+                client_performance.sort(
+                    key=lambda x: x[
+                        "name"
+                    ].lower()
+                )
+
+            elif sort_option == "Revenue - Highest":
+
+                client_performance.sort(
+                    key=lambda x: sum(
+                        x[
+                            "revenue"
+                        ].values()
+                    ),
+                    reverse=True,
+                )
+
+            elif sort_option == "Outstanding - Highest":
+
+                client_performance.sort(
+                    key=lambda x: sum(
+                        x[
+                            "outstanding"
+                        ].values()
+                    ),
+                    reverse=True,
+                )
+
+            elif sort_option == "Margin - Highest":
+
+                client_performance.sort(
+                    key=lambda x: sum(
+                        x[
+                            "margin"
+                        ].values()
+                    ),
+                    reverse=True,
+                )
+
+            elif sort_option == "Jobs - Highest":
+
+                client_performance.sort(
+                    key=lambda x: x[
+                        "jobs"
+                    ],
+                    reverse=True,
+                )
+
+            elif sort_option == "Placements - Highest":
+
+                client_performance.sort(
+                    key=lambda x: x[
+                        "placements"
+                    ],
+                    reverse=True,
+                )
+
+            client_rows = []
+
+            for item in client_performance:
+
+                client_rows.append(
+                    [
+                        item["name"],
+                        item["jobs"],
+                        item["candidates"],
+                        item["placements"],
+                        item["active_placements"],
+                        item["invoices"],
+                        format_currency_amounts(
+                            item["revenue"]
+                        ),
+                        format_currency_amounts(
+                            item["margin"]
+                        ),
+                        format_currency_amounts(
+                            item["outstanding"]
+                        ),
+                        format_currency_amounts(
+                            item["received"]
+                        ),
                     ]
+                )
 
-                    client_revenue = (
-                        get_currency_totals(
-                            client_active_placements,
-                            get_placement_client_fee,
-                        )
-                    )
-
-                    client_margin = (
-                        get_currency_totals(
-                            client_active_placements,
-                            get_placement_margin,
-                        )
-                    )
-
-                    client_outstanding = (
-                        get_currency_totals(
-                            client_invoices,
-                            get_invoice_balance,
-                        )
-                    )
-
-                    client_rows.append(
-                        {
-                            "Client": get_client_name(
-                                client
-                            ),
-                            "Jobs": len(
-                                client_jobs
-                            ),
-                            "Candidates": len(
-                                client_candidates
-                            ),
-                            "Active Placements": len(
-                                client_active_placements
-                            ),
-                            "Invoices": len(
-                                client_invoices
-                            ),
-                            "Active Revenue": (
-                                format_currency_amounts(
-                                    client_revenue
-                                )
-                            ),
-                            "Active Margin": (
-                                format_currency_amounts(
-                                    client_margin
-                                )
-                            ),
-                            "Outstanding": (
-                                format_currency_amounts(
-                                    client_outstanding
-                                )
-                            ),
-                        }
-                    )
+            if client_rows:
 
                 st.dataframe(
                     client_rows,
+                    column_config={
+                        0: "Client",
+                        1: "Jobs",
+                        2: "Candidates",
+                        3: "Placements",
+                        4: "Active Placements",
+                        5: "Invoices",
+                        6: "Active Revenue",
+                        7: "Active Margin",
+                        8: "Outstanding",
+                        9: "Received",
+                    },
                     use_container_width=True,
                     hide_index=True,
                 )
 
-                st.markdown(
-                    "### Client Detail"
+                csv_data = build_csv(
+                    [
+                        "Client",
+                        "Jobs",
+                        "Candidates",
+                        "Placements",
+                        "Active Placements",
+                        "Invoices",
+                        "Active Revenue",
+                        "Active Margin",
+                        "Outstanding",
+                        "Received",
+                    ],
+                    client_rows,
                 )
 
-                for client in filtered_clients:
+                st.download_button(
+                    "Download Client Performance CSV",
+                    data=csv_data,
+                    file_name=(
+                        "averra_client_performance.csv"
+                    ),
+                    mime="text/csv",
+                    key="reports_client_performance_csv",
+                )
 
-                    client_id = client.id
-
-                    client_placements = [
-                        placement
-                        for placement
-                        in filtered_placements
-                        if getattr(
-                            placement,
-                            "client_id",
-                            None,
-                        )
-                        == client_id
-                    ]
-
-                    client_active = [
-                        placement
-                        for placement
-                        in client_placements
-                        if get_status(
-                            placement
-                        ) == "Active"
-                    ]
-
-                    with st.expander(
-                        get_client_name(client)
-                    ):
-
-                        cc1, cc2, cc3, cc4 = st.columns(
-                            4
-                        )
-
-                        cc1.metric(
-                            "Jobs",
-                            sum(
-                                1
-                                for job in filtered_jobs
-                                if get_client_id_from_job(
-                                    job
-                                )
-                                == client_id
-                            ),
-                        )
-
-                        cc2.metric(
-                            "Candidates",
-                            sum(
-                                1
-                                for candidate
-                                in filtered_candidates
-                                if get_client_id_from_candidate(
-                                    candidate
-                                )
-                                == client_id
-                            ),
-                        )
-
-                        cc3.metric(
-                            "Active Placements",
-                            len(
-                                client_active
-                            ),
-                        )
-
-                        cc4.metric(
-                            "Invoices",
-                            sum(
-                                1
-                                for invoice
-                                in filtered_invoices
-                                if get_client_id_from_invoice(
-                                    invoice
-                                )
-                                == client_id
-                            ),
-                        )
-
-                        st.write(
-                            "**Active Revenue:** "
-                            f"{format_currency_amounts(get_currency_totals(client_active, get_placement_client_fee))}"
-                        )
-
-                        st.write(
-                            "**Active Margin:** "
-                            f"{format_currency_amounts(get_currency_totals(client_active, get_placement_margin))}"
-                        )
+            else:
+                st.info(
+                    "No clients match the current filters."
+                )
 
         # ====================================================
         # DATA QUALITY
@@ -3921,461 +4581,107 @@ def show_reports():
         with tab_quality:
 
             st.subheader(
-                "Data Quality & Integrity"
+                "Data Quality"
             )
 
-            quality_issues = []
-
-            # ------------------------------------------------
-            # CLIENT CHECKS
-            # ------------------------------------------------
-
-            for client in clients:
-
-                if not clean_text(
-                    getattr(
-                        client,
-                        "company_name",
-                        "",
-                    )
-                ):
-
-                    quality_issues.append(
-                        (
-                            "Client",
-                            getattr(
-                                client,
-                                "id",
-                                "?",
-                            ),
-                            "Client has no company name."
-                        )
-                    )
-
-            # ------------------------------------------------
-            # JOB CHECKS
-            # ------------------------------------------------
-
-            for job in jobs:
-
-                if getattr(
-                    job,
-                    "client_id",
-                    None,
-                ) is None:
-
-                    quality_issues.append(
-                        (
-                            "Job",
-                            getattr(
-                                job,
-                                "id",
-                                "?",
-                            ),
-                            "Job has no client."
-                        )
-                    )
-
-                if not clean_text(
-                    getattr(
-                        job,
-                        "position",
-                        "",
-                    )
-                ):
-
-                    quality_issues.append(
-                        (
-                            "Job",
-                            getattr(
-                                job,
-                                "id",
-                                "?",
-                            ),
-                            "Job has no position."
-                        )
-                    )
-
-            # ------------------------------------------------
-            # CANDIDATE CHECKS
-            # ------------------------------------------------
-
-            for candidate in candidates:
-
-                if getattr(
-                    candidate,
-                    "employee_id",
-                    None,
-                ) is None:
-
-                    quality_issues.append(
-                        (
-                            "Candidate",
-                            getattr(
-                                candidate,
-                                "id",
-                                "?",
-                            ),
-                            "Candidate has no employee."
-                        )
-                    )
-
-                if getattr(
-                    candidate,
-                    "job_id",
-                    None,
-                ) is None:
-
-                    quality_issues.append(
-                        (
-                            "Candidate",
-                            getattr(
-                                candidate,
-                                "id",
-                                "?",
-                            ),
-                            "Candidate has no job."
-                        )
-                    )
-
-            # ------------------------------------------------
-            # PLACEMENT CHECKS
-            # ------------------------------------------------
-
-            for placement in placements:
-
-                issues = get_placement_quality_issues(
-                    placement
-                )
-
-                for issue in issues:
-
-                    quality_issues.append(
-                        (
-                            "Placement",
-                            getattr(
-                                placement,
-                                "id",
-                                "?",
-                            ),
-                            issue,
-                        )
-                    )
-
-            # ------------------------------------------------
-            # INVOICE CHECKS
-            # ------------------------------------------------
-
-            for invoice in invoices:
-
-                total = get_invoice_total(
-                    invoice
-                )
-
-                paid = get_invoice_paid(
-                    invoice
-                )
-
-                if paid > total and total >= 0:
-
-                    quality_issues.append(
-                        (
-                            "Invoice",
-                            getattr(
-                                invoice,
-                                "id",
-                                "?",
-                            ),
-                            "Amount paid exceeds invoice total."
-                        )
-                    )
-
-                if total < 0:
-
-                    quality_issues.append(
-                        (
-                            "Invoice",
-                            getattr(
-                                invoice,
-                                "id",
-                                "?",
-                            ),
-                            "Invoice total is negative."
-                        )
-                    )
-
-                due_date = get_invoice_due_date(
-                    invoice
-                )
-
-                invoice_date = get_invoice_date(
-                    invoice
-                )
-
-                if (
-                    invoice_date
-                    and due_date
-                    and due_date < invoice_date
-                ):
-
-                    quality_issues.append(
-                        (
-                            "Invoice",
-                            getattr(
-                                invoice,
-                                "id",
-                                "?",
-                            ),
-                            "Due date is before invoice date."
-                        )
-                    )
-
-            # ------------------------------------------------
-            # PAYMENT CHECKS
-            # ------------------------------------------------
-
-            for payment in payments:
-
-                amount = get_payment_amount(
-                    payment
-                )
-
-                if amount <= 0:
-
-                    quality_issues.append(
-                        (
-                            "Payment",
-                            getattr(
-                                payment,
-                                "id",
-                                "?",
-                            ),
-                            "Payment has zero or negative amount."
-                        )
-                    )
-
-                if getattr(
-                    payment,
-                    "invoice_id",
-                    None,
-                ) is None:
-
-                    quality_issues.append(
-                        (
-                            "Payment",
-                            getattr(
-                                payment,
-                                "id",
-                                "?",
-                            ),
-                            "Payment has no invoice."
-                        )
-                    )
-
-            # ------------------------------------------------
-            # FILTER QUALITY VIEW
-            # ------------------------------------------------
-
-            q_filter = st.selectbox(
-                "Quality View",
-                DATA_QUALITY_LEVELS,
-                key="reports_quality_filter",
+            quality_scope = st.selectbox(
+                "Quality Check Scope",
+                QUALITY_SCOPES,
+                key="reports_quality_scope",
             )
 
-            displayed_quality_issues = (
-                quality_issues
-                if q_filter != "Clean Only"
-                else []
+            if quality_scope == "Current Filters":
+
+                quality_clients = filtered_clients
+                quality_employees = filtered_employees
+                quality_jobs = filtered_jobs
+                quality_candidates = filtered_candidates
+                quality_placements = filtered_placements
+                quality_contracts = filtered_contracts
+                quality_invoices = filtered_invoices
+                quality_payments = filtered_payments
+
+            else:
+
+                quality_clients = clients
+                quality_employees = employees
+                quality_jobs = jobs
+                quality_candidates = candidates
+                quality_placements = placements
+                quality_contracts = contracts
+                quality_invoices = invoices
+                quality_payments = payments
+
+            quality_issues = collect_quality_issues(
+                quality_clients,
+                quality_employees,
+                quality_jobs,
+                quality_candidates,
+                quality_placements,
+                quality_contracts,
+                quality_invoices,
+                quality_payments,
+                today,
             )
 
-            q1, q2, q3 = st.columns(3)
-
-            q1.metric(
-                "Total Issues",
-                len(
-                    quality_issues
-                ),
+            total_quality_issues = sum(
+                len(values)
+                for values in quality_issues.values()
             )
 
-            q2.metric(
-                "Affected Records",
-                len(
-                    {
-                        (
-                            issue[0],
-                            issue[1],
-                        )
-                        for issue in quality_issues
-                    }
-                ),
+            q1, q2 = st.columns(
+                2
             )
 
-            q3.metric(
-                "Status",
-                "Review Required"
-                if quality_issues
-                else "OK",
-            )
-
-            if q_filter == "Clean Only":
-
-                if quality_issues:
-
-                    st.info(
-                        "Quality issues exist, but the view is "
-                        "currently filtered to clean records."
-                    )
-
-                else:
-
-                    st.success(
-                        "No data-quality issues were detected."
-                    )
-
-            elif displayed_quality_issues:
-
-                st.warning(
-                    "The following records may require review."
+            with q1:
+                st.metric(
+                    "Total Issues",
+                    total_quality_issues,
                 )
 
-                quality_rows = []
+            with q2:
 
-                for record_type, record_id, issue in (
-                    displayed_quality_issues
-                ):
+                affected_categories = sum(
+                    1
+                    for values in quality_issues.values()
+                    if values
+                )
 
-                    quality_rows.append(
-                        {
-                            "Record Type": record_type,
-                            "Record ID": record_id,
-                            "Issue": issue,
-                        }
-                    )
+                st.metric(
+                    "Affected Areas",
+                    affected_categories,
+                )
 
-                st.dataframe(
-                    quality_rows,
-                    use_container_width=True,
-                    hide_index=True,
+            if total_quality_issues == 0:
+
+                st.success(
+                    "No data-quality issues were detected in the selected scope."
                 )
 
             else:
 
-                st.success(
-                    "No basic data-quality issues were detected."
-                )
+                for category, category_issues in quality_issues.items():
 
-        # ====================================================
-        # EXPORTS
-        # ====================================================
+                    if not category_issues:
+                        continue
 
-        with tab_exports:
+                    st.markdown(
+                        f"### {category} "
+                        f"({len(category_issues)})"
+                    )
 
-            st.subheader(
-                "Report Exports"
-            )
+                    with st.expander(
+                        f"View {category.lower()} issues"
+                    ):
+
+                        for issue in category_issues:
+                            st.write(
+                                f"• {issue}"
+                            )
 
             st.caption(
-                "Exports use the active report filters."
-            )
-
-            ex1, ex2, ex3 = st.columns(3)
-
-            with ex1:
-
-                st.markdown(
-                    "### Placements"
-                )
-
-                st.write(
-                    f"{len(filtered_placements)} "
-                    "placement records"
-                )
-
-                st.download_button(
-                    "Download Placements CSV",
-                    data=build_placement_csv(
-                        filtered_placements
-                    ),
-                    file_name="averra_placements.csv",
-                    mime="text/csv",
-                    key="export_placements_csv",
-                )
-
-            with ex2:
-
-                st.markdown(
-                    "### Invoices"
-                )
-
-                st.write(
-                    f"{len(filtered_invoices)} "
-                    "invoice records"
-                )
-
-                st.download_button(
-                    "Download Invoices CSV",
-                    data=build_invoice_csv(
-                        filtered_invoices
-                    ),
-                    file_name="averra_invoices.csv",
-                    mime="text/csv",
-                    key="export_invoices_csv",
-                )
-
-            with ex3:
-
-                st.markdown(
-                    "### Payments"
-                )
-
-                st.write(
-                    f"{len(filtered_payments)} "
-                    "payment records"
-                )
-
-                st.download_button(
-                    "Download Payments CSV",
-                    data=build_payment_csv(
-                        filtered_payments
-                    ),
-                    file_name="averra_payments.csv",
-                    mime="text/csv",
-                    key="export_payments_csv",
-                )
-
-            st.divider()
-
-            st.markdown(
-                "### Current Report Scope"
-            )
-
-            export_summary = {
-                "Dataset": [
-                    "Clients",
-                    "Employees",
-                    "Jobs",
-                    "Candidates",
-                    "Placements",
-                    "Contracts",
-                    "Invoices",
-                    "Payments",
-                ],
-                "Records": [
-                    len(filtered_clients),
-                    len(filtered_employees),
-                    len(filtered_jobs),
-                    len(filtered_candidates),
-                    len(filtered_placements),
-                    len(filtered_contracts),
-                    len(filtered_invoices),
-                    len(filtered_payments),
-                ],
-            }
-
-            st.dataframe(
-                export_summary,
-                use_container_width=True,
-                hide_index=True,
+                "Data-quality checks are advisory and are based on "
+                "the fields currently available in the AVERRA CRM models."
             )
 
         # ====================================================
@@ -4385,23 +4691,12 @@ def show_reports():
         st.divider()
 
         st.caption(
-            "Reports are read-only and do not modify CRM records."
+            f"AVERRA CRM Reports • Generated {today.strftime('%d/%m/%Y')}"
         )
 
         st.caption(
-            "Financial values are deliberately kept separate "
-            "by currency. GBP, EUR, USD and INR are never "
-            "added together."
-        )
-
-        st.caption(
-            "Client filtering is applied wherever the "
-            "underlying record can be linked reliably to a client."
-        )
-
-        st.caption(
-            "Report-period filters use the most relevant "
-            "available date field for each record type."
+            "Financial figures are reported by currency and are not "
+            "converted between GBP, EUR, USD and INR."
         )
 
     except Exception as exc:
