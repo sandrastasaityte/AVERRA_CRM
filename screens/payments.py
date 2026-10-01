@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import date
+from datetime import date, timedelta
 
 import streamlit as st
 from sqlalchemy.exc import IntegrityError
@@ -47,6 +47,30 @@ CURRENCIES = [
 MAX_REFERENCE_LENGTH = 200
 MAX_NOTES_LENGTH = 2000
 
+PAYMENT_DATE_FILTERS = [
+    "All Dates",
+    "Today",
+    "Last 7 Days",
+    "Last 30 Days",
+    "Last 90 Days",
+    "This Year",
+    "Custom Range",
+]
+
+RECONCILIATION_FILTERS = [
+    "All",
+    "Reconciled",
+    "Needs Reconciliation",
+]
+
+PAYMENT_ACTION_FILTERS = [
+    "All",
+    "Received Payments",
+    "Pending Payments",
+    "Failed Payments",
+    "Reversed Payments",
+]
+
 
 # ============================================================
 # BASIC HELPERS
@@ -85,7 +109,10 @@ def format_money(currency, amount):
 
     currency = clean_text(currency) or "GBP"
 
-    return f"{currency} {round_money(amount):,.2f}"
+    return (
+        f"{currency} "
+        f"{round_money(amount):,.2f}"
+    )
 
 
 def format_date(value):
@@ -95,10 +122,46 @@ def format_date(value):
         return "No date"
 
     try:
-        return value.strftime("%d/%m/%Y")
+
+        return value.strftime(
+            "%d/%m/%Y"
+        )
 
     except AttributeError:
+
         return str(value)
+
+
+def get_date_value(value):
+    """Safely return a date value."""
+
+    if isinstance(value, date):
+        return value
+
+    return None
+
+
+def get_payment_age_days(payment):
+    """Return payment age in days."""
+
+    payment_date = get_date_value(
+        getattr(
+            payment,
+            "payment_date",
+            None,
+        )
+    )
+
+    if not payment_date:
+        return None
+
+    return max(
+        (
+            date.today()
+            - payment_date
+        ).days,
+        0,
+    )
 
 
 # ============================================================
@@ -450,6 +513,48 @@ def get_payment_status_icon(status):
     )
 
 
+def get_payment_currency(payment):
+    """Return payment currency."""
+
+    return (
+        clean_text(
+            getattr(
+                payment,
+                "currency",
+                None,
+            )
+        )
+        or "GBP"
+    )
+
+
+def get_payment_method(payment):
+    """Return payment method."""
+
+    return (
+        clean_text(
+            getattr(
+                payment,
+                "payment_method",
+                None,
+            )
+        )
+        or "Not specified"
+    )
+
+
+def get_payment_reference(payment):
+    """Return payment reference."""
+
+    return clean_text(
+        getattr(
+            payment,
+            "reference",
+            None,
+        )
+    )
+
+
 # ============================================================
 # PAYMENT TOTALS
 # ============================================================
@@ -474,15 +579,8 @@ def get_total_by_status(
         ):
             continue
 
-        currency = (
-            clean_text(
-                getattr(
-                    payment,
-                    "currency",
-                    None,
-                )
-            )
-            or "Unknown"
+        currency = get_payment_currency(
+            payment
         )
 
         amount = get_payment_amount(
@@ -507,15 +605,8 @@ def get_total_by_currency(payments):
 
     for payment in payments:
 
-        currency = (
-            clean_text(
-                getattr(
-                    payment,
-                    "currency",
-                    None,
-                )
-            )
-            or "Unknown"
+        currency = get_payment_currency(
+            payment
         )
 
         amount = get_payment_amount(
@@ -547,7 +638,11 @@ def get_received_payments_for_invoice(
         payment
         for payment in payments
         if (
-            payment.invoice_id
+            getattr(
+                payment,
+                "invoice_id",
+                None,
+            )
             == invoice_id
             and payment_is_received(
                 payment
@@ -619,7 +714,6 @@ def reconcile_invoice_from_payments(
     )
 
     if invoice.status == "Cancelled":
-
         return
 
     if invoice.amount_paid <= 0:
@@ -688,6 +782,25 @@ def get_invoice_reconciliation_status(
         "payment_paid": payment_paid,
         "difference": difference,
     }
+
+
+def get_reconciliation_label(
+    invoice,
+    payments,
+):
+    """Return readable reconciliation state."""
+
+    reconciliation = (
+        get_invoice_reconciliation_status(
+            invoice,
+            payments,
+        )
+    )
+
+    if reconciliation["matched"]:
+        return "Reconciled"
+
+    return "Needs Reconciliation"
 
 
 # ============================================================
@@ -768,6 +881,76 @@ def get_invoice_data_warning(
     return None
 
 
+def get_payment_data_warnings(
+    payment,
+    invoice,
+):
+    """Return payment-level data quality warnings."""
+
+    warnings = []
+
+    amount = get_payment_amount(
+        payment
+    )
+
+    status = get_payment_status(
+        payment
+    )
+
+    payment_currency = get_payment_currency(
+        payment
+    )
+
+    invoice_currency = get_invoice_currency(
+        invoice
+    )
+
+    if amount <= 0:
+
+        warnings.append(
+            "Payment amount is zero or invalid."
+        )
+
+    if (
+        invoice
+        and payment_currency
+        != invoice_currency
+    ):
+
+        warnings.append(
+            "Payment currency does not match invoice currency."
+        )
+
+    if (
+        status == "Received"
+        and invoice
+        and is_invoice_cancelled(invoice)
+    ):
+
+        warnings.append(
+            "Received payment is attached to a cancelled invoice."
+        )
+
+    payment_date = get_date_value(
+        getattr(
+            payment,
+            "payment_date",
+            None,
+        )
+    )
+
+    if (
+        payment_date
+        and payment_date > date.today()
+    ):
+
+        warnings.append(
+            "Payment date is in the future."
+        )
+
+    return warnings
+
+
 # ============================================================
 # DUPLICATE REFERENCE
 # ============================================================
@@ -816,8 +999,8 @@ def has_duplicate_reference(
             continue
 
         existing_reference = (
-            clean_text(
-                payment.reference
+            get_payment_reference(
+                payment
             )
         )
 
@@ -859,7 +1042,13 @@ def validate_payment_data(
     # DATE
     # --------------------------------------------------------
 
-    if payment_date > date.today():
+    if not payment_date:
+
+        errors.append(
+            "Please provide a payment date."
+        )
+
+    elif payment_date > date.today():
 
         errors.append(
             "Payment date cannot be in the future."
@@ -944,6 +1133,18 @@ def validate_payment_data(
             )
 
     # --------------------------------------------------------
+    # NON-RECEIVED PAYMENT
+    # --------------------------------------------------------
+
+    if payment_status != "Received":
+
+        if payment_amount <= 0:
+
+            errors.append(
+                "Payment amount must be greater than zero."
+            )
+
+    # --------------------------------------------------------
     # REFERENCE
     # --------------------------------------------------------
 
@@ -991,6 +1192,7 @@ def get_csv_bytes(payments):
         [
             "Payment ID",
             "Payment Date",
+            "Payment Age Days",
             "Invoice Number",
             "Client",
             "Amount",
@@ -998,6 +1200,11 @@ def get_csv_bytes(payments):
             "Payment Method",
             "Reference",
             "Status",
+            "Invoice Total",
+            "Invoice Paid",
+            "Invoice Balance",
+            "Payment State",
+            "Reconciliation",
             "Notes",
         ]
     )
@@ -1018,10 +1225,38 @@ def get_csv_bytes(payments):
             else ""
         )
 
+        invoice = getattr(
+            payment,
+            "invoice",
+            None,
+        )
+
+        reconciliation = (
+            get_reconciliation_label(
+                invoice,
+                [
+                    payment,
+                    *(
+                        getattr(
+                            invoice,
+                            "payments",
+                            [],
+                        )
+                        or []
+                    ),
+                ],
+            )
+            if invoice
+            else "Unknown"
+        )
+
         writer.writerow(
             [
                 payment.id,
                 payment_date_text,
+                get_payment_age_days(
+                    payment
+                ),
                 get_invoice_number_from_payment(
                     payment
                 ),
@@ -1029,33 +1264,39 @@ def get_csv_bytes(payments):
                     payment
                 ),
                 f"{get_payment_amount(payment):.2f}",
-                (
-                    clean_text(
-                        getattr(
-                            payment,
-                            "currency",
-                            None,
-                        )
-                    )
-                    or "GBP"
+                get_payment_currency(
+                    payment
                 ),
-                clean_text(
-                    getattr(
-                        payment,
-                        "payment_method",
-                        None,
-                    )
+                get_payment_method(
+                    payment
                 ),
-                clean_text(
-                    getattr(
-                        payment,
-                        "reference",
-                        None,
-                    )
+                get_payment_reference(
+                    payment
                 ),
                 get_payment_status(
                     payment
                 ),
+                (
+                    f"{get_invoice_total(invoice):.2f}"
+                    if invoice
+                    else ""
+                ),
+                (
+                    f"{get_invoice_paid(invoice):.2f}"
+                    if invoice
+                    else ""
+                ),
+                (
+                    f"{get_invoice_balance(invoice):.2f}"
+                    if invoice
+                    else ""
+                ),
+                (
+                    get_payment_state(invoice)
+                    if invoice
+                    else ""
+                ),
+                reconciliation,
                 clean_text(
                     getattr(
                         payment,
@@ -1106,6 +1347,152 @@ def build_invoice_label(invoice):
         f"{balance:,.2f} | "
         f"{state}"
     )
+
+
+# ============================================================
+# DATE FILTER
+# ============================================================
+
+def payment_matches_date_filter(
+    payment,
+    date_filter,
+    custom_start=None,
+    custom_end=None,
+):
+    """Check whether payment matches selected date filter."""
+
+    payment_date = get_date_value(
+        getattr(
+            payment,
+            "payment_date",
+            None,
+        )
+    )
+
+    if date_filter == "All Dates":
+
+        return True
+
+    if not payment_date:
+
+        return False
+
+    today = date.today()
+
+    if date_filter == "Today":
+
+        return payment_date == today
+
+    if date_filter == "Last 7 Days":
+
+        start_date = (
+            today
+            - timedelta(days=6)
+        )
+
+        return (
+            start_date
+            <= payment_date
+            <= today
+        )
+
+    if date_filter == "Last 30 Days":
+
+        start_date = (
+            today
+            - timedelta(days=29)
+        )
+
+        return (
+            start_date
+            <= payment_date
+            <= today
+        )
+
+    if date_filter == "Last 90 Days":
+
+        start_date = (
+            today
+            - timedelta(days=89)
+        )
+
+        return (
+            start_date
+            <= payment_date
+            <= today
+        )
+
+    if date_filter == "This Year":
+
+        return (
+            payment_date.year
+            == today.year
+        )
+
+    if date_filter == "Custom Range":
+
+        if not custom_start:
+            return False
+
+        if not custom_end:
+            return False
+
+        return (
+            custom_start
+            <= payment_date
+            <= custom_end
+        )
+
+    return True
+
+
+# ============================================================
+# PAYMENT REGISTER SEARCH
+# ============================================================
+
+def get_payment_search_text(payment):
+    """Build searchable payment text."""
+
+    invoice = getattr(
+        payment,
+        "invoice",
+        None,
+    )
+
+    return " ".join(
+        [
+            get_invoice_number_from_payment(
+                payment
+            ),
+            get_client_name(
+                payment
+            ),
+            get_payment_reference(
+                payment
+            ),
+            clean_text(
+                getattr(
+                    payment,
+                    "notes",
+                    None,
+                )
+            ),
+            get_payment_status(
+                payment
+            ),
+            get_payment_method(
+                payment
+            ),
+            get_payment_currency(
+                payment
+            ),
+            (
+                get_invoice_status(invoice)
+                if invoice
+                else ""
+            ),
+        ]
+    ).lower()
 
 
 # ============================================================
@@ -1168,15 +1555,6 @@ def show_payments():
                     invoice
                 )
 
-        if reconciliation_issues:
-
-            st.warning(
-                f"{len(reconciliation_issues)} invoice(s) "
-                "have payment reconciliation differences. "
-                "Review the affected invoices before relying "
-                "on the financial totals."
-            )
-
         # ====================================================
         # PAYMENT STATUS GROUPS
         # ====================================================
@@ -1227,12 +1605,69 @@ def show_payments():
             )
         )
 
+        failed_totals = (
+            get_total_by_status(
+                payments,
+                "Failed",
+            )
+        )
+
+        reversed_totals = (
+            get_total_by_status(
+                payments,
+                "Reversed",
+            )
+        )
+
+        # ====================================================
+        # TOP-LEVEL RECONCILIATION WARNING
+        # ====================================================
+
+        if reconciliation_issues:
+
+            st.warning(
+                f"{len(reconciliation_issues)} invoice(s) "
+                "have payment reconciliation differences."
+            )
+
+            with st.expander(
+                "View reconciliation issues"
+            ):
+
+                for invoice in reconciliation_issues:
+
+                    reconciliation = (
+                        get_invoice_reconciliation_status(
+                            invoice,
+                            payments,
+                        )
+                    )
+
+                    currency = (
+                        get_invoice_currency(
+                            invoice
+                        )
+                    )
+
+                    difference = abs(
+                        reconciliation[
+                            "difference"
+                        ]
+                    )
+
+                    st.write(
+                        f"**{get_invoice_number(invoice)}** — "
+                        f"{get_client_name_from_invoice(invoice)} — "
+                        f"Difference: "
+                        f"{format_money(currency, difference)}"
+                    )
+
         # ====================================================
         # KPI SECTION
         # ====================================================
 
-        col1, col2, col3, col4, col5 = st.columns(
-            5
+        col1, col2, col3, col4, col5, col6 = st.columns(
+            6
         )
 
         col1.metric(
@@ -1260,6 +1695,11 @@ def show_payments():
             len(reversed_payments),
         )
 
+        col6.metric(
+            "Reconciliation Issues",
+            len(reconciliation_issues),
+        )
+
         # ====================================================
         # RECEIVED TOTALS
         # ====================================================
@@ -1281,7 +1721,9 @@ def show_payments():
                 currency,
                 amount,
             ) in enumerate(
-                received_totals.items()
+                sorted(
+                    received_totals.items()
+                )
             ):
 
                 columns[
@@ -1298,19 +1740,42 @@ def show_payments():
             )
 
         # ====================================================
-        # PENDING TOTALS
+        # NON-RECEIVED TOTALS
         # ====================================================
 
-        if pending_totals:
+        non_received_totals = {}
+
+        for source_totals in [
+            pending_totals,
+            failed_totals,
+            reversed_totals,
+        ]:
+
+            for currency, amount in (
+                source_totals.items()
+            ):
+
+                non_received_totals[
+                    currency
+                ] = round_money(
+                    non_received_totals.get(
+                        currency,
+                        0.0,
+                    )
+                    + amount
+                )
+
+        if non_received_totals:
 
             st.caption(
-                "Pending amounts are tracked separately "
-                "and are not included in invoice amount paid."
+                "Pending, failed and reversed amounts are "
+                "tracked separately and do not increase "
+                "invoice amount paid."
             )
 
-            pending_columns = st.columns(
+            columns = st.columns(
                 min(
-                    len(pending_totals),
+                    len(non_received_totals),
                     4,
                 )
             )
@@ -1319,14 +1784,15 @@ def show_payments():
                 currency,
                 amount,
             ) in enumerate(
-                pending_totals.items()
+                sorted(
+                    non_received_totals.items()
+                )
             ):
 
-                pending_columns[
-                    index
-                    % len(pending_columns)
+                columns[
+                    index % len(columns)
                 ].metric(
-                    f"Pending {currency}",
+                    f"Non-Received {currency}",
                     f"{amount:,.2f}",
                 )
 
@@ -1494,6 +1960,63 @@ def show_payments():
                     "match its Received payment records."
                 )
 
+                reconcile_col1, reconcile_col2 = st.columns(
+                    [1, 3]
+                )
+
+                with reconcile_col1:
+
+                    reconcile_clicked = st.button(
+                        "Reconcile Invoice",
+                        type="primary",
+                        key=(
+                            f"reconcile_invoice_"
+                            f"{selected_invoice.id}"
+                        ),
+                        use_container_width=True,
+                    )
+
+                with reconcile_col2:
+
+                    st.caption(
+                        "This recalculates Invoice.amount_paid "
+                        "from the invoice's Received payment records."
+                    )
+
+                if reconcile_clicked:
+
+                    try:
+
+                        invoice_payments = (
+                            session.query(Payment)
+                            .filter(
+                                Payment.invoice_id
+                                == selected_invoice.id
+                            )
+                            .all()
+                        )
+
+                        reconcile_invoice_from_payments(
+                            selected_invoice,
+                            invoice_payments,
+                        )
+
+                        session.commit()
+
+                        st.success(
+                            "Invoice reconciled successfully."
+                        )
+
+                        st.rerun()
+
+                    except Exception:
+
+                        session.rollback()
+
+                        st.error(
+                            "The invoice could not be reconciled."
+                        )
+
             # ------------------------------------------------
             # DATA WARNING
             # ------------------------------------------------
@@ -1542,19 +2065,30 @@ def show_payments():
                         )
                     )
 
-                    payment_reference = clean_text(
-                        getattr(
-                            payment,
-                            "reference",
-                            None,
+                    payment_reference = (
+                        get_payment_reference(
+                            payment
                         )
+                    )
+
+                    payment_age = (
+                        get_payment_age_days(
+                            payment
+                        )
+                    )
+
+                    age_text = (
+                        f"{payment_age} day(s) old"
+                        if payment_age is not None
+                        else "Age unknown"
                     )
 
                     st.write(
                         f"{get_payment_status_icon(payment_status)} "
                         f"{format_date(payment.payment_date)} — "
                         f"{format_money(currency, payment_amount)} — "
-                        f"{payment_status}"
+                        f"{payment_status} — "
+                        f"{age_text}"
                         + (
                             f" — Ref: {payment_reference}"
                             if payment_reference
@@ -1865,21 +2399,10 @@ def show_payments():
 
             currencies = sorted(
                 {
-                    clean_text(
-                        getattr(
-                            payment,
-                            "currency",
-                            None,
-                        )
+                    get_payment_currency(
+                        payment
                     )
                     for payment in payments
-                    if clean_text(
-                        getattr(
-                            payment,
-                            "currency",
-                            None,
-                        )
-                    )
                 }
             )
 
@@ -1893,78 +2416,145 @@ def show_payments():
             )
 
         # ====================================================
-        # CLIENT FILTER
+        # SECOND FILTER ROW
         # ====================================================
 
-        client_options = {
-            "All": None
-        }
+        filter_col5, filter_col6, filter_col7, filter_col8 = st.columns(
+            4
+        )
 
-        client_names = sorted(
-            {
-                get_client_name(payment)
-                for payment in payments
+        with filter_col5:
+
+            client_options = {
+                "All": None
             }
-        )
 
-        for client_name in client_names:
-
-            client_options[
-                client_name
-            ] = client_name
-
-        client_filter_label = st.selectbox(
-            "Client",
-            options=list(
-                client_options.keys()
-            ),
-            key="payment_client_filter",
-        )
-
-        client_filter = (
-            client_options[
-                client_filter_label
-            ]
-        )
-
-        # ====================================================
-        # INVOICE FILTER
-        # ====================================================
-
-        invoice_filter_options = {
-            "All": None
-        }
-
-        for invoice in invoices:
-
-            number = get_invoice_number(
-                invoice
+            client_names = sorted(
+                {
+                    get_client_name(payment)
+                    for payment in payments
+                }
             )
 
-            # Protect against duplicate labels.
-            if number in invoice_filter_options:
+            for client_name in client_names:
 
-                number = (
-                    f"{number} "
-                    f"(ID {invoice.id})"
+                client_options[
+                    client_name
+                ] = client_name
+
+            client_filter_label = st.selectbox(
+                "Client",
+                options=list(
+                    client_options.keys()
+                ),
+                key="payment_client_filter",
+            )
+
+            client_filter = (
+                client_options[
+                    client_filter_label
+                ]
+            )
+
+        with filter_col6:
+
+            invoice_filter_options = {
+                "All": None
+            }
+
+            for invoice in invoices:
+
+                number = get_invoice_number(
+                    invoice
                 )
 
-            invoice_filter_options[
-                number
-            ] = invoice.id
+                if number in invoice_filter_options:
 
-        invoice_filter_label = st.selectbox(
-            "Invoice",
-            options=list(
-                invoice_filter_options.keys()
-            ),
-            key="payment_invoice_filter",
-        )
+                    number = (
+                        f"{number} "
+                        f"(ID {invoice.id})"
+                    )
 
-        invoice_filter_id = (
-            invoice_filter_options[
-                invoice_filter_label
-            ]
+                invoice_filter_options[
+                    number
+                ] = invoice.id
+
+            invoice_filter_label = st.selectbox(
+                "Invoice",
+                options=list(
+                    invoice_filter_options.keys()
+                ),
+                key="payment_invoice_filter",
+            )
+
+            invoice_filter_id = (
+                invoice_filter_options[
+                    invoice_filter_label
+                ]
+            )
+
+        with filter_col7:
+
+            date_filter = st.selectbox(
+                "Payment Date",
+                options=PAYMENT_DATE_FILTERS,
+                key="payment_date_filter",
+            )
+
+        with filter_col8:
+
+            reconciliation_filter = st.selectbox(
+                "Reconciliation",
+                options=RECONCILIATION_FILTERS,
+                key="payment_reconciliation_filter",
+            )
+
+        # ====================================================
+        # CUSTOM DATE RANGE
+        # ====================================================
+
+        custom_start = None
+        custom_end = None
+
+        if date_filter == "Custom Range":
+
+            date_col1, date_col2 = st.columns(
+                2
+            )
+
+            with date_col1:
+
+                custom_start = st.date_input(
+                    "Start Date",
+                    value=(
+                        date.today()
+                        - timedelta(days=30)
+                    ),
+                    key="payment_custom_start",
+                )
+
+            with date_col2:
+
+                custom_end = st.date_input(
+                    "End Date",
+                    value=date.today(),
+                    key="payment_custom_end",
+                )
+
+            if custom_start > custom_end:
+
+                st.error(
+                    "Custom start date cannot be after the end date."
+                )
+
+        # ====================================================
+        # ACTION FILTER
+        # ====================================================
+
+        action_filter = st.selectbox(
+            "Payment Type",
+            options=PAYMENT_ACTION_FILTERS,
+            key="payment_action_filter",
         )
 
         # ====================================================
@@ -1979,6 +2569,8 @@ def show_payments():
                 "Highest Amount",
                 "Lowest Amount",
                 "Invoice Number",
+                "Client A-Z",
+                "Reference A-Z",
             ],
             key="payment_sort",
         )
@@ -2002,22 +2594,14 @@ def show_payments():
             )
 
             payment_method = (
-                clean_text(
-                    getattr(
-                        payment,
-                        "payment_method",
-                        None,
-                    )
+                get_payment_method(
+                    payment
                 )
             )
 
             payment_currency = (
-                clean_text(
-                    getattr(
-                        payment,
-                        "currency",
-                        None,
-                    )
+                get_payment_currency(
+                    payment
                 )
             )
 
@@ -2025,6 +2609,12 @@ def show_payments():
                 get_client_name(
                     payment
                 )
+            )
+
+            payment_invoice = getattr(
+                payment,
+                "invoice",
+                None,
             )
 
             # ------------------------------------------------
@@ -2089,38 +2679,105 @@ def show_payments():
                 continue
 
             # ------------------------------------------------
+            # DATE
+            # ------------------------------------------------
+
+            if not payment_matches_date_filter(
+                payment,
+                date_filter,
+                custom_start,
+                custom_end,
+            ):
+
+                continue
+
+            # ------------------------------------------------
+            # RECONCILIATION
+            # ------------------------------------------------
+
+            if (
+                reconciliation_filter
+                != "All"
+            ):
+
+                if not payment_invoice:
+
+                    payment_reconciliation = (
+                        "Needs Reconciliation"
+                    )
+
+                else:
+
+                    payment_reconciliation = (
+                        get_reconciliation_label(
+                            payment_invoice,
+                            payments,
+                        )
+                    )
+
+                if (
+                    payment_reconciliation
+                    != reconciliation_filter
+                ):
+
+                    continue
+
+            # ------------------------------------------------
+            # ACTION TYPE
+            # ------------------------------------------------
+
+            if (
+                action_filter
+                == "Received Payments"
+                and payment_status
+                != "Received"
+            ):
+
+                continue
+
+            if (
+                action_filter
+                == "Pending Payments"
+                and payment_status
+                != "Pending"
+            ):
+
+                continue
+
+            if (
+                action_filter
+                == "Failed Payments"
+                and payment_status
+                != "Failed"
+            ):
+
+                continue
+
+            if (
+                action_filter
+                == "Reversed Payments"
+                and payment_status
+                != "Reversed"
+            ):
+
+                continue
+
+            # ------------------------------------------------
             # SEARCH
             # ------------------------------------------------
 
             if search_lower:
 
-                search_text = " ".join(
-                    [
-                        get_invoice_number_from_payment(
-                            payment
-                        ),
-                        payment_client,
-                        clean_text(
-                            getattr(
-                                payment,
-                                "reference",
-                                None,
-                            )
-                        ),
-                        clean_text(
-                            getattr(
-                                payment,
-                                "notes",
-                                None,
-                            )
-                        ),
-                        payment_status,
-                        payment_method,
-                        payment_currency,
-                    ]
-                ).lower()
+                search_text = (
+                    get_payment_search_text(
+                        payment
+                    )
+                )
 
-                if search_lower not in search_text:
+                if (
+                    search_lower
+                    not in search_text
+                ):
 
                     continue
 
@@ -2189,6 +2846,24 @@ def show_payments():
                     ).lower()
             )
 
+        elif sort_option == "Client A-Z":
+
+            filtered_payments.sort(
+                key=lambda payment:
+                    get_client_name(
+                        payment
+                    ).lower()
+            )
+
+        elif sort_option == "Reference A-Z":
+
+            filtered_payments.sort(
+                key=lambda payment:
+                    get_payment_reference(
+                        payment
+                    ).lower()
+            )
+
         # ====================================================
         # FILTERED SUMMARY
         # ====================================================
@@ -2229,6 +2904,13 @@ def show_payments():
             get_total_by_status(
                 filtered_payments,
                 "Received",
+            )
+        )
+
+        filtered_pending_totals = (
+            get_total_by_status(
+                filtered_payments,
+                "Pending",
             )
         )
 
@@ -2282,7 +2964,9 @@ def show_payments():
                     currency,
                     amount,
                 ) in enumerate(
-                    filtered_totals.items()
+                    sorted(
+                        filtered_totals.items()
+                    )
                 ):
 
                     summary_columns[
@@ -2292,6 +2976,40 @@ def show_payments():
                         )
                     ].metric(
                         f"Received {currency}",
+                        f"{amount:,.2f}",
+                    )
+
+            if filtered_pending_totals:
+
+                st.caption(
+                    "Pending totals:"
+                )
+
+                pending_columns = st.columns(
+                    min(
+                        len(
+                            filtered_pending_totals
+                        ),
+                        4,
+                    )
+                )
+
+                for index, (
+                    currency,
+                    amount,
+                ) in enumerate(
+                    sorted(
+                        filtered_pending_totals.items()
+                    )
+                ):
+
+                    pending_columns[
+                        index
+                        % len(
+                            pending_columns
+                        )
+                    ].metric(
+                        f"Pending {currency}",
                         f"{amount:,.2f}",
                     )
 
@@ -2318,6 +3036,7 @@ def show_payments():
                     "averra_payments.csv"
                 ),
                 mime="text/csv",
+                key="export_payments_csv",
             )
 
         # ====================================================
@@ -2340,15 +3059,8 @@ def show_payments():
                 payment
             )
 
-            currency = (
-                clean_text(
-                    getattr(
-                        payment,
-                        "currency",
-                        None,
-                    )
-                )
-                or "GBP"
+            currency = get_payment_currency(
+                payment
             )
 
             invoice = getattr(
@@ -2369,6 +3081,19 @@ def show_payments():
                 payment,
                 "payment_date",
                 None,
+            )
+
+            payment_age = (
+                get_payment_age_days(
+                    payment
+                )
+            )
+
+            payment_warnings = (
+                get_payment_data_warnings(
+                    payment,
+                    invoice,
+                )
             )
 
             with st.container(
@@ -2402,6 +3127,13 @@ def show_payments():
                         f"{format_date(payment_date)}"
                     )
 
+                    if payment_age is not None:
+
+                        st.caption(
+                            f"Payment age: "
+                            f"{payment_age} day(s)"
+                        )
+
                 with col2:
 
                     st.metric(
@@ -2416,13 +3148,25 @@ def show_payments():
 
                     st.write(
                         "**Method:** "
-                        f"{clean_text(getattr(payment, 'payment_method', None)) or 'Not specified'}"
+                        f"{get_payment_method(payment)}"
                     )
 
                     st.write(
                         "**Status:** "
                         f"{status}"
                     )
+
+                    reference = (
+                        get_payment_reference(
+                            payment
+                        )
+                    )
+
+                    if reference:
+
+                        st.caption(
+                            f"Ref: {reference}"
+                        )
 
                 with col4:
 
@@ -2437,18 +3181,11 @@ def show_payments():
                         )
                     )
 
-                    reference = clean_text(
-                        getattr(
-                            payment,
-                            "reference",
-                            None,
-                        )
-                    )
-
-                    if reference:
+                    if invoice:
 
                         st.caption(
-                            f"Ref: {reference}"
+                            f"Payment state: "
+                            f"{get_payment_state(invoice)}"
                         )
 
                 # --------------------------------------------
@@ -2484,6 +3221,43 @@ def show_payments():
                     )
 
                 # --------------------------------------------
+                # DATA WARNINGS
+                # --------------------------------------------
+
+                if payment_warnings:
+
+                    for warning in payment_warnings:
+
+                        st.warning(
+                            warning
+                        )
+
+                # --------------------------------------------
+                # RECONCILIATION
+                # --------------------------------------------
+
+                if invoice:
+
+                    reconciliation = (
+                        get_invoice_reconciliation_status(
+                            invoice,
+                            payments,
+                        )
+                    )
+
+                    if reconciliation["matched"]:
+
+                        st.caption(
+                            "✓ Invoice payment records reconciled"
+                        )
+
+                    else:
+
+                        st.error(
+                            "Invoice reconciliation required."
+                        )
+
+                # --------------------------------------------
                 # NOTES
                 # --------------------------------------------
 
@@ -2497,8 +3271,97 @@ def show_payments():
 
                 if payment_notes:
 
-                    st.caption(
-                        f"Notes: {payment_notes}"
+                    with st.expander(
+                        "Payment Notes"
+                    ):
+
+                        st.write(
+                            payment_notes
+                        )
+
+        # ====================================================
+        # UNPAID / PARTIALLY PAID INVOICE MONITOR
+        # ====================================================
+
+        st.divider()
+
+        st.subheader(
+            "Invoice Payment Monitor"
+        )
+
+        unpaid_invoices = [
+            invoice
+            for invoice in invoices
+            if (
+                not is_invoice_cancelled(
+                    invoice
+                )
+                and get_invoice_total(invoice)
+                > 0
+                and get_invoice_balance(invoice)
+                > 0.01
+            )
+        ]
+
+        fully_paid_invoices = [
+            invoice
+            for invoice in invoices
+            if is_invoice_fully_paid(
+                invoice
+            )
+        ]
+
+        monitor_col1, monitor_col2, monitor_col3 = st.columns(
+            3
+        )
+
+        monitor_col1.metric(
+            "Invoices With Balance",
+            len(unpaid_invoices),
+        )
+
+        monitor_col2.metric(
+            "Fully Paid Invoices",
+            len(fully_paid_invoices),
+        )
+
+        monitor_col3.metric(
+            "Reconciliation Issues",
+            len(reconciliation_issues),
+        )
+
+        if unpaid_invoices:
+
+            with st.expander(
+                "View invoices with outstanding balances"
+            ):
+
+                for invoice in unpaid_invoices[:100]:
+
+                    invoice_currency = (
+                        get_invoice_currency(
+                            invoice
+                        )
+                    )
+
+                    invoice_balance = (
+                        get_invoice_balance(
+                            invoice
+                        )
+                    )
+
+                    invoice_percentage = (
+                        get_payment_percentage(
+                            invoice
+                        )
+                    )
+
+                    st.write(
+                        f"**{get_invoice_number(invoice)}** — "
+                        f"{get_client_name_from_invoice(invoice)} — "
+                        f"Balance: "
+                        f"{format_money(invoice_currency, invoice_balance)} — "
+                        f"{invoice_percentage:.1f}% paid"
                     )
 
         # ====================================================

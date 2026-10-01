@@ -1,5 +1,8 @@
-import streamlit as st
+import csv
+import io
 from datetime import date
+
+import streamlit as st
 
 from database import get_session
 from models import Job, Client
@@ -43,6 +46,13 @@ ACTIVE_PLACEMENT_STATUSES = {
     "Scheduled",
 }
 
+MAX_POSITION_LENGTH = 200
+MAX_DEPARTMENT_LENGTH = 100
+MAX_SKILLS_LENGTH = 2000
+MAX_EXPERIENCE_LENGTH = 500
+MAX_REMOTE_COUNTRY_LENGTH = 100
+MAX_NOTES_LENGTH = 5000
+
 
 # ============================================================
 # BASIC HELPERS
@@ -55,6 +65,14 @@ def clean_text(value):
         return ""
 
     return str(value).strip()
+
+
+def normalize_text(value):
+    """Return normalized lowercase searchable text."""
+
+    return " ".join(
+        clean_text(value).lower().split()
+    )
 
 
 def safe_float(value, default=0.0):
@@ -75,6 +93,17 @@ def safe_int(value, default=0):
 
     except (TypeError, ValueError):
         return default
+
+
+def format_money(value, currency):
+    """Format a monetary amount."""
+
+    amount = safe_float(value)
+
+    return (
+        f"{clean_text(currency) or 'GBP'} "
+        f"{amount:,.2f}"
+    )
 
 
 def get_client_name(job):
@@ -123,7 +152,7 @@ def get_client_label(client):
 
 
 # ============================================================
-# RECRUITMENT COUNTS
+# RELATIONSHIP HELPERS
 # ============================================================
 
 def get_candidate_count(job):
@@ -159,6 +188,30 @@ def get_placement_count(job):
 
     try:
         return len(placements)
+
+    except TypeError:
+        return 0
+
+
+def get_activity_count(job):
+    """
+    Return the number of activities linked to a job.
+
+    Uses getattr so the screen remains compatible if the
+    Activity relationship is not available in the current model.
+    """
+
+    activities = getattr(
+        job,
+        "activities",
+        None,
+    )
+
+    if activities is None:
+        return 0
+
+    try:
+        return len(activities)
 
     except TypeError:
         return 0
@@ -270,12 +323,21 @@ def job_has_placements(job):
     )
 
 
+def job_has_activities(job):
+    """Return whether the job has activities."""
+
+    return (
+        get_activity_count(job) > 0
+    )
+
+
 def job_has_history(job):
     """Return whether the job has recruitment history."""
 
     return (
         job_has_candidates(job)
         or job_has_placements(job)
+        or job_has_activities(job)
     )
 
 
@@ -362,6 +424,23 @@ def get_priority_icon(priority):
     )
 
 
+def get_status_icon(status):
+    """Return a visual status indicator."""
+
+    icons = {
+        "Open": "🟢",
+        "On Hold": "🟡",
+        "Filled": "🔵",
+        "Closed": "⚫",
+        "Cancelled": "🔴",
+    }
+
+    return icons.get(
+        status,
+        "⚪",
+    )
+
+
 # ============================================================
 # DATES
 # ============================================================
@@ -442,6 +521,328 @@ def get_closing_label(job):
     )
 
 
+def get_job_age(job):
+    """Return number of days since the job was opened."""
+
+    date_opened = getattr(
+        job,
+        "date_opened",
+        None,
+    )
+
+    if not date_opened:
+        return None
+
+    return max(
+        (date.today() - date_opened).days,
+        0,
+    )
+
+
+def get_job_age_label(job):
+    """Return a readable job-age label."""
+
+    age = get_job_age(job)
+
+    if age is None:
+        return "Age unavailable"
+
+    if age == 0:
+        return "Opened today"
+
+    if age == 1:
+        return "Open for 1 day"
+
+    return (
+        f"Open for {age} days"
+    )
+
+
+# ============================================================
+# JOB PROFILE / HEALTH
+# ============================================================
+
+def get_job_profile_completeness(job):
+    """
+    Return job profile completeness as a percentage.
+
+    Checks:
+    - Position
+    - Department
+    - Skills
+    - Experience
+    - Budget
+    - Work pattern
+    - Remote country
+    - Opening date
+    - Closing date
+    """
+
+    checks = [
+        bool(
+            clean_text(
+                getattr(
+                    job,
+                    "position",
+                    "",
+                )
+            )
+        ),
+        bool(
+            clean_text(
+                getattr(
+                    job,
+                    "department",
+                    "",
+                )
+            )
+        ),
+        bool(
+            clean_text(
+                getattr(
+                    job,
+                    "skills_required",
+                    "",
+                )
+            )
+        ),
+        bool(
+            clean_text(
+                getattr(
+                    job,
+                    "experience_required",
+                    "",
+                )
+            )
+        ),
+        safe_float(
+            getattr(
+                job,
+                "client_budget",
+                0,
+            )
+        ) > 0,
+        bool(
+            clean_text(
+                getattr(
+                    job,
+                    "work_pattern",
+                    "",
+                )
+            )
+        ),
+        bool(
+            clean_text(
+                getattr(
+                    job,
+                    "remote_country",
+                    "",
+                )
+            )
+        ),
+        bool(
+            getattr(
+                job,
+                "date_opened",
+                None,
+            )
+        ),
+        bool(
+            getattr(
+                job,
+                "closing_date",
+                None,
+            )
+        ),
+    ]
+
+    if not checks:
+        return 0
+
+    completed = sum(
+        1
+        for value in checks
+        if value
+    )
+
+    return int(
+        round(
+            completed
+            / len(checks)
+            * 100
+        )
+    )
+
+
+def get_job_health_issues(job):
+    """
+    Return a list of operational/data-quality issues.
+    """
+
+    issues = []
+
+    status = get_job_status(job)
+
+    openings = get_total_openings(job)
+
+    active_placements = (
+        get_active_placement_count(job)
+    )
+
+    closing_state = get_closing_state(job)
+
+    budget = safe_float(
+        getattr(
+            job,
+            "client_budget",
+            0,
+        )
+    )
+
+    if openings < 1:
+
+        issues.append(
+            "No valid opening quantity"
+        )
+
+    if active_placements > openings:
+
+        issues.append(
+            "Active placements exceed openings"
+        )
+
+    if (
+        status == "Open"
+        and openings > 0
+        and active_placements >= openings
+    ):
+
+        issues.append(
+            "Open status but all openings are filled"
+        )
+
+    if (
+        status == "Filled"
+        and active_placements < openings
+    ):
+
+        issues.append(
+            "Filled status but openings remain"
+        )
+
+    if (
+        status in ["Open", "On Hold"]
+        and closing_state == "overdue"
+    ):
+
+        issues.append(
+            "Closing date has passed"
+        )
+
+    if (
+        status in ["Closed", "Cancelled"]
+        and getattr(job, "closing_date", None)
+        and getattr(job, "closing_date") > date.today()
+    ):
+
+        issues.append(
+            "Closed/cancelled job has future closing date"
+        )
+
+    if budget <= 0:
+
+        issues.append(
+            "Budget not specified"
+        )
+
+    if not clean_text(
+        getattr(
+            job,
+            "department",
+            "",
+        )
+    ):
+
+        issues.append(
+            "Department missing"
+        )
+
+    if not clean_text(
+        getattr(
+            job,
+            "skills_required",
+            "",
+        )
+    ):
+
+        issues.append(
+            "Skills missing"
+        )
+
+    if not clean_text(
+        getattr(
+            job,
+            "experience_required",
+            "",
+        )
+    ):
+
+        issues.append(
+            "Experience requirement missing"
+        )
+
+    if not clean_text(
+        getattr(
+            job,
+            "remote_country",
+            "",
+        )
+    ):
+
+        issues.append(
+            "Remote country missing"
+        )
+
+    return issues
+
+
+def job_needs_action(job):
+    """
+    Return whether the job currently requires attention.
+    """
+
+    status = get_job_status(job)
+
+    if status not in [
+        "Open",
+        "On Hold",
+    ]:
+        return False
+
+    if get_priority(job) == "Urgent":
+        return True
+
+    if not job_has_candidates(job):
+        return True
+
+    closing_state = get_closing_state(job)
+
+    if closing_state in [
+        "overdue",
+        "today",
+        "tomorrow",
+    ]:
+        return True
+
+    if (
+        get_remaining_openings(job) > 0
+        and get_candidate_count(job) == 0
+    ):
+        return True
+
+    return False
+
+
 # ============================================================
 # SEARCH
 # ============================================================
@@ -458,6 +859,7 @@ def get_search_text(job):
         getattr(job, "work_pattern", ""),
         getattr(job, "status", ""),
         getattr(job, "priority", ""),
+        getattr(job, "currency", ""),
         get_client_name(job),
         getattr(job, "notes", ""),
     ]
@@ -575,6 +977,536 @@ def validate_job_openings(
         )
 
     return None
+
+
+def validate_text_lengths(
+    position,
+    department,
+    skills,
+    experience,
+    remote_country,
+    notes,
+):
+    """Validate text field lengths."""
+
+    if len(position) > MAX_POSITION_LENGTH:
+
+        return (
+            f"Position must be {MAX_POSITION_LENGTH} "
+            "characters or fewer."
+        )
+
+    if len(department) > MAX_DEPARTMENT_LENGTH:
+
+        return (
+            f"Department must be {MAX_DEPARTMENT_LENGTH} "
+            "characters or fewer."
+        )
+
+    if len(skills) > MAX_SKILLS_LENGTH:
+
+        return (
+            f"Skills Required must be {MAX_SKILLS_LENGTH} "
+            "characters or fewer."
+        )
+
+    if len(experience) > MAX_EXPERIENCE_LENGTH:
+
+        return (
+            f"Experience Required must be "
+            f"{MAX_EXPERIENCE_LENGTH} characters or fewer."
+        )
+
+    if len(remote_country) > MAX_REMOTE_COUNTRY_LENGTH:
+
+        return (
+            f"Remote Country must be "
+            f"{MAX_REMOTE_COUNTRY_LENGTH} characters or fewer."
+        )
+
+    if len(notes) > MAX_NOTES_LENGTH:
+
+        return (
+            f"Notes must be {MAX_NOTES_LENGTH} "
+            "characters or fewer."
+        )
+
+    return None
+
+
+# ============================================================
+# DUPLICATE CHECK
+# ============================================================
+
+def find_possible_duplicate_job(
+    session,
+    client_id,
+    position,
+    current_job_id=None,
+):
+    """
+    Find a possible duplicate active job.
+
+    This is intentionally a warning rather than a hard block
+    because a client may legitimately have multiple vacancies
+    with the same position.
+    """
+
+    normalized_position = normalize_text(
+        position
+    )
+
+    if not normalized_position:
+        return None
+
+    query = (
+        session.query(Job)
+        .filter(
+            Job.client_id == client_id,
+            Job.position.isnot(None),
+        )
+    )
+
+    if current_job_id is not None:
+
+        query = query.filter(
+            Job.id != current_job_id
+        )
+
+    possible_jobs = query.all()
+
+    for existing_job in possible_jobs:
+
+        existing_position = normalize_text(
+            getattr(
+                existing_job,
+                "position",
+                "",
+            )
+        )
+
+        existing_status = get_job_status(
+            existing_job
+        )
+
+        if (
+            existing_position
+            == normalized_position
+            and existing_status
+            not in [
+                "Closed",
+                "Cancelled",
+            ]
+        ):
+
+            return existing_job
+
+    return None
+
+
+# ============================================================
+# SORTING
+# ============================================================
+
+def get_sort_options():
+    """Return available job sorting options."""
+
+    return [
+        "Date Opened — Newest",
+        "Date Opened — Oldest",
+        "Closing Date — Soonest",
+        "Closing Date — Latest",
+        "Budget — Highest",
+        "Budget — Lowest",
+        "Priority — Highest",
+        "Priority — Lowest",
+        "Remaining Openings — Highest",
+        "Fill % — Highest",
+        "Fill % — Lowest",
+        "Client — A to Z",
+        "Position — A to Z",
+        "Job ID — Newest",
+    ]
+
+
+def sort_jobs(
+    jobs,
+    sort_option,
+):
+    """Sort jobs according to the selected option."""
+
+    priority_order = {
+        "Urgent": 4,
+        "High": 3,
+        "Medium": 2,
+        "Low": 1,
+    }
+
+    if sort_option == "Date Opened — Newest":
+
+        return sorted(
+            jobs,
+            key=lambda job: (
+                getattr(job, "date_opened", None)
+                or date.min,
+                safe_int(
+                    getattr(job, "id", 0)
+                ),
+            ),
+            reverse=True,
+        )
+
+    if sort_option == "Date Opened — Oldest":
+
+        return sorted(
+            jobs,
+            key=lambda job: (
+                getattr(job, "date_opened", None)
+                or date.max,
+                safe_int(
+                    getattr(job, "id", 0)
+                ),
+            )
+        )
+
+    if sort_option == "Closing Date — Soonest":
+
+        return sorted(
+            jobs,
+            key=lambda job: (
+                getattr(job, "closing_date", None)
+                or date.max,
+                safe_int(
+                    getattr(job, "id", 0)
+                ),
+            )
+        )
+
+    if sort_option == "Closing Date — Latest":
+
+        return sorted(
+            jobs,
+            key=lambda job: (
+                getattr(job, "closing_date", None)
+                or date.min,
+                safe_int(
+                    getattr(job, "id", 0)
+                ),
+            ),
+            reverse=True,
+        )
+
+    if sort_option == "Budget — Highest":
+
+        return sorted(
+            jobs,
+            key=lambda job: safe_float(
+                getattr(
+                    job,
+                    "client_budget",
+                    0,
+                )
+            ),
+            reverse=True,
+        )
+
+    if sort_option == "Budget — Lowest":
+
+        return sorted(
+            jobs,
+            key=lambda job: safe_float(
+                getattr(
+                    job,
+                    "client_budget",
+                    0,
+                )
+            )
+        )
+
+    if sort_option == "Priority — Highest":
+
+        return sorted(
+            jobs,
+            key=lambda job: priority_order.get(
+                get_priority(job),
+                0,
+            ),
+            reverse=True,
+        )
+
+    if sort_option == "Priority — Lowest":
+
+        return sorted(
+            jobs,
+            key=lambda job: priority_order.get(
+                get_priority(job),
+                0,
+            )
+        )
+
+    if sort_option == "Remaining Openings — Highest":
+
+        return sorted(
+            jobs,
+            key=lambda job: get_remaining_openings(
+                job
+            ),
+            reverse=True,
+        )
+
+    if sort_option == "Fill % — Highest":
+
+        return sorted(
+            jobs,
+            key=lambda job: get_job_fill_percentage(
+                job
+            ),
+            reverse=True,
+        )
+
+    if sort_option == "Fill % — Lowest":
+
+        return sorted(
+            jobs,
+            key=lambda job: get_job_fill_percentage(
+                job
+            )
+        )
+
+    if sort_option == "Client — A to Z":
+
+        return sorted(
+            jobs,
+            key=lambda job: normalize_text(
+                get_client_name(job)
+            )
+        )
+
+    if sort_option == "Position — A to Z":
+
+        return sorted(
+            jobs,
+            key=lambda job: normalize_text(
+                getattr(
+                    job,
+                    "position",
+                    "",
+                )
+            )
+        )
+
+    return sorted(
+        jobs,
+        key=lambda job: safe_int(
+            getattr(
+                job,
+                "id",
+                0,
+            )
+        ),
+        reverse=True,
+    )
+
+
+# ============================================================
+# BUDGET SUMMARY
+# ============================================================
+
+def get_budget_by_currency(jobs):
+    """
+    Return budget totals grouped by currency.
+
+    Different currencies are deliberately not combined.
+    """
+
+    totals = {}
+
+    for job in jobs:
+
+        currency = (
+            clean_text(
+                getattr(
+                    job,
+                    "currency",
+                    "",
+                )
+            )
+            or "GBP"
+        )
+
+        budget = safe_float(
+            getattr(
+                job,
+                "client_budget",
+                0,
+            )
+        )
+
+        totals[currency] = (
+            totals.get(currency, 0.0)
+            + budget
+        )
+
+    return totals
+
+
+# ============================================================
+# CSV EXPORT
+# ============================================================
+
+def create_jobs_csv(jobs):
+    """Create a CSV export for the supplied jobs."""
+
+    output = io.StringIO()
+
+    writer = csv.writer(
+        output
+    )
+
+    writer.writerow(
+        [
+            "Job ID",
+            "Client",
+            "Position",
+            "Department",
+            "Skills Required",
+            "Experience Required",
+            "Client Budget",
+            "Currency",
+            "Openings",
+            "Active Placements",
+            "Remaining Openings",
+            "Fill %",
+            "Work Pattern",
+            "Remote Country",
+            "Date Opened",
+            "Closing Date",
+            "Status",
+            "Display Status",
+            "Priority",
+            "Candidates",
+            "Placements",
+            "Activities",
+            "Job Age Days",
+            "Closing State",
+            "Profile Completeness %",
+            "Notes",
+        ]
+    )
+
+    for job in jobs:
+
+        writer.writerow(
+            [
+                getattr(job, "id", ""),
+                get_client_name(job),
+                clean_text(
+                    getattr(
+                        job,
+                        "position",
+                        "",
+                    )
+                ),
+                clean_text(
+                    getattr(
+                        job,
+                        "department",
+                        "",
+                    )
+                ),
+                clean_text(
+                    getattr(
+                        job,
+                        "skills_required",
+                        "",
+                    )
+                ),
+                clean_text(
+                    getattr(
+                        job,
+                        "experience_required",
+                        "",
+                    )
+                ),
+                safe_float(
+                    getattr(
+                        job,
+                        "client_budget",
+                        0,
+                    )
+                ),
+                clean_text(
+                    getattr(
+                        job,
+                        "currency",
+                        "",
+                    )
+                )
+                or "GBP",
+                get_total_openings(job),
+                get_active_placement_count(job),
+                get_remaining_openings(job),
+                f"{get_job_fill_percentage(job):.1f}",
+                clean_text(
+                    getattr(
+                        job,
+                        "work_pattern",
+                        "",
+                    )
+                ),
+                clean_text(
+                    getattr(
+                        job,
+                        "remote_country",
+                        "",
+                    )
+                ),
+                (
+                    getattr(
+                        job,
+                        "date_opened",
+                        None,
+                    ).isoformat()
+                    if getattr(
+                        job,
+                        "date_opened",
+                        None,
+                    )
+                    else ""
+                ),
+                (
+                    getattr(
+                        job,
+                        "closing_date",
+                        None,
+                    ).isoformat()
+                    if getattr(
+                        job,
+                        "closing_date",
+                        None,
+                    )
+                    else ""
+                ),
+                get_job_status(job),
+                get_status_display(job),
+                get_priority(job),
+                get_candidate_count(job),
+                get_placement_count(job),
+                get_activity_count(job),
+                get_job_age(job),
+                get_closing_state(job),
+                get_job_profile_completeness(job),
+                clean_text(
+                    getattr(
+                        job,
+                        "notes",
+                        "",
+                    )
+                ),
+            ]
+        )
+
+    return output.getvalue()
 
 
 # ============================================================
@@ -812,6 +1744,7 @@ def show_jobs():
                     "Example: Excel, Power BI, "
                     "reconciliations, treasury"
                 ),
+                height=100,
             )
 
             experience_required = st.text_input(
@@ -1158,6 +2091,7 @@ def show_jobs():
                 placeholder=(
                     "Additional job information..."
                 ),
+                height=120,
             )
 
             # =================================================
@@ -1184,11 +2118,18 @@ def show_jobs():
                     )
                 )
 
+                current_activities = (
+                    get_activity_count(
+                        editing_job
+                    )
+                )
+
                 st.info(
                     f"Recruitment history: "
                     f"{current_candidates} candidate(s) · "
                     f"{current_placements} placement(s) · "
-                    f"{current_active_placements} active/scheduled"
+                    f"{current_active_placements} active/scheduled · "
+                    f"{current_activities} activity/activities"
                 )
 
             # =================================================
@@ -1248,17 +2189,27 @@ def show_jobs():
                         "Position is required."
                     )
 
-                elif len(position_clean) > 200:
-
-                    validation_error = (
-                        "Position must be 200 characters "
-                        "or fewer."
-                    )
-
                 elif not remote_country_clean:
 
                     validation_error = (
                         "Remote country is required."
+                    )
+
+                # =============================================
+                # TEXT LENGTH VALIDATION
+                # =============================================
+
+                if validation_error is None:
+
+                    validation_error = (
+                        validate_text_lengths(
+                            position_clean,
+                            department_clean,
+                            skills_clean,
+                            experience_clean,
+                            remote_country_clean,
+                            notes_clean,
+                        )
                     )
 
                 # =============================================
@@ -1366,7 +2317,28 @@ def show_jobs():
                     )
 
                 # =============================================
-                # SAVE
+                # DUPLICATE WARNING
+                # =============================================
+
+                possible_duplicate = None
+
+                if validation_error is None:
+
+                    possible_duplicate = (
+                        find_possible_duplicate_job(
+                            session,
+                            selected_client_id,
+                            position_clean,
+                            (
+                                editing_job.id
+                                if editing_job
+                                else None
+                            ),
+                        )
+                    )
+
+                # =============================================
+                # VALIDATION RESULT
                 # =============================================
 
                 if validation_error:
@@ -1376,6 +2348,17 @@ def show_jobs():
                     )
 
                 else:
+
+                    if possible_duplicate:
+
+                        st.warning(
+                            "Possible duplicate job detected: "
+                            f"#{possible_duplicate.id} — "
+                            f"{clean_text(possible_duplicate.position)} "
+                            f"for {get_client_name(possible_duplicate)}. "
+                            "You can still save this job if it is "
+                            "a separate vacancy."
+                        )
 
                     # =========================================
                     # UPDATE EXISTING JOB
@@ -1576,6 +2559,16 @@ def show_jobs():
             == "Cancelled"
         )
 
+        active_recruitment_jobs = sum(
+            1
+            for job in jobs
+            if get_job_status(job)
+            in [
+                "Open",
+                "On Hold",
+            ]
+        )
+
         total_openings = sum(
             get_total_openings(job)
             for job in jobs
@@ -1604,12 +2597,20 @@ def show_jobs():
             for job in jobs
         )
 
+        total_activities = sum(
+            get_activity_count(job)
+            for job in jobs
+        )
+
         urgent_open_jobs = sum(
             1
             for job in jobs
             if (
                 get_job_status(job)
-                == "Open"
+                in [
+                    "Open",
+                    "On Hold",
+                ]
                 and get_priority(job)
                 == "Urgent"
             )
@@ -1652,10 +2653,48 @@ def show_jobs():
             if job_has_candidates(job)
         )
 
+        jobs_without_candidates = sum(
+            1
+            for job in jobs
+            if not job_has_candidates(job)
+            and get_job_status(job)
+            in [
+                "Open",
+                "On Hold",
+            ]
+        )
+
         jobs_with_placements = sum(
             1
             for job in jobs
             if job_has_placements(job)
+        )
+
+        jobs_needing_action = sum(
+            1
+            for job in jobs
+            if job_needs_action(job)
+        )
+
+        jobs_with_health_issues = sum(
+            1
+            for job in jobs
+            if get_job_health_issues(job)
+        )
+
+        jobs_without_closing_date = sum(
+            1
+            for job in jobs
+            if not getattr(
+                job,
+                "closing_date",
+                None,
+            )
+            and get_job_status(job)
+            in [
+                "Open",
+                "On Hold",
+            ]
         )
 
         # ====================================================
@@ -1740,8 +2779,55 @@ def show_jobs():
         with s5:
 
             st.metric(
-                "Urgent Open",
+                "Urgent",
                 urgent_open_jobs,
+            )
+
+        # ====================================================
+        # OPERATIONAL SUMMARY
+        # ====================================================
+
+        st.markdown(
+            "### Recruitment Operations"
+        )
+
+        o1, o2, o3, o4, o5 = (
+            st.columns(5)
+        )
+
+        with o1:
+
+            st.metric(
+                "Active Recruitment",
+                active_recruitment_jobs,
+            )
+
+        with o2:
+
+            st.metric(
+                "Needs Action",
+                jobs_needing_action,
+            )
+
+        with o3:
+
+            st.metric(
+                "No Candidates",
+                jobs_without_candidates,
+            )
+
+        with o4:
+
+            st.metric(
+                "Overdue",
+                overdue_closing_jobs,
+            )
+
+        with o5:
+
+            st.metric(
+                "Health Issues",
+                jobs_with_health_issues,
             )
 
         # ====================================================
@@ -1762,16 +2848,89 @@ def show_jobs():
                 "job(s) are closing within 7 days."
             )
 
+        if jobs_without_candidates > 0:
+
+            st.warning(
+                f"{jobs_without_candidates} active "
+                "job(s) have no candidates."
+            )
+
+        if jobs_without_closing_date > 0:
+
+            st.info(
+                f"{jobs_without_closing_date} active "
+                "job(s) have no closing date."
+            )
+
+        # ====================================================
+        # BUDGET SUMMARY
+        # ====================================================
+
+        budget_by_currency = (
+            get_budget_by_currency(jobs)
+        )
+
+        if budget_by_currency:
+
+            st.markdown(
+                "### Monthly Client Budget"
+            )
+
+            budget_columns = st.columns(
+                min(
+                    max(
+                        len(
+                            budget_by_currency
+                        ),
+                        1,
+                    ),
+                    4,
+                )
+            )
+
+            for index, (
+                currency_code,
+                total_budget,
+            ) in enumerate(
+                sorted(
+                    budget_by_currency.items()
+                )
+            ):
+
+                with budget_columns[
+                    index
+                    % len(budget_columns)
+                ]:
+
+                    st.metric(
+                        currency_code,
+                        f"{total_budget:,.2f}",
+                    )
+
+            st.caption(
+                "Budget totals are separated by currency "
+                "and are not converted or combined."
+            )
+
+        # ====================================================
+        # REGISTER INFORMATION
+        # ====================================================
+
         st.caption(
             f"Closed jobs: {closed_jobs} · "
             f"Cancelled jobs: {cancelled_jobs} · "
             f"Jobs with candidates: {jobs_with_candidates} · "
-            f"Jobs with placements: {jobs_with_placements}"
+            f"Jobs with placements: {jobs_with_placements} · "
+            f"Activities: {total_activities}"
         )
 
         # ====================================================
         # FILTERS
         # ====================================================
+
+        st.markdown(
+            "### Filters"
+        )
 
         filter_col1, filter_col2, filter_col3 = (
             st.columns(3)
@@ -1783,7 +2942,7 @@ def show_jobs():
                 "Search",
                 placeholder=(
                     "Position, client, department, "
-                    "skills or country..."
+                    "skills, country..."
                 ),
             )
 
@@ -1860,9 +3019,43 @@ def show_jobs():
                     "No Candidates",
                     "Has Placements",
                     "No Placements",
+                    "Has Activities",
+                    "No Activities",
                     "Has Recruitment History",
                     "No Recruitment History",
                 ],
+            )
+
+        # ====================================================
+        # ACTION / SORT FILTERS
+        # ====================================================
+
+        action_col, sort_col = (
+            st.columns(2)
+        )
+
+        with action_col:
+
+            action_filter = st.selectbox(
+                "Operational Filter",
+                [
+                    "All Jobs",
+                    "Needs Action",
+                    "Urgent",
+                    "No Candidates",
+                    "Overdue",
+                    "Closing Within 7 Days",
+                    "Openings Remaining",
+                    "Profile Incomplete",
+                    "Data Quality Issues",
+                ],
+            )
+
+        with sort_col:
+
+            sort_option = st.selectbox(
+                "Sort By",
+                get_sort_options(),
             )
 
         # ====================================================
@@ -1876,14 +3069,16 @@ def show_jobs():
         if search.strip():
 
             search_lower = (
-                search.strip().lower()
+                normalize_text(search)
             )
 
             filtered_jobs = [
                 job
                 for job in filtered_jobs
                 if search_lower
-                in get_search_text(job)
+                in normalize_text(
+                    get_search_text(job)
+                )
             ]
 
         # ====================================================
@@ -1942,7 +3137,11 @@ def show_jobs():
                 filtered_jobs = [
                     job
                     for job in filtered_jobs
-                    if not job.closing_date
+                    if not getattr(
+                        job,
+                        "closing_date",
+                        None,
+                    )
                 ]
 
             elif (
@@ -2045,6 +3244,22 @@ def show_jobs():
                     if not job_has_placements(job)
                 ]
 
+            elif recruitment_filter == "Has Activities":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if job_has_activities(job)
+                ]
+
+            elif recruitment_filter == "No Activities":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if not job_has_activities(job)
+                ]
+
             elif (
                 recruitment_filter
                 == "Has Recruitment History"
@@ -2068,13 +3283,151 @@ def show_jobs():
                 ]
 
         # ====================================================
-        # RESULT COUNT
+        # OPERATIONAL FILTER
         # ====================================================
 
-        st.caption(
-            f"Showing {len(filtered_jobs)} "
-            f"of {len(jobs)} job(s)"
+        if action_filter != "All Jobs":
+
+            if action_filter == "Needs Action":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if job_needs_action(job)
+                ]
+
+            elif action_filter == "Urgent":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if get_priority(job)
+                    == "Urgent"
+                ]
+
+            elif action_filter == "No Candidates":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if (
+                        get_job_status(job)
+                        in [
+                            "Open",
+                            "On Hold",
+                        ]
+                        and not job_has_candidates(job)
+                    )
+                ]
+
+            elif action_filter == "Overdue":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if (
+                        get_job_status(job)
+                        in [
+                            "Open",
+                            "On Hold",
+                        ]
+                        and get_closing_state(job)
+                        == "overdue"
+                    )
+                ]
+
+            elif action_filter == "Closing Within 7 Days":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if (
+                        get_job_status(job)
+                        in [
+                            "Open",
+                            "On Hold",
+                        ]
+                        and get_days_to_closing(job)
+                        is not None
+                        and 0
+                        <= get_days_to_closing(job)
+                        <= 7
+                    )
+                ]
+
+            elif action_filter == "Openings Remaining":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if (
+                        get_job_status(job)
+                        in [
+                            "Open",
+                            "On Hold",
+                        ]
+                        and get_remaining_openings(job)
+                        > 0
+                    )
+                ]
+
+            elif action_filter == "Profile Incomplete":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if get_job_profile_completeness(job)
+                    < 100
+                ]
+
+            elif action_filter == "Data Quality Issues":
+
+                filtered_jobs = [
+                    job
+                    for job in filtered_jobs
+                    if get_job_health_issues(job)
+                ]
+
+        # ====================================================
+        # SORT
+        # ====================================================
+
+        filtered_jobs = sort_jobs(
+            filtered_jobs,
+            sort_option,
         )
+
+        # ====================================================
+        # RESULT / EXPORT BAR
+        # ====================================================
+
+        result_col1, result_col2 = (
+            st.columns([3, 1])
+        )
+
+        with result_col1:
+
+            st.caption(
+                f"Showing {len(filtered_jobs)} "
+                f"of {len(jobs)} job(s)"
+            )
+
+        with result_col2:
+
+            csv_data = create_jobs_csv(
+                filtered_jobs
+            )
+
+            st.download_button(
+                "Export CSV",
+                data=csv_data,
+                file_name=(
+                    "averra_jobs.csv"
+                ),
+                mime="text/csv",
+                use_container_width=True,
+                key="export_jobs_csv",
+            )
 
         if not filtered_jobs:
 
@@ -2102,6 +3455,10 @@ def show_jobs():
                 get_placement_count(job)
             )
 
+            activity_count = (
+                get_activity_count(job)
+            )
+
             active_placements = (
                 get_active_placement_count(job)
             )
@@ -2123,6 +3480,10 @@ def show_jobs():
             )
 
             status = get_status_display(
+                job
+            )
+
+            stored_status = get_job_status(
                 job
             )
 
@@ -2151,6 +3512,18 @@ def show_jobs():
                     )
                 )
                 or "GBP"
+            )
+
+            profile_completeness = (
+                get_job_profile_completeness(
+                    job
+                )
+            )
+
+            health_issues = (
+                get_job_health_issues(
+                    job
+                )
             )
 
             # =================================================
@@ -2193,6 +3566,10 @@ def show_jobs():
                         department_text
                     )
 
+                    st.caption(
+                        get_job_age_label(job)
+                    )
+
                 # ---------------------------------------------
                 # CLIENT
                 # ---------------------------------------------
@@ -2225,20 +3602,7 @@ def show_jobs():
                             f"{remote_country}"
                         )
 
-                # ---------------------------------------------
-                # BUDGET
-                # ---------------------------------------------
-
-                with col3:
-
-                    st.write(
-                        "Budget: **"
-                        f"{currency} "
-                        f"{budget:,.2f}"
-                        "**"
-                    )
-
-                    st.caption(
+                    work_pattern = (
                         clean_text(
                             getattr(
                                 job,
@@ -2246,13 +3610,37 @@ def show_jobs():
                                 "",
                             )
                         )
-                        or "No work pattern"
+                    )
+
+                    if work_pattern:
+
+                        st.caption(
+                            work_pattern
+                        )
+
+                # ---------------------------------------------
+                # BUDGET / FILL
+                # ---------------------------------------------
+
+                with col3:
+
+                    st.write(
+                        "Budget: **"
+                        f"{format_money(
+                            budget,
+                            currency,
+                        )}"
+                        "**"
                     )
 
                     st.caption(
                         f"{active_placements}/"
                         f"{total_openings_for_job} "
                         "filled"
+                    )
+
+                    st.caption(
+                        f"{fill_percentage:.0f}% filled"
                     )
 
                 # ---------------------------------------------
@@ -2262,6 +3650,7 @@ def show_jobs():
                 with col4:
 
                     st.write(
+                        f"{get_status_icon(status)} "
                         f"Status: **{status}**"
                     )
 
@@ -2273,7 +3662,7 @@ def show_jobs():
                     if (
                         closing_state
                         == "overdue"
-                        and status
+                        and stored_status
                         in [
                             "Open",
                             "On Hold",
@@ -2290,7 +3679,7 @@ def show_jobs():
                             "today",
                             "tomorrow",
                         ]
-                        and status
+                        and stored_status
                         in [
                             "Open",
                             "On Hold",
@@ -2355,12 +3744,42 @@ def show_jobs():
                     )
                 )
 
-                st.caption(
-                    f"Placement fill: "
-                    f"{fill_percentage:.0f}% "
-                    f"({active_placements} of "
-                    f"{total_openings_for_job} openings)"
+                progress_col1, progress_col2 = (
+                    st.columns(2)
                 )
+
+                with progress_col1:
+
+                    st.caption(
+                        f"Placement fill: "
+                        f"{fill_percentage:.0f}% "
+                        f"({active_placements} of "
+                        f"{total_openings_for_job} openings)"
+                    )
+
+                with progress_col2:
+
+                    st.caption(
+                        f"Profile completeness: "
+                        f"{profile_completeness}%"
+                    )
+
+                # =================================================
+                # HEALTH WARNING
+                # =================================================
+
+                if health_issues:
+
+                    with st.expander(
+                        f"⚠️ {len(health_issues)} "
+                        "Job Health Issue(s)"
+                    ):
+
+                        for issue in health_issues:
+
+                            st.write(
+                                f"• {issue}"
+                            )
 
                 # =================================================
                 # EDIT REQUEST
@@ -2411,20 +3830,26 @@ def show_jobs():
                         job_has_placements(job)
                     )
 
+                    has_activities = (
+                        job_has_activities(job)
+                    )
+
                     if (
                         has_candidates
                         or has_placements
+                        or has_activities
                     ):
 
                         st.warning(
                             "This job cannot be deleted "
                             "because it has recruitment "
-                            "or placement history."
+                            "or activity history."
                         )
 
                         st.caption(
                             f"Candidates: {candidate_count} · "
-                            f"Placements: {placement_count}"
+                            f"Placements: {placement_count} · "
+                            f"Activities: {activity_count}"
                         )
 
                         st.info(
@@ -2600,14 +4025,22 @@ def show_jobs():
 
                     with detail_col2:
 
-                        if job.date_opened:
+                        if getattr(
+                            job,
+                            "date_opened",
+                            None,
+                        ):
 
                             st.write(
                                 "**Date Opened:** "
                                 f"{job.date_opened.strftime('%d %b %Y')}"
                             )
 
-                        if job.closing_date:
+                        if getattr(
+                            job,
+                            "closing_date",
+                            None,
+                        ):
 
                             st.write(
                                 "**Closing Date:** "
@@ -2631,7 +4064,12 @@ def show_jobs():
                         )
 
                         st.write(
-                            "**Status:** "
+                            "**Stored Status:** "
+                            f"{stored_status}"
+                        )
+
+                        st.write(
+                            "**Operational Status:** "
                             f"{status}"
                         )
 
@@ -2646,6 +4084,11 @@ def show_jobs():
                             f"{budget:,.2f} / month"
                         )
 
+                        st.write(
+                            "**Profile Completeness:** "
+                            f"{profile_completeness}%"
+                        )
+
                     # ---------------------------------------------
                     # RECRUITMENT SUMMARY
                     # ---------------------------------------------
@@ -2654,8 +4097,8 @@ def show_jobs():
                         "### Recruitment Summary"
                     )
 
-                    summary_col1, summary_col2, summary_col3, summary_col4 = (
-                        st.columns(4)
+                    summary_col1, summary_col2, summary_col3, summary_col4, summary_col5 = (
+                        st.columns(5)
                     )
 
                     with summary_col1:
@@ -2686,6 +4129,13 @@ def show_jobs():
                             remaining,
                         )
 
+                    with summary_col5:
+
+                        st.metric(
+                            "Activities",
+                            activity_count,
+                        )
+
                     # ---------------------------------------------
                     # RECRUITMENT STATUS
                     # ---------------------------------------------
@@ -2702,6 +4152,19 @@ def show_jobs():
                         st.caption(
                             f"{candidate_count} candidate(s) "
                             "are linked to this job."
+                        )
+
+                    if remaining > 0:
+
+                        st.info(
+                            f"{remaining} opening(s) still need "
+                            "to be filled."
+                        )
+
+                    elif total_openings_for_job > 0:
+
+                        st.success(
+                            "All job openings are currently filled."
                         )
 
                     # ---------------------------------------------
