@@ -8,7 +8,6 @@ import streamlit as st
 from database import get_session
 from models import Invoice, Client, Placement
 
-from utils.calculations import calculate_invoice_balance
 from utils.helpers import valid_url
 
 
@@ -46,6 +45,7 @@ FILTER_VERSION_KEY = "invoice_filter_version"
 def clean_text(value):
     if value is None:
         return ""
+
     return str(value).strip()
 
 
@@ -53,13 +53,16 @@ def safe_float(value, default=0.0):
     try:
         if value is None:
             return default
+
         return float(value)
+
     except (TypeError, ValueError):
         return default
 
 
 def normalize_invoice_number(value):
     value = clean_text(value)
+
     return " ".join(value.split())
 
 
@@ -68,14 +71,22 @@ def get_client_name(client):
         return "Unknown Client"
 
     company_name = clean_text(
-        getattr(client, "company_name", None)
+        getattr(
+            client,
+            "company_name",
+            None,
+        )
     )
 
     if company_name:
         return company_name
 
     name = clean_text(
-        getattr(client, "name", None)
+        getattr(
+            client,
+            "name",
+            None,
+        )
     )
 
     return name or "Unknown Client"
@@ -100,7 +111,11 @@ def get_client_address(client):
 
     for field in possible_fields:
         value = clean_text(
-            getattr(client, field, None)
+            getattr(
+                client,
+                field,
+                None,
+            )
         )
 
         if value and value not in parts:
@@ -114,23 +129,38 @@ def get_employee_name(employee):
         return "Unknown Employee"
 
     full_name = clean_text(
-        getattr(employee, "full_name", None)
+        getattr(
+            employee,
+            "full_name",
+            None,
+        )
     )
 
     if full_name:
         return full_name
 
     first_name = clean_text(
-        getattr(employee, "first_name", None)
+        getattr(
+            employee,
+            "first_name",
+            None,
+        )
     )
 
     last_name = clean_text(
-        getattr(employee, "last_name", None)
+        getattr(
+            employee,
+            "last_name",
+            None,
+        )
     )
 
     name = " ".join(
         part
-        for part in [first_name, last_name]
+        for part in [
+            first_name,
+            last_name,
+        ]
         if part
     )
 
@@ -142,15 +172,29 @@ def get_placement_label(placement):
         return "No Placement"
 
     employee_name = get_employee_name(
-        getattr(placement, "employee", None)
+        getattr(
+            placement,
+            "employee",
+            None,
+        )
     )
 
     position = clean_text(
-        getattr(placement, "position", None)
+        getattr(
+            placement,
+            "position",
+            None,
+        )
     )
 
-    if employee_name != "Unknown Employee" and position:
-        return f"{employee_name} — {position}"
+    if (
+        employee_name != "Unknown Employee"
+        and position
+    ):
+        return (
+            f"{employee_name} — "
+            f"{position}"
+        )
 
     if employee_name != "Unknown Employee":
         return employee_name
@@ -173,7 +217,9 @@ def get_placement_label(placement):
 def format_money(amount, currency):
     amount = safe_float(amount)
 
-    currency = clean_text(currency) or "GBP"
+    currency = clean_text(
+        currency
+    ) or "GBP"
 
     return f"{currency} {amount:,.2f}"
 
@@ -183,17 +229,24 @@ def format_date(value):
         return "—"
 
     try:
-        return value.strftime("%d %b %Y")
+        return value.strftime(
+            "%d %b %Y"
+        )
+
     except AttributeError:
         return str(value)
 
 
 # ============================================================
-# INVOICE CALCULATIONS
+# INVOICE VALUE HELPERS
 # ============================================================
 
-def get_balance_due(invoice):
-    total = safe_float(
+def get_invoice_total(invoice):
+    """
+    Safely retrieves the invoice total.
+    """
+
+    return safe_float(
         getattr(
             invoice,
             "total_amount",
@@ -201,26 +254,100 @@ def get_balance_due(invoice):
         )
     )
 
-    paid = safe_float(
-        getattr(
-            invoice,
-            "amount_paid",
-            0.0,
-        )
+
+def get_invoice_paid(invoice):
+    """
+    Safely retrieves the recorded amount paid.
+
+    If amount_paid is missing, payment records are used
+    as a fallback where possible.
+    """
+
+    amount_paid_value = getattr(
+        invoice,
+        "amount_paid",
+        None,
     )
 
-    try:
-        balance = safe_float(
-            calculate_invoice_balance(
-                total,
-                paid,
-            )
+    if amount_paid_value is not None:
+        return max(
+            safe_float(
+                amount_paid_value
+            ),
+            0.0,
         )
-    except Exception:
-        balance = total - paid
+
+    payments = getattr(
+        invoice,
+        "payments",
+        None,
+    )
+
+    if payments:
+        total_paid = 0.0
+
+        try:
+            for payment in payments:
+                payment_status = clean_text(
+                    getattr(
+                        payment,
+                        "status",
+                        "",
+                    )
+                )
+
+                if payment_status in [
+                    "",
+                    "Received",
+                    "Paid",
+                    "Completed",
+                    "Successful",
+                ]:
+                    total_paid += safe_float(
+                        getattr(
+                            payment,
+                            "amount",
+                            0.0,
+                        )
+                    )
+
+        except Exception:
+            return 0.0
+
+        return max(
+            total_paid,
+            0.0,
+        )
+
+    return 0.0
+
+
+def get_balance_due(invoice):
+    """
+    Calculates balance locally.
+
+    IMPORTANT:
+    This deliberately does not call
+    utils.calculations.calculate_invoice_balance()
+    because that helper has previously had a signature
+    mismatch in the application.
+    """
+
+    total = get_invoice_total(
+        invoice
+    )
+
+    paid = get_invoice_paid(
+        invoice
+    )
+
+    balance = total - paid
 
     return max(
-        round(balance, 2),
+        round(
+            balance,
+            2,
+        ),
         0.0,
     )
 
@@ -237,29 +364,25 @@ def get_payment_count(invoice):
 
     try:
         return len(payments)
+
     except TypeError:
         return 0
 
 
 def has_payments(invoice):
-    return get_payment_count(invoice) > 0
+    return (
+        get_payment_count(invoice)
+        > 0
+    )
 
 
 def get_payment_percentage(invoice):
-    total = safe_float(
-        getattr(
-            invoice,
-            "total_amount",
-            0.0,
-        )
+    total = get_invoice_total(
+        invoice
     )
 
-    paid = safe_float(
-        getattr(
-            invoice,
-            "amount_paid",
-            0.0,
-        )
+    paid = get_invoice_paid(
+        invoice
     )
 
     if total <= 0:
@@ -280,9 +403,8 @@ def get_payment_percentage(invoice):
 
 def get_effective_status(invoice):
     """
-    Calculates the operational status shown in the UI.
-
-    The stored database status is not modified automatically.
+    Determines the operational invoice status
+    without changing the stored database status.
     """
 
     stored_status = clean_text(
@@ -296,23 +418,17 @@ def get_effective_status(invoice):
     if stored_status == "Cancelled":
         return "Cancelled"
 
-    total = safe_float(
-        getattr(
-            invoice,
-            "total_amount",
-            0.0,
-        )
+    total = get_invoice_total(
+        invoice
     )
 
-    paid = safe_float(
-        getattr(
-            invoice,
-            "amount_paid",
-            0.0,
-        )
+    paid = get_invoice_paid(
+        invoice
     )
 
-    balance = get_balance_due(invoice)
+    balance = get_balance_due(
+        invoice
+    )
 
     if total > 0 and paid >= total:
         return "Paid"
@@ -330,14 +446,21 @@ def get_effective_status(invoice):
     ):
         return "Overdue"
 
-    if paid > 0 and balance > 0:
+    if (
+        paid > 0
+        and balance > 0
+    ):
         return "Partially Paid"
 
     return stored_status or "Draft"
 
 
 def calculate_days_overdue(invoice):
-    if get_balance_due(invoice) <= 0:
+    balance = get_balance_due(
+        invoice
+    )
+
+    if balance <= 0:
         return 0
 
     due_date = getattr(
@@ -353,7 +476,8 @@ def calculate_days_overdue(invoice):
         return 0
 
     return (
-        date.today() - due_date
+        date.today()
+        - due_date
     ).days
 
 
@@ -371,31 +495,24 @@ def get_invoice_age(invoice):
         return 0
 
     return (
-        date.today() - invoice_date
+        date.today()
+        - invoice_date
     ).days
 
 
 # ============================================================
-# DATA QUALITY HELPERS
+# DATA QUALITY
 # ============================================================
 
 def get_invoice_data_warnings(invoice):
     warnings = []
 
-    total = safe_float(
-        getattr(
-            invoice,
-            "total_amount",
-            0.0,
-        )
+    total = get_invoice_total(
+        invoice
     )
 
-    paid = safe_float(
-        getattr(
-            invoice,
-            "amount_paid",
-            0.0,
-        )
+    paid = get_invoice_paid(
+        invoice
     )
 
     subtotal = safe_float(
@@ -414,8 +531,13 @@ def get_invoice_data_warnings(invoice):
         )
     )
 
+    expected_total = round(
+        subtotal + tax,
+        2,
+    )
+
     if abs(
-        total - round(subtotal + tax, 2)
+        total - expected_total
     ) > 0.01:
         warnings.append(
             "Total does not equal subtotal plus tax."
@@ -431,13 +553,51 @@ def get_invoice_data_warnings(invoice):
             "Amount paid is greater than the invoice total."
         )
 
+    invoice_date = getattr(
+        invoice,
+        "invoice_date",
+        None,
+    )
+
+    due_date = getattr(
+        invoice,
+        "due_date",
+        None,
+    )
+
     if (
-        getattr(invoice, "due_date", None)
-        and getattr(invoice, "invoice_date", None)
-        and invoice.due_date < invoice.invoice_date
+        due_date
+        and invoice_date
+        and due_date < invoice_date
     ):
         warnings.append(
             "Due date is earlier than invoice date."
+        )
+
+    currency = clean_text(
+        getattr(
+            invoice,
+            "currency",
+            "",
+        )
+    )
+
+    if currency not in CURRENCIES:
+        warnings.append(
+            "Invoice currency is not one of the supported currencies."
+        )
+
+    invoice_number = normalize_invoice_number(
+        getattr(
+            invoice,
+            "invoice_number",
+            "",
+        )
+    )
+
+    if not invoice_number:
+        warnings.append(
+            "Invoice number is missing."
         )
 
     return warnings
@@ -468,32 +628,51 @@ def get_currency_totals(invoices):
                 "overdue": 0.0,
             }
 
-        totals[currency]["invoice_count"] += 1
+        totals[currency][
+            "invoice_count"
+        ] += 1
 
-        totals[currency]["total"] += safe_float(
-            getattr(
-                invoice,
-                "total_amount",
-                0.0,
-            )
+        total = get_invoice_total(
+            invoice
         )
 
-        totals[currency]["paid"] += safe_float(
-            getattr(
-                invoice,
-                "amount_paid",
-                0.0,
-            )
+        paid = get_invoice_paid(
+            invoice
         )
 
-        balance = get_balance_due(invoice)
+        balance = get_balance_due(
+            invoice
+        )
 
-        totals[currency]["balance"] += balance
+        totals[currency][
+            "total"
+        ] += total
 
-        if get_effective_status(invoice) == "Overdue":
-            totals[currency]["overdue"] += balance
+        totals[currency][
+            "paid"
+        ] += paid
+
+        totals[currency][
+            "balance"
+        ] += balance
+
+        if (
+            get_effective_status(invoice)
+            == "Overdue"
+        ):
+            totals[currency][
+                "overdue"
+            ] += balance
 
     return totals
+
+
+def get_filtered_currency_totals(
+    invoices
+):
+    return get_currency_totals(
+        invoices
+    )
 
 
 # ============================================================
@@ -503,7 +682,9 @@ def get_currency_totals(invoices):
 def get_csv_bytes(invoices):
     output = io.StringIO()
 
-    writer = csv.writer(output)
+    writer = csv.writer(
+        output
+    )
 
     writer.writerow(
         [
@@ -568,7 +749,9 @@ def get_csv_bytes(invoices):
                         None,
                     )
                 ),
-                get_invoice_age(invoice),
+                get_invoice_age(
+                    invoice
+                ),
                 clean_text(
                     getattr(
                         invoice,
@@ -590,23 +773,19 @@ def get_csv_bytes(invoices):
                         0.0,
                     )
                 ),
-                safe_float(
-                    getattr(
-                        invoice,
-                        "total_amount",
-                        0.0,
-                    )
+                get_invoice_total(
+                    invoice
                 ),
-                safe_float(
-                    getattr(
-                        invoice,
-                        "amount_paid",
-                        0.0,
-                    )
+                get_invoice_paid(
+                    invoice
                 ),
-                get_balance_due(invoice),
+                get_balance_due(
+                    invoice
+                ),
                 round(
-                    get_payment_percentage(invoice),
+                    get_payment_percentage(
+                        invoice
+                    ),
                     2,
                 ),
                 clean_text(
@@ -623,9 +802,15 @@ def get_csv_bytes(invoices):
                         "",
                     )
                 ),
-                get_effective_status(invoice),
-                calculate_days_overdue(invoice),
-                get_payment_count(invoice),
+                get_effective_status(
+                    invoice
+                ),
+                calculate_days_overdue(
+                    invoice
+                ),
+                get_payment_count(
+                    invoice
+                ),
                 clean_text(
                     getattr(
                         invoice,
@@ -652,8 +837,13 @@ def get_csv_bytes(invoices):
 # PDF HELPERS
 # ============================================================
 
-def pdf_text(value, fallback=""):
-    value = clean_text(value)
+def pdf_text(
+    value,
+    fallback="",
+):
+    value = clean_text(
+        value
+    )
 
     if not value:
         value = fallback
@@ -669,7 +859,10 @@ def pdf_text(value, fallback=""):
 def generate_invoice_pdf(invoice):
     try:
         from reportlab.lib import colors
-        from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+        from reportlab.lib.enums import (
+            TA_CENTER,
+            TA_RIGHT,
+        )
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import (
             getSampleStyleSheet,
@@ -759,23 +952,17 @@ def generate_invoice_pdf(invoice):
             )
         )
 
-        total = safe_float(
-            getattr(
-                invoice,
-                "total_amount",
-                0.0,
-            )
+        total = get_invoice_total(
+            invoice
         )
 
-        paid = safe_float(
-            getattr(
-                invoice,
-                "amount_paid",
-                0.0,
-            )
+        paid = get_invoice_paid(
+            invoice
         )
 
-        balance = get_balance_due(invoice)
+        balance = get_balance_due(
+            invoice
+        )
 
         client = getattr(
             invoice,
@@ -803,7 +990,9 @@ def generate_invoice_pdf(invoice):
                     styles["Normal"],
                 ),
                 Paragraph(
-                    pdf_text(invoice_number),
+                    pdf_text(
+                        invoice_number
+                    ),
                     styles["Normal"],
                 ),
             ],
@@ -850,7 +1039,9 @@ def generate_invoice_pdf(invoice):
                 ),
                 Paragraph(
                     pdf_text(
-                        get_effective_status(invoice)
+                        get_effective_status(
+                            invoice
+                        )
                     ),
                     styles["Normal"],
                 ),
@@ -915,8 +1106,13 @@ def generate_invoice_pdf(invoice):
             )
         )
 
-        story.append(header_table)
-        story.append(Spacer(1, 12))
+        story.append(
+            header_table
+        )
+
+        story.append(
+            Spacer(1, 12)
+        )
 
         story.append(
             Paragraph(
@@ -934,25 +1130,37 @@ def generate_invoice_pdf(invoice):
             )
         )
 
-        client_address = get_client_address(client)
+        client_address = get_client_address(
+            client
+        )
 
         if client_address:
             story.append(
                 Paragraph(
-                    pdf_text(client_address),
+                    pdf_text(
+                        client_address
+                    ),
                     styles["Normal"],
                 )
             )
 
-        story.append(Spacer(1, 10))
+        story.append(
+            Spacer(1, 10)
+        )
 
         if placement:
+            placement_text = (
+                "<b>Placement:</b> "
+                + pdf_text(
+                    get_placement_label(
+                        placement
+                    )
+                )
+            )
+
             story.append(
                 Paragraph(
-                    (
-                        "<b>Placement:</b> "
-                        f"{pdf_text(get_placement_label(placement))}"
-                    ),
+                    placement_text,
                     styles["Normal"],
                 )
             )
@@ -987,7 +1195,9 @@ def generate_invoice_pdf(invoice):
             ],
             [
                 Paragraph(
-                    pdf_text(description),
+                    pdf_text(
+                        description
+                    ),
                     styles["Normal"],
                 ),
                 Paragraph(
@@ -1058,8 +1268,13 @@ def generate_invoice_pdf(invoice):
             )
         )
 
-        story.append(line_table)
-        story.append(Spacer(1, 12))
+        story.append(
+            line_table
+        )
+
+        story.append(
+            Spacer(1, 12)
+        )
 
         totals_data = [
             [
@@ -1095,7 +1310,12 @@ def generate_invoice_pdf(invoice):
                 ),
                 Paragraph(
                     (
-                        f"<b>{format_money(total, currency)}</b>"
+                        "<b>"
+                        + format_money(
+                            total,
+                            currency,
+                        )
+                        + "</b>"
                     ),
                     right_style,
                 ),
@@ -1120,7 +1340,12 @@ def generate_invoice_pdf(invoice):
                 ),
                 Paragraph(
                     (
-                        f"<b>{format_money(balance, currency)}</b>"
+                        "<b>"
+                        + format_money(
+                            balance,
+                            currency,
+                        )
+                        + "</b>"
                     ),
                     right_style,
                 ),
@@ -1173,8 +1398,13 @@ def generate_invoice_pdf(invoice):
             )
         )
 
-        story.append(totals_table)
-        story.append(Spacer(1, 14))
+        story.append(
+            totals_table
+        )
+
+        story.append(
+            Spacer(1, 14)
+        )
 
         notes = clean_text(
             getattr(
@@ -1207,7 +1437,11 @@ def generate_invoice_pdf(invoice):
             Paragraph(
                 (
                     "Payment status: "
-                    f"{pdf_text(get_effective_status(invoice))}"
+                    + pdf_text(
+                        get_effective_status(
+                            invoice
+                        )
+                    )
                 ),
                 small_style,
             )
@@ -1230,7 +1464,10 @@ def generate_invoice_pdf(invoice):
         if days_overdue > 0:
             story.append(
                 Paragraph(
-                    f"Days overdue: {days_overdue}",
+                    (
+                        "Days overdue: "
+                        f"{days_overdue}"
+                    ),
                     small_style,
                 )
             )
@@ -1246,7 +1483,9 @@ def generate_invoice_pdf(invoice):
             )
         )
 
-        document.build(story)
+        document.build(
+            story
+        )
 
         buffer.seek(0)
 
@@ -1254,7 +1493,8 @@ def generate_invoice_pdf(invoice):
 
     except Exception as error:
         raise RuntimeError(
-            f"The invoice PDF could not be generated: {error}"
+            "The invoice PDF could not be generated: "
+            f"{error}"
         )
 
 
@@ -1295,10 +1535,8 @@ def validate_invoice_data(
 
     if len(invoice_number) > MAX_INVOICE_NUMBER_LENGTH:
         errors.append(
-            (
-                "Invoice number cannot exceed "
-                f"{MAX_INVOICE_NUMBER_LENGTH} characters."
-            )
+            "Invoice number cannot exceed "
+            f"{MAX_INVOICE_NUMBER_LENGTH} characters."
         )
 
     if not invoice_date:
@@ -1311,15 +1549,26 @@ def validate_invoice_data(
             "Due date is required."
         )
 
-    if invoice_date and due_date:
-        if due_date < invoice_date:
-            errors.append(
-                "Due date cannot be earlier than the invoice date."
-            )
+    if (
+        invoice_date
+        and due_date
+        and due_date < invoice_date
+    ):
+        errors.append(
+            "Due date cannot be earlier than the invoice date."
+        )
 
-    subtotal = safe_float(subtotal)
-    tax = safe_float(tax)
-    total_amount = safe_float(total_amount)
+    subtotal = safe_float(
+        subtotal
+    )
+
+    tax = safe_float(
+        tax
+    )
+
+    total_amount = safe_float(
+        total_amount
+    )
 
     if subtotal < 0:
         errors.append(
@@ -1360,18 +1609,19 @@ def validate_invoice_data(
 
     if len(description) > MAX_DESCRIPTION_LENGTH:
         errors.append(
-            (
-                "Description cannot exceed "
-                f"{MAX_DESCRIPTION_LENGTH} characters."
-            )
+            "Description cannot exceed "
+            f"{MAX_DESCRIPTION_LENGTH} characters."
         )
 
     if document_link:
         try:
-            if not valid_url(document_link):
+            if not valid_url(
+                document_link
+            ):
                 errors.append(
                     "Document link is not a valid URL."
                 )
+
         except Exception:
             errors.append(
                 "Document link is not a valid URL."
@@ -1447,12 +1697,12 @@ def validate_payment_status(
             )
 
     if status == "Cancelled":
-        if invoice is not None and has_payments(invoice):
+        if (
+            invoice is not None
+            and has_payments(invoice)
+        ):
             errors.append(
-                (
-                    "An invoice with recorded payments "
-                    "cannot be cancelled."
-                )
+                "An invoice with recorded payments cannot be cancelled."
             )
 
     return errors
@@ -1494,7 +1744,10 @@ def find_duplicate_invoice(
             )
         ).lower()
 
-        if existing_number == normalized_number:
+        if (
+            existing_number
+            == normalized_number
+        ):
             return invoice
 
     return None
@@ -1506,6 +1759,7 @@ def find_duplicate_invoice(
 
 def clear_invoice_state():
     st.session_state.editing_invoice_id = None
+
     st.session_state.confirm_delete_invoice_id = None
 
 
@@ -1515,9 +1769,9 @@ def reset_invoice_filters():
         0,
     )
 
-    st.session_state[FILTER_VERSION_KEY] = (
-        current_version + 1
-    )
+    st.session_state[
+        FILTER_VERSION_KEY
+    ] = current_version + 1
 
 
 # ============================================================
@@ -1525,7 +1779,9 @@ def reset_invoice_filters():
 # ============================================================
 
 def show_invoices():
-    st.title("Invoices")
+    st.title(
+        "Invoices"
+    )
 
     st.caption(
         "Create, manage, track and export client invoices."
@@ -1536,11 +1792,16 @@ def show_invoices():
     if "editing_invoice_id" not in st.session_state:
         st.session_state.editing_invoice_id = None
 
-    if "confirm_delete_invoice_id" not in st.session_state:
+    if (
+        "confirm_delete_invoice_id"
+        not in st.session_state
+    ):
         st.session_state.confirm_delete_invoice_id = None
 
     if FILTER_VERSION_KEY not in st.session_state:
-        st.session_state[FILTER_VERSION_KEY] = 0
+        st.session_state[
+            FILTER_VERSION_KEY
+        ] = 0
 
     try:
         # ====================================================
@@ -1549,13 +1810,16 @@ def show_invoices():
 
         clients = (
             session.query(Client)
-            .order_by(Client.id.desc())
+            .order_by(
+                Client.id.desc()
+            )
             .all()
         )
 
         if not clients:
             st.warning(
-                "No clients exist yet. Create a client before creating an invoice."
+                "No clients exist yet. "
+                "Create a client before creating an invoice."
             )
             return
 
@@ -1565,7 +1829,9 @@ def show_invoices():
 
         placements = (
             session.query(Placement)
-            .order_by(Placement.id.desc())
+            .order_by(
+                Placement.id.desc()
+            )
             .all()
         )
 
@@ -1594,10 +1860,13 @@ def show_invoices():
 
         if editing_invoice:
             st.subheader(
-                f"Edit Invoice #{editing_invoice.invoice_number}"
+                "Edit Invoice "
+                f"#{editing_invoice.invoice_number}"
             )
         else:
-            st.subheader("Create Invoice")
+            st.subheader(
+                "Create Invoice"
+            )
 
         client_labels = [
             (
@@ -1622,10 +1891,16 @@ def show_invoices():
 
             current_client_index = 0
 
-            for index, client in enumerate(clients):
-                if client.id == current_client_id:
+            for index, client in enumerate(
+                clients
+            ):
+                if (
+                    client.id
+                    == current_client_id
+                ):
                     current_client_index = index
                     break
+
         else:
             current_client_index = 0
 
@@ -1834,22 +2109,16 @@ def show_invoices():
             )
 
             if editing_invoice:
-                existing_paid_display = safe_float(
-                    getattr(
-                        editing_invoice,
-                        "amount_paid",
-                        0.0,
-                    )
+                existing_paid_display = get_invoice_paid(
+                    editing_invoice
                 )
 
                 if existing_paid_display > 0:
                     st.info(
-                        (
-                            "Payments already recorded: "
-                            f"{format_money(existing_paid_display, currency)}. "
-                            "The invoice total cannot be reduced below "
-                            "the amount already paid."
-                        )
+                        "Payments already recorded: "
+                        f"{format_money(existing_paid_display, currency)}. "
+                        "The invoice total cannot be reduced below "
+                        "the amount already paid."
                     )
 
             document_link = st.text_input(
@@ -1919,14 +2188,12 @@ def show_invoices():
 
             if len(notes) > MAX_NOTES_LENGTH:
                 validation_errors.append(
-                    (
-                        "Notes cannot exceed "
-                        f"{MAX_NOTES_LENGTH} characters."
-                    )
+                    "Notes cannot exceed "
+                    f"{MAX_NOTES_LENGTH} characters."
                 )
 
             # ------------------------------------------------
-            # Validate client
+            # VALIDATE CLIENT
             # ------------------------------------------------
 
             selected_client = (
@@ -1944,7 +2211,7 @@ def show_invoices():
                 )
 
             # ------------------------------------------------
-            # Validate placement
+            # VALIDATE PLACEMENT
             # ------------------------------------------------
 
             selected_placement = None
@@ -1969,23 +2236,17 @@ def show_invoices():
                     != selected_client_id
                 ):
                     validation_errors.append(
-                        (
-                            "Selected placement does not belong "
-                            "to the selected client."
-                        )
+                        "Selected placement does not belong "
+                        "to the selected client."
                     )
 
             # ------------------------------------------------
-            # Existing payment protection
+            # EXISTING PAYMENT PROTECTION
             # ------------------------------------------------
 
             existing_paid = (
-                safe_float(
-                    getattr(
-                        editing_invoice,
-                        "amount_paid",
-                        0.0,
-                    )
+                get_invoice_paid(
+                    editing_invoice
                 )
                 if editing_invoice
                 else 0.0
@@ -1994,26 +2255,25 @@ def show_invoices():
             if editing_invoice:
                 if total_amount < existing_paid:
                     validation_errors.append(
-                        (
-                            "Invoice total cannot be lower "
-                            "than the amount already paid."
-                        )
+                        "Invoice total cannot be lower "
+                        "than the amount already paid."
                     )
 
                 if (
                     editing_invoice.currency
-                    and editing_invoice.currency != currency
-                    and has_payments(editing_invoice)
+                    and editing_invoice.currency
+                    != currency
+                    and has_payments(
+                        editing_invoice
+                    )
                 ):
                     validation_errors.append(
-                        (
-                            "Currency cannot be changed "
-                            "after payments have been recorded."
-                        )
+                        "Currency cannot be changed "
+                        "after payments have been recorded."
                     )
 
             # ------------------------------------------------
-            # Payment/status validation
+            # PAYMENT STATUS VALIDATION
             # ------------------------------------------------
 
             validation_errors.extend(
@@ -2027,7 +2287,7 @@ def show_invoices():
             )
 
             # ------------------------------------------------
-            # Duplicate invoice number
+            # DUPLICATE INVOICE NUMBER
             # ------------------------------------------------
 
             duplicate_invoice = find_duplicate_invoice(
@@ -2042,19 +2302,19 @@ def show_invoices():
 
             if duplicate_invoice:
                 validation_errors.append(
-                    (
-                        "An invoice with this invoice number "
-                        "already exists."
-                    )
+                    "An invoice with this invoice number "
+                    "already exists."
                 )
 
             # ------------------------------------------------
-            # Display errors
+            # DISPLAY ERRORS
             # ------------------------------------------------
 
             if validation_errors:
                 for error in validation_errors:
-                    st.error(error)
+                    st.error(
+                        error
+                    )
 
             # ------------------------------------------------
             # SAVE
@@ -2163,10 +2423,8 @@ def show_invoices():
                     session.rollback()
 
                     st.error(
-                        (
-                            "The invoice could not be saved. "
-                            "Please check the entered information."
-                        )
+                        "The invoice could not be saved. "
+                        "Please check the entered information."
                     )
 
                     st.caption(
@@ -2239,14 +2497,9 @@ def show_invoices():
             ]
         )
 
-        outstanding_total = sum(
-            get_balance_due(invoice)
-            for invoice in invoices
-            if get_effective_status(invoice)
-            != "Cancelled"
+        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(
+            5
         )
-
-        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
         kpi1.metric(
             "Invoices",
@@ -2338,7 +2591,9 @@ def show_invoices():
             FILTER_VERSION_KEY
         ]
 
-        filter_col1, filter_col2 = st.columns(2)
+        filter_col1, filter_col2 = st.columns(
+            2
+        )
 
         with filter_col1:
             search = st.text_input(
@@ -2355,10 +2610,12 @@ def show_invoices():
         with filter_col2:
             client_filter_options = [
                 "All Clients"
-            ] + [
-                get_client_name(client)
-                for client in clients
-            ]
+            ] + sorted(
+                [
+                    get_client_name(client)
+                    for client in clients
+                ]
+            )
 
             client_filter = st.selectbox(
                 "Client",
@@ -2494,7 +2751,7 @@ def show_invoices():
                     "currency",
                     "",
                 )
-            )
+            ) or "GBP"
 
             searchable_text = " ".join(
                 [
@@ -2509,25 +2766,30 @@ def show_invoices():
 
             if (
                 search_lower
-                and search_lower not in searchable_text
+                and search_lower
+                not in searchable_text
             ):
                 continue
 
             if (
-                client_filter != "All Clients"
-                and client_name != client_filter
+                client_filter
+                != "All Clients"
+                and client_name
+                != client_filter
             ):
                 continue
 
             if (
                 status_filter != "All"
-                and effective_status != status_filter
+                and effective_status
+                != status_filter
             ):
                 continue
 
             if (
                 currency_filter != "All"
-                and currency != currency_filter
+                and currency
+                != currency_filter
             ):
                 continue
 
@@ -2536,13 +2798,15 @@ def show_invoices():
             )
 
             if (
-                overdue_filter == "Overdue Only"
+                overdue_filter
+                == "Overdue Only"
                 and days_overdue <= 0
             ):
                 continue
 
             if (
-                overdue_filter == "Not Overdue"
+                overdue_filter
+                == "Not Overdue"
                 and days_overdue > 0
             ):
                 continue
@@ -2562,7 +2826,8 @@ def show_invoices():
                         invoice,
                         "invoice_date",
                         None,
-                    ) or date.min
+                    )
+                    or date.min
                 ),
                 reverse=True,
             )
@@ -2574,7 +2839,8 @@ def show_invoices():
                         invoice,
                         "invoice_date",
                         None,
-                    ) or date.min
+                    )
+                    or date.min
                 )
             )
 
@@ -2585,7 +2851,8 @@ def show_invoices():
                         invoice,
                         "due_date",
                         None,
-                    ) or date.max
+                    )
+                    or date.max
                 )
             )
 
@@ -2596,19 +2863,16 @@ def show_invoices():
                         invoice,
                         "due_date",
                         None,
-                    ) or date.min
+                    )
+                    or date.min
                 ),
                 reverse=True,
             )
 
         elif sort_option == "Amount — Highest":
             filtered_invoices.sort(
-                key=lambda invoice: safe_float(
-                    getattr(
-                        invoice,
-                        "total_amount",
-                        0.0,
-                    )
+                key=lambda invoice: get_invoice_total(
+                    invoice
                 ),
                 reverse=True,
             )
@@ -2636,17 +2900,17 @@ def show_invoices():
 
         with count_col:
             st.caption(
-                (
-                    f"Showing {len(filtered_invoices)} "
-                    f"of {len(invoices)} invoices"
-                )
+                f"Showing {len(filtered_invoices)} "
+                f"of {len(invoices)} invoices"
             )
 
         # ====================================================
-        # FILTERED EXPORT
+        # EXPORT
         # ====================================================
 
-        export_col1, export_col2 = st.columns(2)
+        export_col1, export_col2 = st.columns(
+            2
+        )
 
         with export_col1:
             st.download_button(
@@ -2654,7 +2918,9 @@ def show_invoices():
                 data=get_csv_bytes(
                     invoices
                 ),
-                file_name="averra_invoices_all.csv",
+                file_name=(
+                    "averra_invoices_all.csv"
+                ),
                 mime="text/csv",
                 use_container_width=True,
             )
@@ -2665,7 +2931,9 @@ def show_invoices():
                 data=get_csv_bytes(
                     filtered_invoices
                 ),
-                file_name="averra_invoices_filtered.csv",
+                file_name=(
+                    "averra_invoices_filtered.csv"
+                ),
                 mime="text/csv",
                 disabled=not filtered_invoices,
                 use_container_width=True,
@@ -2676,45 +2944,60 @@ def show_invoices():
         # ====================================================
 
         if filtered_invoices:
-            filtered_total = sum(
-                safe_float(
-                    getattr(
-                        invoice,
-                        "total_amount",
-                        0.0,
-                    )
+            filtered_currency_totals = (
+                get_filtered_currency_totals(
+                    filtered_invoices
                 )
-                for invoice in filtered_invoices
             )
 
-            filtered_balance = sum(
-                get_balance_due(invoice)
-                for invoice in filtered_invoices
+            st.markdown(
+                "### Filtered Financial Summary"
             )
 
-            filtered_overdue = sum(
-                get_balance_due(invoice)
-                for invoice in filtered_invoices
-                if get_effective_status(invoice)
-                == "Overdue"
-            )
+            for currency in sorted(
+                filtered_currency_totals.keys()
+            ):
+                totals = (
+                    filtered_currency_totals[
+                        currency
+                    ]
+                )
 
-            s1, s2, s3 = st.columns(3)
+                s1, s2, s3, s4 = st.columns(
+                    4
+                )
 
-            s1.metric(
-                "Filtered Invoice Value",
-                f"{filtered_total:,.2f}",
-            )
+                s1.metric(
+                    f"{currency} Invoiced",
+                    format_money(
+                        totals["total"],
+                        currency,
+                    ),
+                )
 
-            s2.metric(
-                "Filtered Outstanding",
-                f"{filtered_balance:,.2f}",
-            )
+                s2.metric(
+                    f"{currency} Paid",
+                    format_money(
+                        totals["paid"],
+                        currency,
+                    ),
+                )
 
-            s3.metric(
-                "Filtered Overdue",
-                f"{filtered_overdue:,.2f}",
-            )
+                s3.metric(
+                    f"{currency} Outstanding",
+                    format_money(
+                        totals["balance"],
+                        currency,
+                    ),
+                )
+
+                s4.metric(
+                    f"{currency} Overdue",
+                    format_money(
+                        totals["overdue"],
+                        currency,
+                    ),
+                )
 
         # ====================================================
         # EMPTY FILTER RESULT
@@ -2749,20 +3032,12 @@ def show_invoices():
                 )
             ) or "GBP"
 
-            total = safe_float(
-                getattr(
-                    invoice,
-                    "total_amount",
-                    0.0,
-                )
+            total = get_invoice_total(
+                invoice
             )
 
-            paid = safe_float(
-                getattr(
-                    invoice,
-                    "amount_paid",
-                    0.0,
-                )
+            paid = get_invoice_paid(
+                invoice
             )
 
             balance = get_balance_due(
@@ -2773,8 +3048,10 @@ def show_invoices():
                 invoice
             )
 
-            payment_percentage = get_payment_percentage(
-                invoice
+            payment_percentage = (
+                get_payment_percentage(
+                    invoice
+                )
             )
 
             days_overdue = calculate_days_overdue(
@@ -2797,7 +3074,9 @@ def show_invoices():
                 None,
             )
 
-            st.markdown("---")
+            st.markdown(
+                "---"
+            )
 
             header_col1, header_col2 = st.columns(
                 [4, 1]
@@ -2809,13 +3088,13 @@ def show_invoices():
                 )
 
                 st.write(
-                    f"**Client:** "
+                    "**Client:** "
                     f"{get_client_name(client)}"
                 )
 
                 if placement:
                     st.write(
-                        f"**Placement:** "
+                        "**Placement:** "
                         f"{get_placement_label(placement)}"
                     )
 
@@ -2900,37 +3179,44 @@ def show_invoices():
             )
 
             with payment_col1:
-                st.progress(
+                progress_value = (
                     payment_percentage / 100
                 )
 
-                st.caption(
-                    (
-                        f"{payment_percentage:.1f}% paid — "
-                        f"{format_money(paid, currency)} "
-                        f"of "
-                        f"{format_money(total, currency)}"
+                st.progress(
+                    max(
+                        0.0,
+                        min(
+                            1.0,
+                            progress_value,
+                        ),
                     )
+                )
+
+                st.caption(
+                    f"{payment_percentage:.1f}% paid — "
+                    f"{format_money(paid, currency)} "
+                    "of "
+                    f"{format_money(total, currency)}"
                 )
 
             with payment_col2:
                 if days_overdue > 0:
                     st.error(
-                        (
-                            f"{days_overdue} "
-                            "days overdue"
-                        )
+                        f"{days_overdue} days overdue"
                     )
-                elif balance <= 0 and total > 0:
+
+                elif (
+                    balance <= 0
+                    and total > 0
+                ):
                     st.success(
                         "Fully paid."
                     )
+
                 else:
                     st.caption(
-                        (
-                            f"Invoice age: "
-                            f"{invoice_age} days."
-                        )
+                        f"Invoice age: {invoice_age} days."
                     )
 
             description = clean_text(
@@ -2951,20 +3237,25 @@ def show_invoices():
             )
 
             if payment_count:
+                payment_word = (
+                    "payment"
+                    if payment_count == 1
+                    else "payments"
+                )
+
                 st.caption(
-                    (
-                        f"{payment_count} payment"
-                        f"{'s' if payment_count != 1 else ''} "
-                        "recorded."
-                    )
+                    f"{payment_count} "
+                    f"{payment_word} recorded."
                 )
 
             # ------------------------------------------------
             # DATA WARNINGS
             # ------------------------------------------------
 
-            data_warnings = get_invoice_data_warnings(
-                invoice
+            data_warnings = (
+                get_invoice_data_warnings(
+                    invoice
+                )
             )
 
             if data_warnings:
@@ -2990,7 +3281,9 @@ def show_invoices():
 
             if document_link:
                 try:
-                    if valid_url(document_link):
+                    if valid_url(
+                        document_link
+                    ):
                         st.link_button(
                             "Open Invoice Document",
                             document_link,
@@ -2999,6 +3292,7 @@ def show_invoices():
                         st.caption(
                             "Stored document link is not a valid URL."
                         )
+
                 except Exception:
                     st.caption(
                         "Stored document link could not be validated."
@@ -3020,7 +3314,9 @@ def show_invoices():
                 with st.expander(
                     "Notes"
                 ):
-                    st.write(notes)
+                    st.write(
+                        notes
+                    )
 
             # ------------------------------------------------
             # ACTION BUTTONS
@@ -3101,19 +3397,17 @@ def show_invoices():
                 == invoice_id
             ):
                 st.warning(
-                    (
-                        f"Are you sure you want to delete "
-                        f"invoice {invoice_number}?"
-                    )
+                    "Are you sure you want to delete "
+                    f"invoice {invoice_number}?"
                 )
 
-                if has_payments(invoice):
+                if has_payments(
+                    invoice
+                ):
                     st.error(
-                        (
-                            "This invoice cannot be deleted "
-                            "because it has recorded payments. "
-                            "Use Cancelled status instead."
-                        )
+                        "This invoice cannot be deleted "
+                        "because it has recorded payments. "
+                        "Use Cancelled status instead."
                     )
 
                     if st.button(
@@ -3157,11 +3451,9 @@ def show_invoices():
                                 )
 
                                 st.success(
-                                    (
-                                        f"Invoice "
-                                        f"{invoice_number} "
-                                        "deleted successfully."
-                                    )
+                                    "Invoice "
+                                    f"{invoice_number} "
+                                    "deleted successfully."
                                 )
 
                                 st.rerun()
@@ -3170,10 +3462,8 @@ def show_invoices():
                                 session.rollback()
 
                                 st.error(
-                                    (
-                                        "The invoice could "
-                                        "not be deleted."
-                                    )
+                                    "The invoice could "
+                                    "not be deleted."
                                 )
 
                                 st.caption(
@@ -3213,10 +3503,8 @@ def show_invoices():
         session.rollback()
 
         st.error(
-            (
-                "The invoices screen could not be loaded. "
-                "Please check the database and invoice data."
-            )
+            "The invoices screen could not be loaded. "
+            "Please check the database and invoice data."
         )
 
         st.caption(
