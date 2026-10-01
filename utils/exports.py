@@ -2,998 +2,2160 @@ import csv
 import io
 from datetime import date, datetime
 
-# ============================================================
-
-# GENERAL HELPERS
 
 # ============================================================
+# SAFE HELPERS
+# ============================================================
 
-def safe_value(value, default=""):
-"""
-Return a safe value for CSV/export purposes.
-"""
-if value is None:
-return default
-return value
+def clean_text(value):
+    """
+    Safely convert a value to clean text.
+    """
+    if value is None:
+        return ""
 
-def safe_text(value, default=""):
-"""
-Convert a value safely to text.
-"""
-if value is None:
-return default
+    return str(value).strip()
 
-```
-if isinstance(value, bool):
-    return "Yes" if value else "No"
-
-return str(value)
-```
 
 def safe_float(value, default=0.0):
-"""
-Safely convert a value to float.
-"""
-if value is None:
-return default
+    """
+    Safely convert a value to float.
+    """
+    try:
+        if value is None:
+            return default
 
-```
-try:
-    return float(value)
-except (TypeError, ValueError):
-    return default
-```
+        return float(value)
+
+    except (TypeError, ValueError):
+        return default
+
 
 def format_date(value):
-"""
-Format date/datetime values consistently.
-"""
-if value is None:
-return ""
+    """
+    Format dates consistently for CSV export.
+    """
+    if value is None:
+        return ""
 
-```
-if isinstance(value, datetime):
-    return value.strftime("%Y-%m-%d")
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
 
-if isinstance(value, date):
-    return value.strftime("%Y-%m-%d")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
 
-return str(value)
-```
+    text = clean_text(value)
 
-def format_money(value):
-"""
-Format numeric values as two-decimal amounts.
-"""
-if value is None:
-return ""
+    if not text:
+        return ""
 
-```
-try:
-    return f"{float(value):.2f}"
-except (TypeError, ValueError):
-    return str(value)
-```
+    return text
 
-def get_attr(obj, name, default=None):
-"""
-Safely retrieve an attribute from an object or dictionary.
-"""
-if obj is None:
-return default
 
-```
-if isinstance(obj, dict):
-    return obj.get(name, default)
+def format_datetime(value):
+    """
+    Format datetime values consistently.
+    """
+    if value is None:
+        return ""
 
-return getattr(obj, name, default)
-```
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
 
-# ============================================================
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
 
-# RELATIONSHIP HELPERS
+    return clean_text(value)
 
-# ============================================================
+
+def format_money(value, currency=None):
+    """
+    Format money for CSV export.
+    """
+    amount = safe_float(value)
+
+    if currency:
+        currency_text = clean_text(currency).upper()
+
+        if currency_text:
+            return f"{currency_text} {amount:,.2f}"
+
+    return f"{amount:,.2f}"
+
+
+def get_attr(record, name, default=""):
+    """
+    Safely retrieve an attribute.
+    """
+    try:
+        value = getattr(record, name, default)
+
+        if value is None:
+            return default
+
+        return value
+
+    except Exception:
+        return default
+
 
 def get_client_name(client):
-"""
-Return a readable client/company name.
-"""
-if client is None:
-return ""
+    """
+    Safely retrieve client company name.
+    """
+    if not client:
+        return "Unknown Client"
 
-```
-for field in (
-    "company_name",
-    "name",
-    "client_name",
-    "business_name",
-):
-    value = get_attr(client, field)
+    company_name = clean_text(
+        get_attr(
+            client,
+            "company_name",
+            "",
+        )
+    )
 
-    if value:
-        return str(value)
+    return company_name or "Unnamed Client"
 
-return ""
-```
 
 def get_employee_name(employee):
-"""
-Return a readable employee name.
-"""
-if employee is None:
-return ""
+    """
+    Safely retrieve employee full name.
+    """
+    if not employee:
+        return "Unknown Employee"
 
-```
-first_name = get_attr(employee, "first_name", "")
-last_name = get_attr(employee, "last_name", "")
+    first_name = clean_text(
+        get_attr(
+            employee,
+            "first_name",
+            "",
+        )
+    )
 
-full_name = f"{first_name} {last_name}".strip()
+    last_name = clean_text(
+        get_attr(
+            employee,
+            "last_name",
+            "",
+        )
+    )
 
-if full_name:
-    return full_name
+    full_name = f"{first_name} {last_name}".strip()
 
-for field in (
-    "name",
-    "full_name",
-    "employee_name",
-):
-    value = get_attr(employee, field)
+    return full_name or "Unnamed Employee"
 
-    if value:
-        return str(value)
 
-return ""
-```
+def get_job_label(job):
+    """
+    Safely retrieve job label.
+    """
+    if not job:
+        return "Unknown Job"
 
-def get_contact_name(contact):
-"""
-Return a readable contact name.
-"""
-if contact is None:
-return ""
+    position = clean_text(
+        get_attr(
+            job,
+            "position",
+            "",
+        )
+    )
 
-```
-first_name = get_attr(contact, "first_name", "")
-last_name = get_attr(contact, "last_name", "")
+    job_id = get_attr(
+        job,
+        "id",
+        None,
+    )
 
-full_name = f"{first_name} {last_name}".strip()
+    if position and job_id:
+        return f"{position} #{job_id}"
 
-if full_name:
-    return full_name
+    return position or "Unnamed Job"
 
-for field in (
-    "name",
-    "full_name",
-    "contact_name",
-):
-    value = get_attr(contact, field)
 
-    if value:
-        return str(value)
+def get_candidate_label(candidate):
+    """
+    Safely retrieve candidate label.
+    """
+    if not candidate:
+        return "Unknown Candidate"
 
-return ""
-```
+    first_name = clean_text(
+        get_attr(
+            candidate,
+            "first_name",
+            "",
+        )
+    )
 
-def get_job_title(job):
-"""
-Return a readable job title.
-"""
-if job is None:
-return ""
+    last_name = clean_text(
+        get_attr(
+            candidate,
+            "last_name",
+            "",
+        )
+    )
 
-```
-for field in (
-    "title",
-    "job_title",
-    "position",
-    "role",
-    "name",
-):
-    value = get_attr(job, field)
+    name = f"{first_name} {last_name}".strip()
 
-    if value:
-        return str(value)
+    if not name:
+        name = clean_text(
+            get_attr(
+                candidate,
+                "name",
+                "",
+            )
+        )
 
-return ""
-```
+    candidate_id = get_attr(
+        candidate,
+        "id",
+        None,
+    )
 
-def get_placement_position(placement):
-"""
-Return the placement position/title.
-"""
-if placement is None:
-return ""
+    if name and candidate_id:
+        return f"{name} #{candidate_id}"
 
-```
-for field in (
-    "position",
-    "job_title",
-    "title",
-    "role",
-):
-    value = get_attr(placement, field)
+    return name or "Unnamed Candidate"
 
-    if value:
-        return str(value)
 
-return ""
-```
+def get_placement_label(placement):
+    """
+    Safely retrieve placement label.
+    """
+    if not placement:
+        return "Unknown Placement"
 
-def get_contract_number(contract):
-"""
-Return contract number.
-"""
-if contract is None:
-return ""
+    position = clean_text(
+        get_attr(
+            placement,
+            "position",
+            "",
+        )
+    )
 
-```
-for field in (
-    "contract_number",
-    "number",
-    "reference",
-    "contract_ref",
-):
-    value = get_attr(contract, field)
+    placement_id = get_attr(
+        placement,
+        "id",
+        None,
+    )
 
-    if value:
-        return str(value)
+    if position and placement_id:
+        return f"{position} #{placement_id}"
 
-return ""
-```
+    return position or "Unnamed Placement"
 
-def get_invoice_number(invoice):
-"""
-Return invoice number.
-"""
-if invoice is None:
-return ""
 
-```
-for field in (
-    "invoice_number",
-    "number",
-    "reference",
-    "invoice_ref",
-):
-    value = get_attr(invoice, field)
+def get_contract_label(contract):
+    """
+    Safely retrieve contract label.
+    """
+    if not contract:
+        return "Unknown Contract"
 
-    if value:
-        return str(value)
+    contract_number = clean_text(
+        get_attr(
+            contract,
+            "contract_number",
+            "",
+        )
+    )
 
-return ""
-```
+    contract_id = get_attr(
+        contract,
+        "id",
+        None,
+    )
+
+    if contract_number:
+        return contract_number
+
+    if contract_id:
+        return f"Contract #{contract_id}"
+
+    return "Unnamed Contract"
+
+
+def get_invoice_label(invoice):
+    """
+    Safely retrieve invoice label.
+    """
+    if not invoice:
+        return "Unknown Invoice"
+
+    invoice_number = clean_text(
+        get_attr(
+            invoice,
+            "invoice_number",
+            "",
+        )
+    )
+
+    invoice_id = get_attr(
+        invoice,
+        "id",
+        None,
+    )
+
+    if invoice_number:
+        return invoice_number
+
+    if invoice_id:
+        return f"Invoice #{invoice_id}"
+
+    return "Unnamed Invoice"
+
 
 # ============================================================
-
-# CORE CSV ENGINE
-
+# CSV CORE FUNCTIONS
 # ============================================================
 
-def records_to_csv(records, columns, filename="export.csv"):
-"""
-Convert records to CSV.
+def rows_to_csv(
+    rows,
+    headers=None,
+):
+    """
+    Convert a list of dictionaries to CSV text.
 
-```
-columns should be a list of tuples:
+    Returns UTF-8 compatible CSV text.
+    """
+    rows = rows or []
 
-    [
-        ("Company", lambda x: ...),
-        ("Status", lambda x: ...),
-    ]
+    if headers is None:
 
-The accessor can be:
-    - callable
-    - dictionary key
-    - object attribute name
-"""
-
-output = io.StringIO(newline="")
-
-writer = csv.writer(
-    output,
-    quoting=csv.QUOTE_MINIMAL,
-)
-
-headers = [column[0] for column in columns]
-
-writer.writerow(headers)
-
-for record in records or []:
-    row = []
-
-    for _, accessor in columns:
-
-        try:
-            if callable(accessor):
-                value = accessor(record)
-
-            elif isinstance(record, dict):
-                value = record.get(accessor, "")
-
-            else:
-                value = getattr(
-                    record,
-                    accessor,
-                    "",
-                )
-
-        except Exception:
-            value = ""
-
-        if isinstance(value, (date, datetime)):
-            value = format_date(value)
-
-        elif isinstance(value, float):
-            value = format_money(value)
-
-        elif value is None:
-            value = ""
+        if rows:
+            headers = list(
+                rows[0].keys()
+            )
 
         else:
-            value = str(value)
+            headers = []
 
-        row.append(value)
+    output = io.StringIO(
+        newline=""
+    )
 
-    writer.writerow(row)
+    writer = csv.DictWriter(
+        output,
+        fieldnames=headers,
+        extrasaction="ignore",
+    )
 
-return {
-    "filename": filename,
-    "content": output.getvalue(),
-    "mime": "text/csv",
-}
-```
+    writer.writeheader()
 
-def csv_bytes(records, columns):
-"""
-Return CSV data as UTF-8 bytes.
+    for row in rows:
+        clean_row = {}
 
-```
-UTF-8 BOM is included for better Excel compatibility.
-"""
-result = records_to_csv(
+        for header in headers:
+            value = row.get(
+                header,
+                "",
+            )
+
+            if value is None:
+                value = ""
+
+            clean_row[header] = value
+
+        writer.writerow(
+            clean_row
+        )
+
+    return output.getvalue()
+
+
+def records_to_csv(
     records,
-    columns,
-    filename="export.csv",
-)
+    fields,
+):
+    """
+    Generic SQLAlchemy record exporter.
 
-return result["content"].encode(
-    "utf-8-sig"
-)
-```
+    fields can be:
+        ["id", "name", "status"]
+
+    or:
+
+        {
+            "ID": "id",
+            "Name": "name",
+            "Status": "status",
+        }
+    """
+    records = records or []
+
+    if isinstance(fields, dict):
+        headers = list(
+            fields.keys()
+        )
+
+        field_names = list(
+            fields.values()
+        )
+
+    else:
+        headers = list(fields)
+        field_names = list(fields)
+
+    rows = []
+
+    for record in records:
+
+        row = {}
+
+        for header, field_name in zip(
+            headers,
+            field_names,
+        ):
+
+            row[header] = get_attr(
+                record,
+                field_name,
+                "",
+            )
+
+        rows.append(row)
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
 
 # ============================================================
-
 # CLIENT EXPORT
-
 # ============================================================
 
 def export_clients(clients):
-columns = [
-("ID", lambda x: get_attr(x, "id")),
-("Company Name", lambda x: get_client_name(x)),
-("Status", lambda x: get_attr(x, "status")),
-("Industry", lambda x: get_attr(x, "industry")),
-("Country", lambda x: get_attr(x, "country")),
-("City", lambda x: get_attr(x, "city")),
-("Website", lambda x: get_attr(x, "website")),
-("Email", lambda x: get_attr(x, "email")),
-("Phone", lambda x: get_attr(x, "phone")),
-("Lead Source", lambda x: get_attr(x, "lead_source")),
-("Company Size", lambda x: get_attr(x, "company_size")),
-("Account Owner", lambda x: get_attr(x, "account_owner")),
-("Follow-up Date", lambda x: format_date(get_attr(x, "follow_up_date"))),
-("Notes", lambda x: get_attr(x, "notes")),
-("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-("Updated At", lambda x: format_date(get_attr(x, "updated_at"))),
-]
+    """
+    Export clients to CSV.
+    """
+    rows = []
 
-```
-return records_to_csv(
-    clients,
-    columns,
-    "clients.csv",
-)
-```
+    headers = [
+        "ID",
+        "Company Name",
+        "Status",
+        "Lead Source",
+        "Industry",
+        "Company Size",
+        "Country",
+        "Website",
+        "Email",
+        "Phone",
+        "Address",
+        "City",
+        "Postcode",
+        "Notes",
+    ]
+
+    for client in clients or []:
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    client,
+                    "id",
+                    "",
+                ),
+                "Company Name": get_attr(
+                    client,
+                    "company_name",
+                    "",
+                ),
+                "Status": get_attr(
+                    client,
+                    "status",
+                    "",
+                ),
+                "Lead Source": get_attr(
+                    client,
+                    "lead_source",
+                    "",
+                ),
+                "Industry": get_attr(
+                    client,
+                    "industry",
+                    "",
+                ),
+                "Company Size": get_attr(
+                    client,
+                    "company_size",
+                    "",
+                ),
+                "Country": get_attr(
+                    client,
+                    "country",
+                    "",
+                ),
+                "Website": get_attr(
+                    client,
+                    "website",
+                    "",
+                ),
+                "Email": get_attr(
+                    client,
+                    "email",
+                    "",
+                ),
+                "Phone": get_attr(
+                    client,
+                    "phone",
+                    "",
+                ),
+                "Address": get_attr(
+                    client,
+                    "address",
+                    "",
+                ),
+                "City": get_attr(
+                    client,
+                    "city",
+                    "",
+                ),
+                "Postcode": get_attr(
+                    client,
+                    "postcode",
+                    "",
+                ),
+                "Notes": get_attr(
+                    client,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
 
 # ============================================================
-
 # CLIENT CONTACT EXPORT
-
 # ============================================================
 
-def export_client_contacts(contacts):
-columns = [
-("ID", lambda x: get_attr(x, "id")),
-(
-"Client",
-lambda x: get_client_name(
-get_attr(x, "client")
-),
-),
-("First Name", lambda x: get_attr(x, "first_name")),
-("Last Name", lambda x: get_attr(x, "last_name")),
-("Full Name", lambda x: get_contact_name(x)),
-("Job Title", lambda x: get_attr(x, "job_title")),
-("Email", lambda x: get_attr(x, "email")),
-("Phone", lambda x: get_attr(x, "phone")),
-("Mobile", lambda x: get_attr(x, "mobile")),
-("LinkedIn", lambda x: get_attr(x, "linkedin_url")),
-("Primary Contact", lambda x: get_attr(x, "primary_contact")),
-("Status", lambda x: get_attr(x, "status")),
-("Notes", lambda x: get_attr(x, "notes")),
-("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
-
-```
-return records_to_csv(
+def export_client_contacts(
     contacts,
-    columns,
-    "client_contacts.csv",
-)
-```
-
-# ============================================================
-
-# ACTIVITIES EXPORT
-
-# ============================================================
-
-def export_activities(activities):
-def candidate_name(activity):
-candidate = get_attr(activity, "candidate")
-
-```
-    if candidate is None:
-        return ""
-
-    employee = get_attr(candidate, "employee")
-
-    if employee:
-        return get_employee_name(employee)
-
-    return get_attr(candidate, "name", "")
-
-columns = [
-    ("ID", lambda x: get_attr(x, "id")),
-    (
-        "Client",
-        lambda x: get_client_name(
-            get_attr(x, "client")
-        ),
-    ),
-    (
-        "Contact",
-        lambda x: get_contact_name(
-            get_attr(x, "contact")
-        ),
-    ),
-    (
-        "Job",
-        lambda x: get_job_title(
-            get_attr(x, "job")
-        ),
-    ),
-    (
-        "Candidate",
-        candidate_name,
-    ),
-    (
-        "Placement",
-        lambda x: get_placement_position(
-            get_attr(x, "placement")
-        ),
-    ),
-    (
-        "Contract",
-        lambda x: get_contract_number(
-            get_attr(x, "contract")
-        ),
-    ),
-    ("Activity Type", lambda x: get_attr(x, "activity_type")),
-    ("Subject", lambda x: get_attr(x, "subject")),
-    ("Description", lambda x: get_attr(x, "description")),
-    ("Status", lambda x: get_attr(x, "status")),
-    ("Priority", lambda x: get_attr(x, "priority")),
-    ("Due Date", lambda x: format_date(get_attr(x, "due_date"))),
-    ("Completed At", lambda x: format_date(get_attr(x, "completed_at"))),
-    ("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
-
-return records_to_csv(
-    activities,
-    columns,
-    "activities.csv",
-)
-```
-
-# ============================================================
-
-# EMPLOYEE EXPORT
-
-# ============================================================
-
-def export_employees(employees):
-columns = [
-("ID", lambda x: get_attr(x, "id")),
-("First Name", lambda x: get_attr(x, "first_name")),
-("Last Name", lambda x: get_attr(x, "last_name")),
-("Full Name", lambda x: get_employee_name(x)),
-("Email", lambda x: get_attr(x, "email")),
-("Phone", lambda x: get_attr(x, "phone")),
-("Country", lambda x: get_attr(x, "country")),
-("City", lambda x: get_attr(x, "city")),
-("Role", lambda x: get_attr(x, "role")),
-("Department", lambda x: get_attr(x, "department")),
-("Status", lambda x: get_attr(x, "status")),
-("English Level", lambda x: get_attr(x, "english_level")),
-("Availability", lambda x: get_attr(x, "availability")),
-("Currency", lambda x: get_attr(x, "currency")),
-("Expected Salary", lambda x: format_money(get_attr(x, "expected_salary"))),
-("CV Path", lambda x: get_attr(x, "cv_path")),
-("CV Link", lambda x: get_attr(x, "cv_link")),
-("Notes", lambda x: get_attr(x, "notes")),
-("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
-
-```
-return records_to_csv(
-    employees,
-    columns,
-    "employees.csv",
-)
-```
-
-# ============================================================
-
-# EMPLOYEE SKILLS EXPORT
-
-# ============================================================
-
-def export_employee_skills(skills):
-def skill_name(skill):
-for field in (
-"skill_name",
-"skill",
-"name",
 ):
-value = get_attr(skill, field)
+    """
+    Export client contacts to CSV.
+    """
+    rows = []
 
-```
-        if value:
-            return value
+    headers = [
+        "ID",
+        "Client",
+        "First Name",
+        "Last Name",
+        "Job Title",
+        "Email",
+        "Phone",
+        "LinkedIn",
+        "Primary Contact",
+        "Status",
+        "Preferred Method",
+        "Notes",
+    ]
 
-    return ""
+    for contact in contacts or []:
 
-columns = [
-    ("ID", lambda x: get_attr(x, "id")),
-    (
-        "Employee",
-        lambda x: get_employee_name(
-            get_attr(x, "employee")
-        ),
-    ),
-    ("Skill", skill_name),
-    ("Category", lambda x: get_attr(x, "category")),
-    ("Level", lambda x: get_attr(x, "level")),
-    ("Years Experience", lambda x: get_attr(x, "years_experience")),
-    ("Notes", lambda x: get_attr(x, "notes")),
-    ("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
+        client = get_attr(
+            contact,
+            "client",
+            None,
+        )
 
-return records_to_csv(
-    skills,
-    columns,
-    "employee_skills.csv",
-)
-```
+        rows.append(
+            {
+                "ID": get_attr(
+                    contact,
+                    "id",
+                    "",
+                ),
+                "Client": get_client_name(
+                    client
+                ),
+                "First Name": get_attr(
+                    contact,
+                    "first_name",
+                    "",
+                ),
+                "Last Name": get_attr(
+                    contact,
+                    "last_name",
+                    "",
+                ),
+                "Job Title": get_attr(
+                    contact,
+                    "job_title",
+                    "",
+                ),
+                "Email": get_attr(
+                    contact,
+                    "email",
+                    "",
+                ),
+                "Phone": get_attr(
+                    contact,
+                    "phone",
+                    "",
+                ),
+                "LinkedIn": get_attr(
+                    contact,
+                    "linkedin",
+                    "",
+                ),
+                "Primary Contact": get_attr(
+                    contact,
+                    "primary_contact",
+                    "",
+                ),
+                "Status": get_attr(
+                    contact,
+                    "status",
+                    "",
+                ),
+                "Preferred Method": get_attr(
+                    contact,
+                    "preferred_method",
+                    "",
+                ),
+                "Notes": get_attr(
+                    contact,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
 
 # ============================================================
+# EMPLOYEE EXPORT
+# ============================================================
 
+def export_employees(
+    employees,
+):
+    """
+    Export employees to CSV.
+    """
+    rows = []
+
+    headers = [
+        "ID",
+        "First Name",
+        "Last Name",
+        "Email",
+        "Phone",
+        "Country",
+        "City",
+        "Job Title",
+        "Department",
+        "Employment Type",
+        "Status",
+        "Start Date",
+        "End Date",
+        "Salary",
+        "Currency",
+        "Notes",
+    ]
+
+    for employee in employees or []:
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    employee,
+                    "id",
+                    "",
+                ),
+                "First Name": get_attr(
+                    employee,
+                    "first_name",
+                    "",
+                ),
+                "Last Name": get_attr(
+                    employee,
+                    "last_name",
+                    "",
+                ),
+                "Email": get_attr(
+                    employee,
+                    "email",
+                    "",
+                ),
+                "Phone": get_attr(
+                    employee,
+                    "phone",
+                    "",
+                ),
+                "Country": get_attr(
+                    employee,
+                    "country",
+                    "",
+                ),
+                "City": get_attr(
+                    employee,
+                    "city",
+                    "",
+                ),
+                "Job Title": get_attr(
+                    employee,
+                    "job_title",
+                    "",
+                ),
+                "Department": get_attr(
+                    employee,
+                    "department",
+                    "",
+                ),
+                "Employment Type": get_attr(
+                    employee,
+                    "employment_type",
+                    "",
+                ),
+                "Status": get_attr(
+                    employee,
+                    "status",
+                    "",
+                ),
+                "Start Date": format_date(
+                    get_attr(
+                        employee,
+                        "start_date",
+                        None,
+                    )
+                ),
+                "End Date": format_date(
+                    get_attr(
+                        employee,
+                        "end_date",
+                        None,
+                    )
+                ),
+                "Salary": get_attr(
+                    employee,
+                    "salary",
+                    "",
+                ),
+                "Currency": get_attr(
+                    employee,
+                    "currency",
+                    "",
+                ),
+                "Notes": get_attr(
+                    employee,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
+
+# ============================================================
+# EMPLOYEE SKILLS EXPORT
+# ============================================================
+
+def export_employee_skills(
+    skills,
+):
+    """
+    Export employee skills to CSV.
+    """
+    rows = []
+
+    headers = [
+        "ID",
+        "Employee",
+        "Category",
+        "Skill",
+        "Level",
+        "Years Experience",
+        "Notes",
+    ]
+
+    for skill in skills or []:
+
+        employee = get_attr(
+            skill,
+            "employee",
+            None,
+        )
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    skill,
+                    "id",
+                    "",
+                ),
+                "Employee": get_employee_name(
+                    employee
+                ),
+                "Category": get_attr(
+                    skill,
+                    "category",
+                    "",
+                ),
+                "Skill": get_attr(
+                    skill,
+                    "skill",
+                    "",
+                ),
+                "Level": get_attr(
+                    skill,
+                    "level",
+                    "",
+                ),
+                "Years Experience": get_attr(
+                    skill,
+                    "years_experience",
+                    "",
+                ),
+                "Notes": get_attr(
+                    skill,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
+
+# ============================================================
 # JOB EXPORT
-
 # ============================================================
 
 def export_jobs(jobs):
-columns = [
-("ID", lambda x: get_attr(x, "id")),
-(
-"Client",
-lambda x: get_client_name(
-get_attr(x, "client")
-),
-),
-("Job Title", lambda x: get_job_title(x)),
-("Department", lambda x: get_attr(x, "department")),
-("Location", lambda x: get_attr(x, "location")),
-("Employment Type", lambda x: get_attr(x, "employment_type")),
-("Status", lambda x: get_attr(x, "status")),
-("Openings", lambda x: get_attr(x, "openings")),
-("Salary Min", lambda x: format_money(get_attr(x, "salary_min"))),
-("Salary Max", lambda x: format_money(get_attr(x, "salary_max"))),
-("Currency", lambda x: get_attr(x, "currency")),
-("Start Date", lambda x: format_date(get_attr(x, "start_date"))),
-("Closing Date", lambda x: format_date(get_attr(x, "closing_date"))),
-("Description", lambda x: get_attr(x, "description")),
-("Requirements", lambda x: get_attr(x, "requirements")),
-("Notes", lambda x: get_attr(x, "notes")),
-("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
+    """
+    Export jobs to CSV.
+    """
+    rows = []
 
-```
-return records_to_csv(
-    jobs,
-    columns,
-    "jobs.csv",
-)
-```
-
-# ============================================================
-
-# CANDIDATE EXPORT
-
-# ============================================================
-
-def export_candidates(candidates):
-def candidate_employee(candidate):
-employee = get_attr(candidate, "employee")
-
-```
-    if employee:
-        return get_employee_name(employee)
-
-    return get_attr(candidate, "employee_name", "")
-
-columns = [
-    ("ID", lambda x: get_attr(x, "id")),
-    (
-        "Employee",
-        candidate_employee,
-    ),
-    (
-        "Job",
-        lambda x: get_job_title(
-            get_attr(x, "job")
-        ),
-    ),
-    (
+    headers = [
+        "ID",
         "Client",
-        lambda x: get_client_name(
-            get_attr(
-                get_attr(x, "job"),
-                "client",
-            )
-        ),
-    ),
-    ("Status", lambda x: get_attr(x, "status")),
-    ("Submitted Date", lambda x: format_date(get_attr(x, "submitted_date"))),
-    ("Interview Date", lambda x: format_date(get_attr(x, "interview_date"))),
-    ("Offer Date", lambda x: format_date(get_attr(x, "offer_date"))),
-    ("Placed Date", lambda x: format_date(get_attr(x, "placed_date"))),
-    ("Client Feedback", lambda x: get_attr(x, "client_feedback")),
-    ("Notes", lambda x: get_attr(x, "notes")),
-    ("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
+        "Position",
+        "Department",
+        "Skills Required",
+        "Experience Required",
+        "Client Budget",
+        "Currency",
+        "Openings",
+        "Work Pattern",
+        "Remote Country",
+        "Date Opened",
+        "Closing Date",
+        "Status",
+        "Priority",
+        "Notes",
+    ]
 
-return records_to_csv(
+    for job in jobs or []:
+
+        client = get_attr(
+            job,
+            "client",
+            None,
+        )
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    job,
+                    "id",
+                    "",
+                ),
+                "Client": get_client_name(
+                    client
+                ),
+                "Position": get_attr(
+                    job,
+                    "position",
+                    "",
+                ),
+                "Department": get_attr(
+                    job,
+                    "department",
+                    "",
+                ),
+                "Skills Required": get_attr(
+                    job,
+                    "skills_required",
+                    "",
+                ),
+                "Experience Required": get_attr(
+                    job,
+                    "experience_required",
+                    "",
+                ),
+                "Client Budget": get_attr(
+                    job,
+                    "client_budget",
+                    "",
+                ),
+                "Currency": get_attr(
+                    job,
+                    "currency",
+                    "",
+                ),
+                "Openings": get_attr(
+                    job,
+                    "openings",
+                    "",
+                ),
+                "Work Pattern": get_attr(
+                    job,
+                    "work_pattern",
+                    "",
+                ),
+                "Remote Country": get_attr(
+                    job,
+                    "remote_country",
+                    "",
+                ),
+                "Date Opened": format_date(
+                    get_attr(
+                        job,
+                        "date_opened",
+                        None,
+                    )
+                ),
+                "Closing Date": format_date(
+                    get_attr(
+                        job,
+                        "closing_date",
+                        None,
+                    )
+                ),
+                "Status": get_attr(
+                    job,
+                    "status",
+                    "",
+                ),
+                "Priority": get_attr(
+                    job,
+                    "priority",
+                    "",
+                ),
+                "Notes": get_attr(
+                    job,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
+
+# ============================================================
+# CANDIDATE EXPORT
+# ============================================================
+
+def export_candidates(
     candidates,
-    columns,
-    "candidates.csv",
-)
-```
+):
+    """
+    Export candidates to CSV.
+    """
+    rows = []
+
+    headers = [
+        "ID",
+        "Candidate",
+        "First Name",
+        "Last Name",
+        "Email",
+        "Phone",
+        "Job",
+        "Client",
+        "Status",
+        "Interview Date",
+        "Application Date",
+        "Expected Salary",
+        "Currency",
+        "Notes",
+    ]
+
+    for candidate in candidates or []:
+
+        job = get_attr(
+            candidate,
+            "job",
+            None,
+        )
+
+        client = (
+            get_attr(
+                job,
+                "client",
+                None,
+            )
+            if job
+            else None
+        )
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    candidate,
+                    "id",
+                    "",
+                ),
+                "Candidate": get_candidate_label(
+                    candidate
+                ),
+                "First Name": get_attr(
+                    candidate,
+                    "first_name",
+                    "",
+                ),
+                "Last Name": get_attr(
+                    candidate,
+                    "last_name",
+                    "",
+                ),
+                "Email": get_attr(
+                    candidate,
+                    "email",
+                    "",
+                ),
+                "Phone": get_attr(
+                    candidate,
+                    "phone",
+                    "",
+                ),
+                "Job": get_job_label(
+                    job
+                ),
+                "Client": get_client_name(
+                    client
+                ),
+                "Status": get_attr(
+                    candidate,
+                    "status",
+                    "",
+                ),
+                "Interview Date": format_date(
+                    get_attr(
+                        candidate,
+                        "interview_date",
+                        None,
+                    )
+                ),
+                "Application Date": format_date(
+                    get_attr(
+                        candidate,
+                        "application_date",
+                        None,
+                    )
+                ),
+                "Expected Salary": get_attr(
+                    candidate,
+                    "expected_salary",
+                    "",
+                ),
+                "Currency": get_attr(
+                    candidate,
+                    "currency",
+                    "",
+                ),
+                "Notes": get_attr(
+                    candidate,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
 
 # ============================================================
-
 # PLACEMENT EXPORT
-
 # ============================================================
 
-def export_placements(placements):
-columns = [
-("ID", lambda x: get_attr(x, "id")),
-(
-"Client",
-lambda x: get_client_name(
-get_attr(x, "client")
-),
-),
-(
-"Employee",
-lambda x: get_employee_name(
-get_attr(x, "employee")
-),
-),
-(
-"Job",
-lambda x: get_job_title(
-get_attr(x, "job")
-),
-),
-("Position", lambda x: get_placement_position(x)),
-("Status", lambda x: get_attr(x, "status")),
-("Start Date", lambda x: format_date(get_attr(x, "start_date"))),
-("End Date", lambda x: format_date(get_attr(x, "end_date"))),
-("Billing Frequency", lambda x: get_attr(x, "billing_frequency")),
-("Client Monthly Fee", lambda x: format_money(get_attr(x, "client_monthly_fee"))),
-("Worker Monthly Cost", lambda x: format_money(get_attr(x, "worker_monthly_cost"))),
-("Currency", lambda x: get_attr(x, "currency")),
-("Notes", lambda x: get_attr(x, "notes")),
-("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
-
-```
-return records_to_csv(
+def export_placements(
     placements,
-    columns,
-    "placements.csv",
-)
-```
+):
+    """
+    Export placements to CSV.
+    """
+    rows = []
+
+    headers = [
+        "ID",
+        "Client",
+        "Employee",
+        "Job",
+        "Position",
+        "Start Date",
+        "End Date",
+        "Client Monthly Fee",
+        "Worker Monthly Cost",
+        "Gross Margin",
+        "Margin %",
+        "Currency",
+        "Billing Frequency",
+        "Status",
+        "Notes",
+    ]
+
+    for placement in placements or []:
+
+        client = get_attr(
+            placement,
+            "client",
+            None,
+        )
+
+        employee = get_attr(
+            placement,
+            "employee",
+            None,
+        )
+
+        job = get_attr(
+            placement,
+            "job",
+            None,
+        )
+
+        fee = safe_float(
+            get_attr(
+                placement,
+                "client_monthly_fee",
+                0,
+            )
+        )
+
+        cost = safe_float(
+            get_attr(
+                placement,
+                "worker_monthly_cost",
+                0,
+            )
+        )
+
+        margin = fee - cost
+
+        margin_percentage = (
+            margin / fee * 100
+            if fee
+            else 0
+        )
+
+        currency = clean_text(
+            get_attr(
+                placement,
+                "currency",
+                "",
+            )
+        ).upper()
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    placement,
+                    "id",
+                    "",
+                ),
+                "Client": get_client_name(
+                    client
+                ),
+                "Employee": get_employee_name(
+                    employee
+                ),
+                "Job": get_job_label(
+                    job
+                ),
+                "Position": get_attr(
+                    placement,
+                    "position",
+                    "",
+                ),
+                "Start Date": format_date(
+                    get_attr(
+                        placement,
+                        "start_date",
+                        None,
+                    )
+                ),
+                "End Date": format_date(
+                    get_attr(
+                        placement,
+                        "end_date",
+                        None,
+                    )
+                ),
+                "Client Monthly Fee": fee,
+                "Worker Monthly Cost": cost,
+                "Gross Margin": margin,
+                "Margin %": round(
+                    margin_percentage,
+                    2,
+                ),
+                "Currency": currency,
+                "Billing Frequency": get_attr(
+                    placement,
+                    "billing_frequency",
+                    "",
+                ),
+                "Status": get_attr(
+                    placement,
+                    "status",
+                    "",
+                ),
+                "Notes": get_attr(
+                    placement,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
 
 # ============================================================
-
 # CONTRACT EXPORT
-
 # ============================================================
 
-def export_contracts(contracts):
-columns = [
-("ID", lambda x: get_attr(x, "id")),
-(
-"Client",
-lambda x: get_client_name(
-get_attr(x, "client")
-),
-),
-("Contract Number", lambda x: get_contract_number(x)),
-("Contract Type", lambda x: get_attr(x, "contract_type")),
-("Status", lambda x: get_attr(x, "status")),
-("Currency", lambda x: get_attr(x, "currency")),
-("Contract Value", lambda x: format_money(get_attr(x, "contract_value"))),
-(
-"Placement",
-lambda x: get_placement_position(
-get_attr(x, "placement")
-),
-),
-("Start Date", lambda x: format_date(get_attr(x, "start_date"))),
-("End Date", lambda x: format_date(get_attr(x, "end_date"))),
-("Signed Date", lambda x: format_date(get_attr(x, "signed_date"))),
-("Renewal Date", lambda x: format_date(get_attr(x, "renewal_date"))),
-("Document Link", lambda x: get_attr(x, "document_link")),
-("Notes", lambda x: get_attr(x, "notes")),
-("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
-
-```
-return records_to_csv(
+def export_contracts(
     contracts,
-    columns,
-    "contracts.csv",
-)
-```
+):
+    """
+    Export contracts to CSV.
+    """
+    rows = []
+
+    headers = [
+        "ID",
+        "Contract Number",
+        "Client",
+        "Placement",
+        "Contract Type",
+        "Start Date",
+        "End Date",
+        "Contract Value",
+        "Currency",
+        "Status",
+        "Signed Date",
+        "Renewal Date",
+        "Document Link",
+        "Notes",
+    ]
+
+    for contract in contracts or []:
+
+        client = get_attr(
+            contract,
+            "client",
+            None,
+        )
+
+        placement = get_attr(
+            contract,
+            "placement",
+            None,
+        )
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    contract,
+                    "id",
+                    "",
+                ),
+                "Contract Number": get_attr(
+                    contract,
+                    "contract_number",
+                    "",
+                ),
+                "Client": get_client_name(
+                    client
+                ),
+                "Placement": get_placement_label(
+                    placement
+                ),
+                "Contract Type": get_attr(
+                    contract,
+                    "contract_type",
+                    "",
+                ),
+                "Start Date": format_date(
+                    get_attr(
+                        contract,
+                        "start_date",
+                        None,
+                    )
+                ),
+                "End Date": format_date(
+                    get_attr(
+                        contract,
+                        "end_date",
+                        None,
+                    )
+                ),
+                "Contract Value": get_attr(
+                    contract,
+                    "contract_value",
+                    "",
+                ),
+                "Currency": get_attr(
+                    contract,
+                    "currency",
+                    "",
+                ),
+                "Status": get_attr(
+                    contract,
+                    "status",
+                    "",
+                ),
+                "Signed Date": format_date(
+                    get_attr(
+                        contract,
+                        "signed_date",
+                        None,
+                    )
+                ),
+                "Renewal Date": format_date(
+                    get_attr(
+                        contract,
+                        "renewal_date",
+                        None,
+                    )
+                ),
+                "Document Link": get_attr(
+                    contract,
+                    "document_link",
+                    "",
+                ),
+                "Notes": get_attr(
+                    contract,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
 
 # ============================================================
-
 # INVOICE EXPORT
-
 # ============================================================
 
-def export_invoices(invoices):
-columns = [
-("ID", lambda x: get_attr(x, "id")),
-("Invoice Number", lambda x: get_invoice_number(x)),
-(
-"Client",
-lambda x: get_client_name(
-get_attr(x, "client")
-),
-),
-(
-"Placement",
-lambda x: get_placement_position(
-get_attr(x, "placement")
-),
-),
-("Invoice Date", lambda x: format_date(get_attr(x, "invoice_date"))),
-("Due Date", lambda x: format_date(get_attr(x, "due_date"))),
-("Description", lambda x: get_attr(x, "description")),
-("Subtotal", lambda x: format_money(get_attr(x, "subtotal"))),
-("Tax", lambda x: format_money(get_attr(x, "tax"))),
-("Total", lambda x: format_money(get_attr(x, "total_amount"))),
-("Amount Paid", lambda x: format_money(get_attr(x, "amount_paid"))),
-(
-"Balance",
-lambda x: format_money(
-safe_float(
-get_attr(x, "total_amount")
-)
-- safe_float(
-get_attr(x, "amount_paid")
-)
-),
-),
-("Currency", lambda x: get_attr(x, "currency")),
-("Status", lambda x: get_attr(x, "status")),
-("Document Link", lambda x: get_attr(x, "document_link")),
-("Notes", lambda x: get_attr(x, "notes")),
-("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
-
-```
-return records_to_csv(
+def export_invoices(
     invoices,
-    columns,
-    "invoices.csv",
-)
-```
+    payments=None,
+):
+    """
+    Export invoices to CSV.
+
+    Payments are optional. If supplied, received payments
+    can be calculated from the payment records.
+    """
+    payments = payments or []
+
+    rows = []
+
+    headers = [
+        "ID",
+        "Invoice Number",
+        "Client",
+        "Placement",
+        "Description",
+        "Issue Date",
+        "Due Date",
+        "Subtotal",
+        "Tax",
+        "Total Amount",
+        "Amount Paid",
+        "Outstanding",
+        "Currency",
+        "Status",
+        "Document Link",
+        "Notes",
+    ]
+
+    for invoice in invoices or []:
+
+        client = get_attr(
+            invoice,
+            "client",
+            None,
+        )
+
+        placement = get_attr(
+            invoice,
+            "placement",
+            None,
+        )
+
+        total = safe_float(
+            get_attr(
+                invoice,
+                "total_amount",
+                0,
+            )
+        )
+
+        stored_paid = safe_float(
+            get_attr(
+                invoice,
+                "amount_paid",
+                0,
+            )
+        )
+
+        invoice_id = get_attr(
+            invoice,
+            "id",
+            None,
+        )
+
+        related_payments = [
+            payment
+            for payment in payments
+            if getattr(
+                payment,
+                "invoice_id",
+                None,
+            ) == invoice_id
+        ]
+
+        received_from_payments = 0.0
+
+        for payment in related_payments:
+
+            status = clean_text(
+                get_attr(
+                    payment,
+                    "status",
+                    "",
+                )
+            ).lower()
+
+            if status in [
+                "received",
+                "paid",
+                "completed",
+                "successful",
+            ]:
+
+                received_from_payments += safe_float(
+                    get_attr(
+                        payment,
+                        "amount",
+                        0,
+                    )
+                )
+
+        if stored_paid > 0:
+            amount_paid = stored_paid
+
+        else:
+            amount_paid = received_from_payments
+
+        outstanding = max(
+            total - amount_paid,
+            0.0,
+        )
+
+        rows.append(
+            {
+                "ID": invoice_id,
+                "Invoice Number": get_attr(
+                    invoice,
+                    "invoice_number",
+                    "",
+                ),
+                "Client": get_client_name(
+                    client
+                ),
+                "Placement": get_placement_label(
+                    placement
+                ),
+                "Description": get_attr(
+                    invoice,
+                    "description",
+                    "",
+                ),
+                "Issue Date": format_date(
+                    get_attr(
+                        invoice,
+                        "issue_date",
+                        None,
+                    )
+                ),
+                "Due Date": format_date(
+                    get_attr(
+                        invoice,
+                        "due_date",
+                        None,
+                    )
+                ),
+                "Subtotal": get_attr(
+                    invoice,
+                    "subtotal",
+                    "",
+                ),
+                "Tax": get_attr(
+                    invoice,
+                    "tax",
+                    "",
+                ),
+                "Total Amount": total,
+                "Amount Paid": amount_paid,
+                "Outstanding": outstanding,
+                "Currency": get_attr(
+                    invoice,
+                    "currency",
+                    "",
+                ),
+                "Status": get_attr(
+                    invoice,
+                    "status",
+                    "",
+                ),
+                "Document Link": get_attr(
+                    invoice,
+                    "document_link",
+                    "",
+                ),
+                "Notes": get_attr(
+                    invoice,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
 
 # ============================================================
-
 # PAYMENT EXPORT
-
 # ============================================================
 
-def export_payments(payments):
-columns = [
-("ID", lambda x: get_attr(x, "id")),
-(
-"Invoice Number",
-lambda x: get_invoice_number(
-get_attr(x, "invoice")
-),
-),
-(
-"Client",
-lambda x: get_client_name(
-get_attr(
-get_attr(x, "invoice"),
-"client",
-)
-),
-),
-("Payment Date", lambda x: format_date(get_attr(x, "payment_date"))),
-("Amount", lambda x: format_money(get_attr(x, "amount"))),
-(
-"Currency",
-lambda x: get_attr(
-get_attr(x, "invoice"),
-"currency",
-),
-),
-("Payment Method", lambda x: get_attr(x, "payment_method")),
-("Status", lambda x: get_attr(x, "status")),
-("Reference", lambda x: get_attr(x, "reference")),
-("Notes", lambda x: get_attr(x, "notes")),
-("Created At", lambda x: format_date(get_attr(x, "created_at"))),
-]
-
-```
-return records_to_csv(
+def export_payments(
     payments,
-    columns,
-    "payments.csv",
-)
-```
-
-# ============================================================
-
-# GENERIC EXPORT
-
-# ============================================================
-
-def export_records(
-records,
-columns,
-filename="export.csv",
 ):
-"""
-Generic export function for any CRM model.
-"""
-return records_to_csv(
-records,
-columns,
-filename,
-)
+    """
+    Export payments to CSV.
+    """
+    rows = []
 
-def get_csv_download_data(
-records,
-columns,
-filename="export.csv",
-):
-"""
-Return data suitable for Streamlit download_button().
-"""
-return {
-"data": csv_bytes(records, columns),
-"file_name": filename,
-"mime": "text/csv",
-}
+    headers = [
+        "ID",
+        "Invoice",
+        "Client",
+        "Payment Date",
+        "Amount",
+        "Currency",
+        "Status",
+        "Payment Method",
+        "Reference",
+        "Notes",
+    ]
+
+    for payment in payments or []:
+
+        invoice = get_attr(
+            payment,
+            "invoice",
+            None,
+        )
+
+        currency = clean_text(
+            get_attr(
+                payment,
+                "currency",
+                "",
+            )
+        ).upper()
+
+        if not currency and invoice:
+            currency = clean_text(
+                get_attr(
+                    invoice,
+                    "currency",
+                    "",
+                )
+            ).upper()
+
+        amount = safe_float(
+            get_attr(
+                payment,
+                "amount",
+                0,
+            )
+        )
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    payment,
+                    "id",
+                    "",
+                ),
+                "Invoice": get_invoice_label(
+                    invoice
+                ),
+                "Client": get_client_name(
+                    get_attr(
+                        invoice,
+                        "client",
+                        None,
+                    )
+                    if invoice
+                    else None
+                ),
+                "Payment Date": format_date(
+                    get_attr(
+                        payment,
+                        "payment_date",
+                        None,
+                    )
+                ),
+                "Amount": amount,
+                "Currency": currency,
+                "Status": get_attr(
+                    payment,
+                    "status",
+                    "",
+                ),
+                "Payment Method": get_attr(
+                    payment,
+                    "payment_method",
+                    "",
+                ),
+                "Reference": get_attr(
+                    payment,
+                    "reference",
+                    "",
+                ),
+                "Notes": get_attr(
+                    payment,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
 
 # ============================================================
+# ACTIVITY / GENERAL EXPORT
+# ============================================================
 
-# EXPORT ALL CRM DATA
+def export_activities(
+    activities,
+):
+    """
+    Export activities to CSV.
 
+    This function is intentionally flexible so it can work
+    with the current Activity model even if additional fields
+    are added later.
+    """
+    rows = []
+
+    headers = [
+        "ID",
+        "Activity Type",
+        "Subject",
+        "Activity Date",
+        "Due Date",
+        "Status",
+        "Priority",
+        "Client",
+        "Contact",
+        "Assigned Employee",
+        "Job",
+        "Candidate",
+        "Placement",
+        "Contract",
+        "Notes",
+    ]
+
+    for activity in activities or []:
+
+        client = get_attr(
+            activity,
+            "client",
+            None,
+        )
+
+        contact = get_attr(
+            activity,
+            "contact",
+            None,
+        )
+
+        employee = get_attr(
+            activity,
+            "assigned_employee",
+            None,
+        )
+
+        job = get_attr(
+            activity,
+            "job",
+            None,
+        )
+
+        candidate = get_attr(
+            activity,
+            "candidate",
+            None,
+        )
+
+        placement = get_attr(
+            activity,
+            "placement",
+            None,
+        )
+
+        contract = get_attr(
+            activity,
+            "contract",
+            None,
+        )
+
+        contact_first = clean_text(
+            get_attr(
+                contact,
+                "first_name",
+                "",
+            )
+        )
+
+        contact_last = clean_text(
+            get_attr(
+                contact,
+                "last_name",
+                "",
+            )
+        )
+
+        contact_name = (
+            f"{contact_first} {contact_last}".strip()
+        )
+
+        if not contact_name:
+            contact_name = "Unknown Contact"
+
+        rows.append(
+            {
+                "ID": get_attr(
+                    activity,
+                    "id",
+                    "",
+                ),
+                "Activity Type": get_attr(
+                    activity,
+                    "activity_type",
+                    "",
+                ),
+                "Subject": get_attr(
+                    activity,
+                    "subject",
+                    "",
+                ),
+                "Activity Date": format_datetime(
+                    get_attr(
+                        activity,
+                        "activity_date",
+                        None,
+                    )
+                ),
+                "Due Date": format_date(
+                    get_attr(
+                        activity,
+                        "due_date",
+                        None,
+                    )
+                ),
+                "Status": get_attr(
+                    activity,
+                    "status",
+                    "",
+                ),
+                "Priority": get_attr(
+                    activity,
+                    "priority",
+                    "",
+                ),
+                "Client": get_client_name(
+                    client
+                ),
+                "Contact": contact_name,
+                "Assigned Employee": get_employee_name(
+                    employee
+                ),
+                "Job": get_job_label(
+                    job
+                ),
+                "Candidate": get_candidate_label(
+                    candidate
+                ),
+                "Placement": get_placement_label(
+                    placement
+                ),
+                "Contract": get_contract_label(
+                    contract
+                ),
+                "Notes": get_attr(
+                    activity,
+                    "notes",
+                    "",
+                ),
+            }
+        )
+
+    return rows_to_csv(
+        rows,
+        headers,
+    )
+
+
+# ============================================================
+# DASHBOARD SUMMARY EXPORT
+# ============================================================
+
+def export_dashboard_summary(
+    clients=None,
+    employees=None,
+    jobs=None,
+    candidates=None,
+    placements=None,
+    contracts=None,
+    invoices=None,
+    payments=None,
+):
+    """
+    Export a high-level CRM dashboard summary.
+
+    Financial values remain separated by currency.
+    """
+    clients = clients or []
+    employees = employees or []
+    jobs = jobs or []
+    candidates = candidates or []
+    placements = placements or []
+    contracts = contracts or []
+    invoices = invoices or []
+    payments = payments or []
+
+    active_clients = sum(
+        1
+        for client in clients
+        if clean_text(
+            get_attr(
+                client,
+                "status",
+                "",
+            )
+        )
+        in [
+            "Active",
+            "Won",
+        ]
+    )
+
+    open_jobs = sum(
+        1
+        for job in jobs
+        if clean_text(
+            get_attr(
+                job,
+                "status",
+                "",
+            )
+        )
+        in [
+            "Open",
+            "On Hold",
+        ]
+    )
+
+    active_placements = sum(
+        1
+        for placement in placements
+        if clean_text(
+            get_attr(
+                placement,
+                "status",
+                "",
+            )
+        )
+        == "Active"
+    )
+
+    overdue_invoices = sum(
+        1
+        for invoice in invoices
+        if clean_text(
+            get_attr(
+                invoice,
+                "status",
+                "",
+            )
+        )
+        == "Overdue"
+    )
+
+    received_payments = 0
+
+    for payment in payments:
+
+        status = clean_text(
+            get_attr(
+                payment,
+                "status",
+                "",
+            )
+        ).lower()
+
+        if status in [
+            "received",
+            "paid",
+            "completed",
+            "successful",
+        ]:
+            received_payments += 1
+
+    rows = [
+        {
+            "Metric": "Clients",
+            "Value": len(clients),
+        },
+        {
+            "Metric": "Active Clients",
+            "Value": active_clients,
+        },
+        {
+            "Metric": "Employees",
+            "Value": len(employees),
+        },
+        {
+            "Metric": "Open Jobs",
+            "Value": open_jobs,
+        },
+        {
+            "Metric": "Candidates",
+            "Value": len(candidates),
+        },
+        {
+            "Metric": "Active Placements",
+            "Value": active_placements,
+        },
+        {
+            "Metric": "Contracts",
+            "Value": len(contracts),
+        },
+        {
+            "Metric": "Invoices",
+            "Value": len(invoices),
+        },
+        {
+            "Metric": "Overdue Invoices",
+            "Value": overdue_invoices,
+        },
+        {
+            "Metric": "Payments",
+            "Value": len(payments),
+        },
+        {
+            "Metric": "Received Payments",
+            "Value": received_payments,
+        },
+    ]
+
+    return rows_to_csv(
+        rows,
+        [
+            "Metric",
+            "Value",
+        ],
+    )
+
+
+# ============================================================
+# COMBINED CRM EXPORT
 # ============================================================
 
 def export_all_data(
-clients=None,
-client_contacts=None,
-activities=None,
-employees=None,
-employee_skills=None,
-jobs=None,
-candidates=None,
-placements=None,
-contracts=None,
-invoices=None,
-payments=None,
+    clients=None,
+    contacts=None,
+    employees=None,
+    skills=None,
+    jobs=None,
+    candidates=None,
+    placements=None,
+    contracts=None,
+    invoices=None,
+    payments=None,
+    activities=None,
 ):
-"""
-Export all CRM entities into a dictionary of CSV files.
+    """
+    Return all major CRM exports as a dictionary.
 
-```
-Example:
+    Example:
 
-    files = export_all_data(
-        clients=clients,
-        employees=employees,
-        jobs=jobs,
+        exports = export_all_data(
+            clients=clients,
+            jobs=jobs,
+            invoices=invoices,
+        )
+
+        clients_csv = exports["clients"]
+    """
+    return {
+        "clients": export_clients(
+            clients or []
+        ),
+        "client_contacts": export_client_contacts(
+            contacts or []
+        ),
+        "employees": export_employees(
+            employees or []
+        ),
+        "employee_skills": export_employee_skills(
+            skills or []
+        ),
+        "jobs": export_jobs(
+            jobs or []
+        ),
+        "candidates": export_candidates(
+            candidates or []
+        ),
+        "placements": export_placements(
+            placements or []
+        ),
+        "contracts": export_contracts(
+            contracts or []
+        ),
+        "invoices": export_invoices(
+            invoices or [],
+            payments or [],
+        ),
+        "payments": export_payments(
+            payments or []
+        ),
+        "activities": export_activities(
+            activities or []
+        ),
+    }
+
+
+# ============================================================
+# STREAMLIT DOWNLOAD HELPER
+# ============================================================
+
+def csv_download_button(
+    label,
+    filename,
+    csv_data,
+    key=None,
+):
+    """
+    Create a Streamlit CSV download button.
+
+    This helper keeps download logic out of individual screens.
+    """
+    import streamlit as st
+
+    if not csv_data:
+        csv_data = ""
+
+    return st.download_button(
+        label=label,
+        data=csv_data,
+        file_name=filename,
+        mime="text/csv",
+        key=key,
     )
 
-Result:
 
-    {
-        "clients.csv": b"...",
-        "employees.csv": b"...",
-        "jobs.csv": b"...",
-    }
-"""
+# ============================================================
+# EXPORT FILENAME HELPER
+# ============================================================
 
-exports = {}
+def make_export_filename(
+    name,
+    extension="csv",
+):
+    """
+    Create a consistent export filename.
 
-if clients is not None:
-    result = export_clients(clients)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
+    Example:
+        make_export_filename("clients")
 
-if client_contacts is not None:
-    result = export_client_contacts(client_contacts)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
+    Returns:
+        clients_2026-10-01.csv
+    """
+    clean_name = clean_text(
+        name
+    )
 
-if activities is not None:
-    result = export_activities(activities)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
+    clean_name = (
+        clean_name
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+    )
 
-if employees is not None:
-    result = export_employees(employees)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
+    if not clean_name:
+        clean_name = "export"
 
-if employee_skills is not None:
-    result = export_employee_skills(employee_skills)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
+    clean_extension = (
+        clean_text(
+            extension
+        ).lstrip(".")
+        or "csv"
+    )
 
-if jobs is not None:
-    result = export_jobs(jobs)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
+    today = date.today().isoformat()
 
-if candidates is not None:
-    result = export_candidates(candidates)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
-
-if placements is not None:
-    result = export_placements(placements)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
-
-if contracts is not None:
-    result = export_contracts(contracts)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
-
-if invoices is not None:
-    result = export_invoices(invoices)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
-
-if payments is not None:
-    result = export_payments(payments)
-    exports[result["filename"]] = result["content"].encode("utf-8-sig")
-
-return exports
-```
+    return (
+        f"{clean_name}_{today}."
+        f"{clean_extension}"
+    )
